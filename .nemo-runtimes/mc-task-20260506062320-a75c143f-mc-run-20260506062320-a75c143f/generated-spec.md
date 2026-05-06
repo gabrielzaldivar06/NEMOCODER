@@ -1,0 +1,1 @@
+Create src/ui_flow_smoke.py with function ui_flow_smoke() returning "mission-control". Keep it minimal.

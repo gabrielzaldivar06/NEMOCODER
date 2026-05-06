@@ -1,8 +1,8 @@
+import sys
 import tempfile
 import unittest
-import sys
 
-from nemo_coding_platform.core.aider_interface import FakeAiderProvider, MutationRequest, SubprocessAiderProvider, apply_mutation_request, build_default_aider_command, render_aider_message
+from nemo_coding_platform.core.aider_interface import FakeAiderProvider, MutationRequest, SubprocessAiderProvider, apply_mutation_request, build_default_aider_command, create_aider_provider, render_aider_message
 from nemo_coding_platform.core.model_config import DEFAULT_LMSTUDIO_MODEL
 from nemo_coding_platform.core.model_config import ModelProfile
 from nemo_coding_platform.core.mutations import QualityMutationEngine
@@ -26,6 +26,14 @@ class AiderInterfaceTests(unittest.TestCase):
         self.assertIn("Build", message)
         self.assertIn("passes tests", message)
         self.assertIn("NEMO context", message)
+
+    def test_create_aider_provider_returns_typed_provider_for_mode(self) -> None:
+        self.assertIsInstance(create_aider_provider("fake"), FakeAiderProvider)
+        self.assertIsInstance(create_aider_provider("subprocess"), SubprocessAiderProvider)
+
+    def test_create_aider_provider_rejects_unknown_mode(self) -> None:
+        with self.assertRaises(ValueError):
+            create_aider_provider("other")
 
     def test_fake_provider_applies_inside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

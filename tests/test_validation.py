@@ -4,7 +4,7 @@ import unittest
 
 from pathlib import Path
 
-from nemo_coding_platform.core.validation import format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
+from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, format_validation_report, run_validation_suite, simulate_validation, validation_commands_for_policy, write_python_validation_script
 
 
 class ValidationTests(unittest.TestCase):
@@ -53,6 +53,13 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("python validate.py", report)
         self.assertIn("returncode=None", report)
         self.assertIn("simulated pass", report)
+
+    def test_validation_policy_defaults_to_short_smoke_command(self) -> None:
+        self.assertEqual(validation_commands_for_policy("none"), (VALIDATION_SKIPPED_COMMAND,))
+        self.assertIn("--version", validation_commands_for_policy("smoke")[0])
+        self.assertEqual(validation_commands_for_policy("targeted"), ("python -m unittest",))
+        self.assertEqual(validation_commands_for_policy("full"), ("python -m unittest",))
+        self.assertEqual(validation_commands_for_policy("smoke", ("custom check",)), ("custom check",))
 
 
 if __name__ == "__main__":

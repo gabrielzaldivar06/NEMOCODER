@@ -198,6 +198,29 @@ class HeadlessRunnerTests(unittest.TestCase):
 
         self.assertEqual(provider.seen_targets, ("src/demo.py", "tests/test_demo.py"))
 
+    def test_subprocess_output_is_linked_from_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            command = (
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('subprocess-created.txt').write_text('ok', encoding='utf-8'); print('stdout-marker')",
+            )
+            result = execute_headless_handoff(
+                HandoffRequest("Build feature", tmp, ("passes tests",), ("python -m unittest",)),
+                provider_mode="subprocess",
+                aider_command=command,
+                task_id="subprocess-output-task",
+                run_id="subprocess-output-run",
+                bounded_simulation=True,
+            )
+
+        mutation_events = [event for event in result.timeline.events if event.kind == EventKind.MUTATION_CREATED]
+        self.assertEqual(mutation_events[0].payload_ref, "aider-output.txt")
+        self.assertIn("aider-output.txt", result.runtime_files)
+        self.assertTrue(any(artifact.artifact_type == ArtifactType.AIDER_OUTPUT for artifact in result.artifacts))
+        output = (Path(result.run.sandbox_path) / "aider-output.txt").read_text(encoding="utf-8")
+        self.assertIn("stdout-marker", output)
+
     def test_headless_run_persists_structured_nemo_memory_with_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")

@@ -269,3 +269,75 @@ Con repair/validation/review confiables y bounded simulation ya validado, el sig
 - `--memory-db` permite elegir la base NEMO del writeback; `--no-memory-db` omite la escritura cuando se quiere una simulacion sin memoria.
 - La aplicacion al repo principal queda ahora auditable por plan, reporte y memoria durable.
 - Validacion acotada: `tests.test_review_gate tests.test_review_gate_cli tests.test_cli_headless tests.test_headless_runner tests.test_long_handoff_supervisor tests.test_persistence tests.test_nemo_adapter tests.test_memory_persistence` paso 75 OK.
+
+## Corte Implementado 2026-05-05: Apply Backup And Hash Evidence
+
+- `MergePlan` ahora registra hashes SHA-256 de source y target para cada archivo planeado, exponiendolos en JSON y markdown.
+- `apply_merge_plan` crea backups automaticos antes de sobrescribir archivos existentes, preservando la ruta relativa bajo `.nemo-apply-backups/<task>-<run>` por default.
+- `apply-run-json` acepta `--backup-dir` para dirigir esos backups a una ruta explicita cuando el operador quiere controlar el paquete de rollback.
+- `MergeApplyResult` y `apply-report.md` ahora reportan `backup_dir` y `backup_files`, haciendo reversible un update aprobado sin depender de memoria informal.
+- El comportamiento de creates se mantiene simple: no generan backup, pero siguen auditados por plan, reporte y memoria NEMO.
+- Validacion acotada: `tests.test_review_gate tests.test_review_gate_cli` paso 16 OK.
+- Validacion focal ampliada: `tests.test_review_gate tests.test_review_gate_cli tests.test_cli_headless tests.test_headless_runner tests.test_long_handoff_supervisor tests.test_persistence tests.test_nemo_adapter tests.test_memory_persistence` paso 77 OK.
+
+## Corte Implementado 2026-05-05: Apply Conflict Detection And Rollback
+
+- `apply_merge_plan` ahora revalida el hash del target justo antes de copiar; si el archivo cambio despues de construir el plan, bloquea con `target changed since merge plan was built`.
+- `MergeApplyResult` ahora incluye `repo_path`, `created_files` y `updated_files`, ademas de backups, para que el resultado sea rollbackable de forma estructurada.
+- `apply-run-json` acepta `--save-apply-json` para guardar un resultado JSON reproducible que puede usarse despues para rollback.
+- Nuevo comando `rollback-apply-json <apply.json> --approve-review` restaura archivos actualizados desde backup y elimina archivos creados por el apply.
+- `rollback-apply-json` puede guardar `rollback-report.md` con archivos restaurados y deletes aplicados.
+- El rollback tambien requiere aprobacion explicita de review, manteniendo la misma frontera de seguridad que apply.
+- Validacion acotada: `tests.test_review_gate tests.test_review_gate_cli` paso 20 OK.
+- Validacion focal ampliada: `tests.test_review_gate tests.test_review_gate_cli tests.test_cli_headless tests.test_headless_runner tests.test_long_handoff_supervisor tests.test_persistence tests.test_nemo_adapter tests.test_memory_persistence` paso 81 OK.
+
+## Corte Implementado 2026-05-05: Desktop Mission Control Spike
+
+- Se documento la busqueda de interfaces reutilizables en `docs/research/desktop-ui-candidates.md`.
+- Decision de producto: usar direccion tipo Codeg para mission-control, patrones de Async IDE para loop/aprobaciones/diff, OpenCowork para settings/MCP/permisos y OpenCove para canvas/timeline futuro.
+- Nuevo core `mission_control.py` proyecta runs persistidos en un JSON de UI: repos, runs, approval queue, timeline preview, review status y settings default.
+- Nuevo comando `mission-control-state` exporta estado desde `.nemo-runtimes` y puede guardar JSON para el frontend.
+- Nuevo spike `apps/mission-control` con Vite/React: workbench tipo Codex/VS Code con activity bar, explorer de runs, editor central repo-vs-sandbox, panel agente, timeline inferior y settings de modelo/NEMO/Aider.
+- Nuevo comando `mission-control-server` expone un bridge local stdlib HTTP para `/api/state`, `/api/file`, `/api/handoff`, `/api/review`, `/api/apply` y `/api/rollback`.
+- El frontend consume el bridge local con fallback a `apps/mission-control/public/mission-control-state.sample.json`, generado desde el backend real.
+- La UI ya puede refrescar estado real, construir planes de merge, aplicar runs aprobados con JSON de rollback y ejecutar rollback desde ese apply JSON.
+- El boton New Handoff abre un composer tipo Codex y crea un long handoff supervisado en sandbox, persistido como run JSON discoverable por Mission Control.
+- El composer permite elegir `Fake smoke runner` o `Aider + LM Studio`; el backend valida provider/timeout y ejecuta `provider_mode=subprocess` contra `product/aider` cuando se elige el runner real.
+- La salida stdout/stderr/returncode de Aider se persiste como `aider-output.txt`, se registra como artifact `aider_output` y queda enlazada desde el evento `mutation_created` del timeline.
+
+## Corte Implementado 2026-05-06: Handoff Asincrono En Mission Control
+
+- Nuevo `HandoffJobManager` en `mission_control_server.py`: lanza `long-handoff-run` como subprocess local, captura stdout/stderr incrementalmente, guarda `run_json`, y mantiene estado `starting/running/completed/failed/cancelled/paused`.
+- Nuevos endpoints del bridge local: `POST /api/handoff/start`, `GET /api/jobs`, `POST /api/job`, `POST /api/job/cancel`, `POST /api/job/pause`, `POST /api/job/resume`.
+- `long-handoff-run` acepta `--task-id` y `--run-id` para que los jobs async tengan trazabilidad estable entre proceso, archivo JSON y Mission Control.
+- La UI deja de bloquearse con `/api/handoff`: ahora inicia jobs async, hace polling de estado, muestra logs incrementales en el bottom panel y ofrece Pause/Resume/Cancel.
+- Validacion acotada: `tests.test_mission_control_server tests.test_mission_control tests.test_headless_runner tests.test_aider_interface` paso 32 OK; `npm run build` paso OK.
+
+## Corte Implementado 2026-05-06: Chat Agent Loop Tipo Codex
+
+- Nuevo endpoint `POST /api/agent/message` en el bridge local: valida prompt, inspecciona contexto Mission Control/NEMO, revisa el run seleccionado y devuelve mensaje assistant con `tool_calls` visibles.
+- Las respuestas proponen acciones estructuradas `continue`, `revise` y `apply`; `apply` queda conectado al review gate y `continue/revise` lanzan handoff async con payload prellenado.
+- El panel Agent Control ahora tiene hilo conversacional, prompt box, tool calls renderizadas y botones de acciones propuestas, manteniendo la interfaz densa tipo IDE.
+- Validacion acotada: `tests.test_mission_control_server tests.test_mission_control` paso 11 OK; `npm run build` paso OK; smoke en bridge vivo confirmo `nemo.prime_context`, `mission_control.inspect_run`, `mission_control.build_merge_plan` y acciones `apply/continue/revise`.
+
+## Corte Implementado 2026-05-06: Diff Review Real
+
+- `POST /api/file` ahora devuelve hunks linea por linea, metadata de mergeability y checklist de riesgos por plan/archivo.
+- Nuevo endpoint `POST /api/apply-selection`: aplica solo hunks aceptados, verifica hashes del target antes de escribir, crea backups para updates y guarda apply JSON compatible con rollback.
+- La UI reemplaza el preview repo-vs-sandbox simple por una superficie de review con hunks visuales, checkboxes por hunk, Accept/Reject file y Apply selected.
+- Validacion acotada: `tests.test_mission_control_server tests.test_mission_control` paso 12 OK; `npm run build` paso OK; smoke en navegador confirmo diff con 2 hunks, rechazo de hunk y contador de aceptados.
+
+## Corte Implementado 2026-05-06: NEMO Operativo En UI
+
+- Nuevo endpoint `POST /api/nemo`: combina run seleccionado, context portfolio, memory traces, atom IDs usados, corrections, evidence, feedback y health del store persistente.
+- La UI agrega panel `NEMO Memory` en Agent Control con health del DB, portfolio visible, memorias usadas, corrections, evidence handles y eventos de feedback.
+- El panel se refresca al cambiar de run y usa el mismo bridge local, manteniendo NEMO como base de memoria operativa y largo plazo desde la interfaz.
+- Validacion acotada: `tests.test_mission_control_server tests.test_mission_control` paso 13 OK; `npm run build` paso OK; smoke en navegador confirmo 36 atoms, 1 evidence, 5 feedback, portfolio y memories usadas visibles.
+
+## Corte Implementado 2026-05-06: Settings, Repo Picker Y Apply UX
+
+- Settings persistibles en `.nemo-runtimes/mission-control/settings.json`: LM Studio URL, modelo, provider, NEMO DB, runtime path, timeouts y presupuestos de handoff.
+- Repo picker real: abrir path validando `.git`, mantener recientes y clonar desde git hacia una carpeta destino antes de abrirla.
+- Apply/Rollback endurecido: el apply construye y muestra plan antes de confirmar, el backend conserva bloqueo por hash cambiado, y la UI lista historial de apply con backups/rollback artifacts.
+- Limpieza de artefactos: endpoint de scan/delete para artefactos temporales antiguos y controles visibles en Settings.
+- Validacion acotada: `tests.test_mission_control_server tests.test_mission_control` paso 15 OK; `npm run build` paso OK.

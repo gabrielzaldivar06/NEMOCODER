@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,11 @@ class LongHandoffResumePlan:
     can_resume: bool
     task_id: str | None
     run_id: str | None
+    objective: str | None
+    provider_mode: str | None
+    validation_policy: str | None
+    validation_commands: tuple[str, ...]
+    memory_writeback_handles: tuple[str, ...]
     resume_token: str | None
     resume_minute: int | None
     checkpoint_refs: tuple[str, ...]
@@ -56,6 +62,11 @@ class LongHandoffResumePlan:
             "can_resume": self.can_resume,
             "task_id": self.task_id,
             "run_id": self.run_id,
+            "objective": self.objective,
+            "provider_mode": self.provider_mode,
+            "validation_policy": self.validation_policy,
+            "validation_commands": list(self.validation_commands),
+            "memory_writeback_handles": list(self.memory_writeback_handles),
             "resume_token": self.resume_token,
             "resume_minute": self.resume_minute,
             "checkpoint_refs": list(self.checkpoint_refs),
@@ -125,9 +136,83 @@ def _parse_resume_minute(resume_token: str | None) -> int | None:
         return None
 
 
+def _memory_writeback_handles_from_result(result: HeadlessRunResult) -> tuple[str, ...]:
+    handles: list[str] = []
+    for trace in result.memory_traces:
+        if trace.evidence_handle:
+            handles.append(trace.evidence_handle)
+    for nemo_result in result.nemo_results:
+        handle = nemo_result.payload.get("handle")
+        if isinstance(handle, str) and handle:
+            handles.append(handle)
+    return tuple(dict.fromkeys(handles))
+
+
+def _validation_commands_from_payload(payload: dict[str, Any]) -> tuple[str, ...]:
+    validation = payload.get("validation", {}) if isinstance(payload.get("validation"), dict) else {}
+    results = validation.get("results", []) if isinstance(validation, dict) else []
+    commands: list[str] = []
+    for result in results:
+        command = result.get("command", {}) if isinstance(result, dict) and isinstance(result.get("command"), dict) else {}
+        value = command.get("command")
+        if isinstance(value, str) and value:
+            commands.append(value)
+    return tuple(commands)
+
+
+def _continuation_state_from_result(
+    result: HeadlessRunResult,
+    budget: LongHandoffBudget,
+    heartbeats: tuple[SupervisorHeartbeat, ...],
+    escalation_flags: tuple[str, ...],
+    resume_token: str | None,
+) -> dict[str, object]:
+    mutation = result.effective_mutation_result
+    return {
+        "schema_version": 1,
+        "task_id": result.task.id,
+        "run_id": result.run.id,
+        "objective": result.task.objective,
+        "repo_path": result.task.repo_path,
+        "provider_mode": mutation.provider_mode if mutation else None,
+        "provider": mutation.provider if mutation else None,
+        "model_profile": result.run.model_profile,
+        "validation_policy": result.run.validation_profile,
+        "validation_commands": [item.command.command for item in result.validation.results],
+        "checkpoint_refs": ["checkpoint-plan.md", "checkpoint-execute.md", "checkpoint-review.md"],
+        "heartbeat_refs": [heartbeat.checkpoint_ref for heartbeat in heartbeats],
+        "memory_writeback_handles": list(_memory_writeback_handles_from_result(result)),
+        "budget": {
+            "max_runtime_minutes": budget.max_runtime_minutes,
+            "heartbeat_minutes": budget.heartbeat_minutes,
+            "max_heartbeats": budget.max_heartbeats,
+            "token_budget": budget.token_budget,
+            "pause_after_minutes": budget.pause_after_minutes,
+        },
+        "escalation_flags": list(escalation_flags),
+        "resume_token": resume_token,
+        "resume_minute": _parse_resume_minute(resume_token),
+    }
+
+
+def _load_continuation_state(payload: dict[str, Any]) -> dict[str, Any]:
+    run = payload.get("run", {}) if isinstance(payload.get("run"), dict) else {}
+    sandbox_path = run.get("sandbox_path")
+    state_path = Path(sandbox_path) / "continuation-state.json" if sandbox_path else None
+    if not state_path or not state_path.exists():
+        return {}
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
 def build_long_handoff_resume_plan(payload: dict[str, Any]) -> LongHandoffResumePlan:
     task = payload.get("task", {}) if isinstance(payload.get("task"), dict) else {}
     run = payload.get("run", {}) if isinstance(payload.get("run"), dict) else {}
+    mutation = payload.get("mutation_result", {}) if isinstance(payload.get("mutation_result"), dict) else {}
+    state = _load_continuation_state(payload)
     timeline = payload.get("timeline", [])
     artifacts = payload.get("artifacts", [])
     task_id = task.get("id")
@@ -158,7 +243,23 @@ def build_long_handoff_resume_plan(payload: dict[str, Any]) -> LongHandoffResume
         if can_resume
         else "Cannot resume until the paused run has a valid resume token and checkpoint trail."
     )
-    return LongHandoffResumePlan(can_resume, task_id, run_id, resume_token, resume_minute, checkpoint_refs, next_action, tuple(reasons))
+    validation_commands = tuple(str(item) for item in state.get("validation_commands", ()) if isinstance(item, str)) or _validation_commands_from_payload(payload)
+    handles = tuple(str(item) for item in state.get("memory_writeback_handles", ()) if isinstance(item, str))
+    return LongHandoffResumePlan(
+        can_resume,
+        task_id,
+        run_id,
+        str(state.get("objective") or task.get("objective") or "") or None,
+        str(state.get("provider_mode") or mutation.get("provider_mode") or "") or None,
+        str(state.get("validation_policy") or run.get("validation_profile") or "") or None,
+        validation_commands,
+        handles,
+        resume_token,
+        resume_minute,
+        checkpoint_refs,
+        next_action,
+        tuple(reasons),
+    )
 
 
 def _continuation_link_markdown(plan: LongHandoffResumePlan, source_run_id: str | None) -> str:
@@ -200,7 +301,7 @@ def execute_long_handoff_continuation(
     task = payload.get("task", {}) if isinstance(payload.get("task"), dict) else {}
     run = payload.get("run", {}) if isinstance(payload.get("run"), dict) else {}
     repo_path = str(task.get("repo_path") or ".")
-    source_objective = str(task.get("objective") or "Resume paused long handoff")
+    source_objective = str(plan.objective or task.get("objective") or "Resume paused long handoff")
     resume_objective = objective or f"Resume paused long handoff from {plan.resume_token}. Continue objective: {source_objective}"
     resume_task_id = f"{plan.task_id or 'task'}-resume"
     resume_run_id = f"{plan.run_id or 'run'}-resume-{plan.resume_minute}"
@@ -209,7 +310,7 @@ def execute_long_handoff_continuation(
             resume_objective,
             repo_path,
             acceptance_criteria or ("continuation remains replayable",),
-            validation_commands or ("python -m unittest",),
+            validation_commands or plan.validation_commands or ("python -m unittest",),
         ),
         budget=budget or LongHandoffBudget(max_runtime_minutes=30, heartbeat_minutes=10, max_heartbeats=1, token_budget=8000),
         task_id=resume_task_id,
@@ -281,7 +382,9 @@ def execute_long_handoff_supervisor(
     report = _supervisor_report(active_budget, heartbeats, escalation_flags, resume_token)
     runtime_path = Path(result.run.sandbox_path)
     runtime = WorktreeRuntimeSpec(result.run.runtime_id, result.task.id, result.run.id, runtime_path.parent, runtime_path, result.run.state)
+    continuation_state = _continuation_state_from_result(result, active_budget, heartbeats, escalation_flags, resume_token)
     write_runtime_file(runtime, "supervisor-report.md", report)
+    write_runtime_file(runtime, "continuation-state.json", json.dumps(continuation_state, indent=2, sort_keys=True) + "\n")
     if resume_token:
         write_runtime_file(runtime, "resume-token.txt", resume_token + "\n")
 
@@ -328,6 +431,7 @@ def execute_long_handoff_supervisor(
 
     artifacts = result.artifacts + (
         Artifact.from_content("artifact-supervisor", result.run.id, ArtifactType.SUPERVISOR, "supervisor-report.md", "Long handoff supervisor budget and heartbeats", report),
+        Artifact.from_content("artifact-continuation-state", result.run.id, ArtifactType.SUPERVISOR, "continuation-state.json", "Long handoff continuation state", json.dumps(continuation_state, sort_keys=True)),
     )
     if resume_token:
         artifacts = artifacts + (

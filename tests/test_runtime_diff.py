@@ -48,6 +48,18 @@ class RuntimeDiffTests(unittest.TestCase):
         self.assertEqual(diff.created, ("real-change.txt",))
         self.assertNotIn(".aider.chat.history.md", diff.changed_files)
 
+    def test_truncates_large_unified_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before = snapshot_path(root)
+            (root / "large.txt").write_text("x\n" * 20_000, encoding="utf-8")
+            after = snapshot_path(root)
+
+        diff = diff_snapshots(before, after)
+
+        self.assertIn("... diff truncated ...", diff.unified_diff)
+        self.assertLess(len(diff.unified_diff), 10_100)
+
 
 if __name__ == "__main__":
     unittest.main()

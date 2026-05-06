@@ -26,11 +26,21 @@ class LongHandoffSupervisorTests(unittest.TestCase):
 
         self.assertEqual(heartbeat_refs, ("checkpoint-execute.md", "checkpoint-execute.md"))
         self.assertIn("supervisor-report.md", artifact_paths)
+        self.assertIn("continuation-state.json", artifact_paths)
         self.assertIn("resume-token.txt", artifact_paths)
         self.assertIn("supervisor-report.md", result.runtime_files)
+        self.assertIn("continuation-state.json", result.runtime_files)
         self.assertIn("resume-token.txt", result.runtime_files)
         self.assertTrue(result.timeline.has_event_kind(EventKind.PAUSED))
         self.assertEqual(score_headless_result(result).grade, "ready")
+
+        state = json.loads((Path(result.run.sandbox_path) / "continuation-state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["task_id"], result.task.id)
+        self.assertEqual(state["run_id"], result.run.id)
+        self.assertEqual(state["provider_mode"], "fake")
+        self.assertEqual(state["validation_policy"], "smoke")
+        self.assertIn("checkpoint-execute.md", state["checkpoint_refs"])
+        self.assertTrue(state["memory_writeback_handles"])
 
     def test_long_handoff_cli_saves_replayable_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,7 +87,29 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         self.assertTrue(plan.can_resume)
         self.assertEqual(plan.resume_token, "resume-task:resume-run:minute-20")
         self.assertEqual(plan.resume_minute, 20)
+        self.assertEqual(plan.objective, "Build feature")
+        self.assertEqual(plan.provider_mode, "fake")
+        self.assertEqual(plan.validation_policy, "smoke")
+        self.assertTrue(plan.validation_commands)
+        self.assertTrue(plan.memory_writeback_handles)
         self.assertIn("checkpoint-execute.md", plan.checkpoint_refs)
+
+    def test_resume_plan_falls_back_to_persisted_json_when_state_file_is_missing(self) -> None:
+        result = execute_long_handoff_supervisor(
+            HandoffRequest("Build fallback", ".", ("passes tests",), ("python -m unittest",)),
+            budget=LongHandoffBudget(max_runtime_minutes=30, heartbeat_minutes=10, max_heartbeats=2, token_budget=1200, pause_after_minutes=20),
+            task_id="fallback-task",
+            run_id="fallback-run",
+        )
+        (Path(result.run.sandbox_path) / "continuation-state.json").unlink()
+        payload = headless_result_to_dict(result)
+        plan = build_long_handoff_resume_plan(payload)
+
+        self.assertTrue(plan.can_resume)
+        self.assertEqual(plan.objective, "Build fallback")
+        self.assertEqual(plan.provider_mode, "fake")
+        self.assertEqual(plan.validation_policy, "smoke")
+        self.assertEqual(plan.validation_commands, ("python -m unittest",))
 
     def test_long_handoff_resume_cli_outputs_resume_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

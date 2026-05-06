@@ -1,0 +1,9 @@
+provider=fake-aider
+provider_mode=fake
+returncode=
+duration_ms=1
+
+# stdout
+
+
+# stderr

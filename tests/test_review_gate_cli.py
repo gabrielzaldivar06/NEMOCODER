@@ -106,6 +106,31 @@ class ReviewGateCliTests(unittest.TestCase):
         self.assertEqual(payload["applied_files"], ["created.txt"])
         self.assertEqual(content, "created")
 
+    def test_apply_run_json_writes_update_backup_to_requested_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            backup_dir = root / "backups"
+            repo.mkdir()
+            sandbox.mkdir()
+            (repo / "existing.txt").write_text("old", encoding="utf-8")
+            (sandbox / "existing.txt").write_text("new", encoding="utf-8")
+            run_json = root / "run.json"
+            write_ready_run(run_json, repo, sandbox, ["existing.txt"])
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                code = main(["apply-run-json", str(run_json), "--approve-review", "--backup-dir", str(backup_dir), "--json"])
+            payload = json.loads(output.getvalue())
+            backup_content = (backup_dir / "existing.txt").read_text(encoding="utf-8")
+            repo_content = (repo / "existing.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["backup_files"], ["existing.txt"])
+        self.assertEqual(backup_content, "old")
+        self.assertEqual(repo_content, "new")
+
     def test_apply_run_json_writes_apply_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -126,6 +151,61 @@ class ReviewGateCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("# Apply Report", content)
         self.assertIn("- created.txt", content)
+
+    def test_apply_run_json_saves_apply_json_for_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            repo.mkdir()
+            sandbox.mkdir()
+            (repo / "existing.txt").write_text("old", encoding="utf-8")
+            (sandbox / "existing.txt").write_text("new", encoding="utf-8")
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            run_json = root / "run.json"
+            apply_json = root / "apply.json"
+            write_ready_run(run_json, repo, sandbox, ["existing.txt", "created.txt"])
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = main(["apply-run-json", str(run_json), "--approve-review", "--save-apply-json", str(apply_json), "--json"])
+            payload = json.loads(apply_json.read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["updated_files"], ["existing.txt"])
+        self.assertEqual(payload["created_files"], ["created.txt"])
+        self.assertEqual(payload["repo_path"], str(repo))
+
+    def test_rollback_apply_json_restores_and_deletes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            repo.mkdir()
+            sandbox.mkdir()
+            (repo / "existing.txt").write_text("old", encoding="utf-8")
+            (sandbox / "existing.txt").write_text("new", encoding="utf-8")
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            run_json = root / "run.json"
+            apply_json = root / "apply.json"
+            report_path = root / "rollback-report.md"
+            write_ready_run(run_json, repo, sandbox, ["existing.txt", "created.txt"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                main(["apply-run-json", str(run_json), "--approve-review", "--save-apply-json", str(apply_json), "--json"])
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main(["rollback-apply-json", str(apply_json), "--approve-review", "--save-rollback-report", str(report_path), "--json"])
+            payload = json.loads(output.getvalue())
+            existing_content = (repo / "existing.txt").read_text(encoding="utf-8")
+            created_exists = (repo / "created.txt").exists()
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["restored_files"], ["existing.txt"])
+        self.assertEqual(payload["deleted_files"], ["created.txt"])
+        self.assertEqual(existing_content, "old")
+        self.assertFalse(created_exists)
+        self.assertIn("# Rollback Report", report)
 
     def test_apply_run_json_writes_nemo_memory_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -202,6 +202,18 @@ class SubprocessAiderProvider:
         return MutationPlan(writes=())
 
 
+def create_aider_provider(
+    provider_mode: str,
+    command: tuple[str, ...] | None = None,
+    cwd: str | Path = ".",
+) -> AiderProvider:
+    if provider_mode == "fake":
+        return FakeAiderProvider()
+    if provider_mode == "subprocess":
+        return SubprocessAiderProvider(command, cwd=cwd)
+    raise ValueError(f"unsupported Aider provider mode: {provider_mode}")
+
+
 def apply_mutation_request(engine: QualityMutationEngine, provider: AiderProvider, request: MutationRequest) -> MutationResult:
     before = snapshot_path(engine.workspace.root)
     started = perf_counter()

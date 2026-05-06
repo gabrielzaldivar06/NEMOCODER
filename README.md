@@ -45,6 +45,32 @@ The desktop app will use the Aider base with:
 - NEMO memory trace
 - LM Studio/OpenAI-compatible model configuration
 
+## Desktop Mission Control Spike
+
+The first UI spike lives in [apps/mission-control](apps/mission-control). It is now shaped like a compact Codex/VS Code-style workbench: activity bar, explorer/run tree, central hunk-based diff review, conversational agent control pane, bottom timeline/terminal panel, New Full Handoff composer and model/MCP/NEMO settings. The review surface shows line-by-line repo-vs-sandbox hunks, accept/reject controls per file and hunk, a risk checklist, selected-hunk apply through the review gate, a pre-apply plan confirmation, and apply history with backup/rollback artifacts. The agent pane accepts prompts, shows visible tool calls, and proposes Continue/Revise/Apply actions for the selected run. The NEMO Memory panel exposes operational context directly in the UI: context portfolio, memory traces/used atoms, corrections, evidence handles, feedback events, and store health. The settings panel persists LM Studio URL, model, provider, NEMO DB, runtime path, timeout and handoff budgets, supports opening recent git repos or cloning from git, and includes artifact cleanup scan/delete controls. The composer starts async Full Handoff jobs through the local bridge, can run either the fake smoke provider or real Aider through LM Studio via the subprocess provider, streams incremental job logs in the bottom panel, and exposes cancel/pause/resume controls. Aider stdout/stderr is persisted as `aider-output.txt` and linked from the timeline.
+
+Run the live local bridge for review/apply/rollback actions:
+
+```powershell
+$env:PYTHONPATH = "src"
+c:/dev/dev4/.venv/Scripts/python.exe -m nemo_coding_platform mission-control-server --repo . --runtimes .nemo-runtimes
+```
+
+Run the UI in another terminal:
+
+```powershell
+cd apps/mission-control
+npm install
+npm run dev -- --port 5173
+```
+
+The Vite dev server proxies `/api/*` to `http://127.0.0.1:8787`. If you only need a static snapshot, refresh its state from persisted runs:
+
+```powershell
+$env:PYTHONPATH = "src"
+c:/dev/dev4/.venv/Scripts/python.exe -m nemo_coding_platform mission-control-state --repo . --runtimes .nemo-runtimes --save-json apps/mission-control/public/mission-control-state.sample.json --json
+```
+
 Focused Aider fork tests:
 
 ```powershell

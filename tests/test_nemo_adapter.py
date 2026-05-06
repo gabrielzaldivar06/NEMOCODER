@@ -71,6 +71,32 @@ class NemoAdapterTests(unittest.TestCase):
         self.assertEqual(atom.atom.atom_type, MemoryAtomType.SESSION_SUMMARY)
         self.assertEqual(atom.useful_count, 1)
 
+    def test_persistent_adapter_returns_recent_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
+            adapter = PersistentNemoAdapter(store)
+            adapter, write_result = adapter.call(NemoLifecyclePhase.BUILD, "store_conversation", summary="Run checkpoint ready", topic="handoff")
+            _adapter, recent_result = adapter.call(NemoLifecyclePhase.REVIEW, "get_recent_context", topic="handoff")
+
+        self.assertTrue(write_result.ok)
+        self.assertTrue(recent_result.ok)
+        self.assertIn("Run checkpoint ready", recent_result.payload["context"])
+        self.assertEqual(recent_result.payload["messages"][0]["type"], "session_summary")
+
+    def test_persistent_adapter_reports_time_environment_and_health(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
+            adapter = PersistentNemoAdapter(store)
+            adapter, time_result = adapter.call(NemoLifecyclePhase.PLAN, "get_current_time")
+            adapter, env_result = adapter.call(NemoLifecyclePhase.PLAN, "get_environment_info")
+            _adapter, health_result = adapter.call(NemoLifecyclePhase.REVIEW, "get_system_health")
+
+        self.assertTrue(time_result.payload["utc"].endswith("+00:00"))
+        self.assertIn("python_version", env_result.payload)
+        self.assertTrue(env_result.payload["memory_db_exists"])
+        self.assertEqual(health_result.payload["status"], "ok")
+        self.assertIn("atom_count", health_result.payload)
+
     def test_persistent_adapter_expands_evidence_from_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")

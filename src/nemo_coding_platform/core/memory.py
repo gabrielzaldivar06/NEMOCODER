@@ -156,6 +156,13 @@ NEMO_TOOL_REGISTRY: tuple[NemoToolContract, ...] = (
         purpose="Attach reliable timestamps to decisions, evidence, and reminders.",
     ),
     NemoToolContract(
+        name="get_environment_info",
+        suite=NemoToolSuite.TIME_AND_ENVIRONMENT,
+        risk=NemoToolRisk.READ_ONLY,
+        phase_access=(ExecutionPhase.PLAN, ExecutionPhase.EXECUTE, ExecutionPhase.REVIEW),
+        purpose="Expose local runtime environment facts for agent planning and diagnostics.",
+    ),
+    NemoToolContract(
         name="get_weather_open_meteo",
         suite=NemoToolSuite.TIME_AND_ENVIRONMENT,
         risk=NemoToolRisk.READ_ONLY,

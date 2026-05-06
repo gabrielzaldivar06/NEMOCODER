@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 IGNORED_PARTS = {".git", ".venv", "__pycache__", ".nemo-aider-message.md"}
+MAX_UNIFIED_DIFF_CHARS = 10_000
 
 
 def _ignored_relative_path(relative: Path) -> bool:
@@ -86,4 +87,7 @@ def diff_snapshots(before: RuntimeSnapshot, after: RuntimeSnapshot) -> RuntimeDi
                 tofile=f"after/{path}",
             )
         )
-    return RuntimeDiff(created, updated, deleted, "".join(chunks))
+    rendered = "".join(chunks)
+    if len(rendered) > MAX_UNIFIED_DIFF_CHARS:
+        rendered = rendered[:MAX_UNIFIED_DIFF_CHARS] + "\n... diff truncated ...\n"
+    return RuntimeDiff(created, updated, deleted, rendered)

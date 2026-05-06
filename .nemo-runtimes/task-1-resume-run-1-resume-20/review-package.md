@@ -28,7 +28,7 @@ repair_attempts=0
 
 ## Validation
 validation passed=1/1 required_ok=True
-command=python -m unittest
+command=C:\dev\dev4\.venv\Scripts\python.exe --version
 status=passed
 returncode=None
 output:

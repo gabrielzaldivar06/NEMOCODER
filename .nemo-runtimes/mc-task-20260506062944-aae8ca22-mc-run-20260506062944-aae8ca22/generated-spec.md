@@ -1,0 +1,1 @@
+Create a smoke artifact for provider output timeline verification.

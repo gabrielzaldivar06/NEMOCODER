@@ -1,0 +1,763 @@
+{
+  "artifacts": [
+    {
+      "artifact_type": "spec",
+      "content_hash": "b221d9dbb083a7f33428d7c2a3c3198ae925614d70210e28716ccaa7cd4ddb79",
+      "id": "artifact-spec",
+      "path": "generated-spec.md",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Generated specs"
+    },
+    {
+      "artifact_type": "test",
+      "content_hash": "c918bf6116cf1affa4edef23980e7e36e98d046dc28a4eaab1602c202e946e57",
+      "id": "artifact-test",
+      "path": "generated-test.txt",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Generated tests"
+    },
+    {
+      "artifact_type": "patch",
+      "content_hash": "5e7032fb9f811aa4556f800a14042c6b1b0fd2f4f7e3e261c0a5d9f4abd662db",
+      "id": "artifact-patch",
+      "path": "patch.diff",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Applied provider mutation files=1"
+    },
+    {
+      "artifact_type": "aider_output",
+      "content_hash": "863db629902eda767365f4e6c38dc8c759037d0b44a0e6ac95a80972ec21bc40",
+      "id": "artifact-aider-output",
+      "path": "aider-output.txt",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Aider output returncode=None"
+    },
+    {
+      "artifact_type": "validation",
+      "content_hash": "cfba9dd5d053cc612b1f26b05b62d9d6edd46f5736d77514c006740b7f65845a",
+      "id": "artifact-validation",
+      "path": "validation.txt",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Validation summary"
+    },
+    {
+      "artifact_type": "memory_summary",
+      "content_hash": "bfb784b1ee9bae9f88d93dbdb3e3f0ce30ce71d502be393dfe67c0705cb8692a",
+      "id": "artifact-memory",
+      "path": "memory.md",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Memory writeback"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "4713bdf4719e1f98985d7927eee5235494d9aec5e4414afe61301e3e2dbdd5b2",
+      "id": "artifact-checkpoint-1",
+      "path": "checkpoint-plan.md",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "40c4f731598adc446aa5cf33dda142735c12c5adba7091736bddc5272dfc34b7",
+      "id": "artifact-checkpoint-2",
+      "path": "checkpoint-execute.md",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "0e14237faa9197235c510f869ddc6aa082c0b20308d3dc32cbf9744429870708",
+      "id": "artifact-checkpoint-3",
+      "path": "checkpoint-review.md",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "review_package",
+      "content_hash": "2e07175403e8b97ac343a2f66556325a78246959564cd885ef5e4fcaec56b832",
+      "id": "artifact-review",
+      "path": "review-package.md",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Final review package"
+    },
+    {
+      "artifact_type": "supervisor",
+      "content_hash": "17f547b5908dc65c7c2bb9d72b165a37e2932080a360daa55fe3d54a3388600e",
+      "id": "artifact-supervisor",
+      "path": "supervisor-report.md",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "summary": "Long handoff supervisor budget and heartbeats"
+    }
+  ],
+  "memory_traces": [
+    {
+      "evidence_handle": null,
+      "id": "mem-1",
+      "memory_ids": [],
+      "nemo_tool": "prime_context",
+      "risk": "read_only",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "suite": "startup_context",
+      "summary": "Loaded startup context."
+    },
+    {
+      "evidence_handle": null,
+      "id": "mem-2",
+      "memory_ids": [],
+      "nemo_tool": "build_context_portfolio",
+      "risk": "read_only",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "suite": "context_economy",
+      "summary": "Built context portfolio tokens=458."
+    },
+    {
+      "evidence_handle": null,
+      "id": "mem-3",
+      "memory_ids": [],
+      "nemo_tool": "store_conversation",
+      "risk": "memory_write",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "suite": "conversation",
+      "summary": "Prepared final writeback."
+    }
+  ],
+  "mutation_result": {
+    "applied_files": [
+      "generated-implementation.md"
+    ],
+    "changed_files": [
+      "generated-implementation.md"
+    ],
+    "diff_artifact": "--- before/generated-implementation.md\n+++ after/generated-implementation.md\n@@ -0,0 +1,30 @@\n+# Generated Implementation\n+\n+Objective: hola\n+Spec: generated-spec.md\n+\n+## Acceptance Criteria\n+- passes validation\n+\n+## NEMO Context\n+[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run run-1\n+[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run run-1\n+[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run run-1\n+[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062320-a75c143f\n+[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062320-a75c143f\n+[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062320-a75c143f\n+[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062944-aae8ca22\n+[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062944-aae8ca22\n+[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062944-aae8ca22\n+[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063746-eca07ae1\n+[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063746-eca07ae1\n+[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063746-eca07ae1\n+[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063822-3ca25316\n+[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063822-3ca25316\n+[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063822-3ca25316\n+[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164734-bd477b88\n+[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164734-bd477b88\n+[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164734-bd477b88\n+[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164735-02549407\n+[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164735-02549407\n+[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164735-02549407",
+    "dry_run_files": [
+      "generated-implementation.md"
+    ],
+    "duration_ms": 1,
+    "model_profile": {
+      "api_key_env": "LMSTUDIO_API_KEY",
+      "base_url": "http://localhost:1234/v1",
+      "model": "nvidia.agentic.coder-4b",
+      "name": "lmstudio-small-coder"
+    },
+    "plan": {
+      "approved": true,
+      "dry_run_completed": true,
+      "writes": [
+        {
+          "content": "# Generated Implementation\n\nObjective: hola\nSpec: generated-spec.md\n\n## Acceptance Criteria\n- passes validation\n\n## NEMO Context\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run run-1\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run run-1\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run run-1\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062320-a75c143f\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062320-a75c143f\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062320-a75c143f\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062944-aae8ca22\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062944-aae8ca22\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062944-aae8ca22\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063746-eca07ae1\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063746-eca07ae1\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063746-eca07ae1\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063822-3ca25316\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063822-3ca25316\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063822-3ca25316\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164734-bd477b88\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164734-bd477b88\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164734-bd477b88\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164735-02549407\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164735-02549407\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164735-02549407",
+          "path": "generated-implementation.md"
+        }
+      ]
+    },
+    "provider": "fake-aider",
+    "provider_mode": "fake",
+    "returncode": null,
+    "stderr": "",
+    "stdout": "",
+    "summary": "changed 1 file(s) through fake-aider"
+  },
+  "platform_info": {
+    "audit_event_capabilities": {
+      "default_checkpoint_minutes": 15,
+      "event_types": [
+        "phase_entered",
+        "tool_called",
+        "permission_decided",
+        "test_run",
+        "checkpoint_created",
+        "review_package_created"
+      ],
+      "risk_flags": [
+        "stale_memory",
+        "validation_failure",
+        "repeated_failure",
+        "permission_pressure",
+        "unresolved_risk"
+      ]
+    },
+    "autonomy": {
+      "assisted": {
+        "can_continue_without_human_interaction": false,
+        "can_run_background": false,
+        "can_spawn_subagents": true,
+        "can_write_main_workspace_directly": false,
+        "isolation": "worktree",
+        "level": "assisted",
+        "requires_checkpoints": false,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": false
+      },
+      "autonomous_sandbox": {
+        "can_continue_without_human_interaction": false,
+        "can_run_background": true,
+        "can_spawn_subagents": true,
+        "can_write_main_workspace_directly": false,
+        "isolation": "worktree",
+        "level": "autonomous_sandbox",
+        "requires_checkpoints": false,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": false
+      },
+      "background_agent": {
+        "can_continue_without_human_interaction": true,
+        "can_run_background": true,
+        "can_spawn_subagents": true,
+        "can_write_main_workspace_directly": false,
+        "isolation": "container",
+        "level": "background_agent",
+        "requires_checkpoints": true,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": false
+      },
+      "full_handoff": {
+        "can_continue_without_human_interaction": true,
+        "can_run_background": true,
+        "can_spawn_subagents": true,
+        "can_write_main_workspace_directly": false,
+        "isolation": "container",
+        "level": "full_handoff",
+        "requires_checkpoints": true,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": true
+      },
+      "manual": {
+        "can_continue_without_human_interaction": false,
+        "can_run_background": false,
+        "can_spawn_subagents": false,
+        "can_write_main_workspace_directly": false,
+        "isolation": "none",
+        "level": "manual",
+        "requires_checkpoints": false,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": false
+      }
+    },
+    "capabilities": {
+      "audit_events": true,
+      "full_handoff": true,
+      "nemo_memory_plane": true,
+      "permission_gates": true,
+      "supported_isolation": [
+        "worktree",
+        "container"
+      ]
+    },
+    "command": {
+      "entrypoint": "python -m aider.nemo_platform",
+      "output": "json",
+      "stable_schema": true
+    },
+    "extension_package": "aider.nemo_platform",
+    "nemo_tools": [
+      {
+        "name": "prime_context",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Load high-priority continuity before agent work.",
+        "risk": "read_only",
+        "suite": "startup_context"
+      },
+      {
+        "name": "context_bootstrap",
+        "phases": [
+          "plan"
+        ],
+        "purpose": "Load startup context plus a dry-run context portfolio.",
+        "risk": "read_only",
+        "suite": "startup_context"
+      },
+      {
+        "name": "build_context_portfolio",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Compile bounded NEMO context for the current phase.",
+        "risk": "read_only",
+        "suite": "context_economy"
+      },
+      {
+        "name": "expand_context_evidence",
+        "phases": [
+          "build",
+          "review"
+        ],
+        "purpose": "Recover large evidence referenced by a portfolio.",
+        "risk": "read_only",
+        "suite": "context_economy"
+      },
+      {
+        "name": "record_context_feedback",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Update NEMO utility signals after use.",
+        "risk": "memory_write",
+        "suite": "context_economy"
+      },
+      {
+        "name": "get_context_portfolio_stats",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Inspect context portfolio health and token savings.",
+        "risk": "read_only",
+        "suite": "context_economy"
+      },
+      {
+        "name": "compress_context_artifact",
+        "phases": [
+          "build",
+          "review"
+        ],
+        "purpose": "Compact large outputs while preserving recoverable evidence.",
+        "risk": "memory_write",
+        "suite": "context_economy"
+      },
+      {
+        "name": "create_correction",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Persist user corrections immediately.",
+        "risk": "memory_write",
+        "suite": "memory_management"
+      },
+      {
+        "name": "update_memory",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Update curated memory after review resolves stale facts.",
+        "risk": "memory_write",
+        "suite": "memory_management"
+      },
+      {
+        "name": "store_conversation",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Persist meaningful task exchanges and outcomes.",
+        "risk": "memory_write",
+        "suite": "conversation"
+      },
+      {
+        "name": "get_recent_context",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Inspect recent raw conversation when compact context is insufficient.",
+        "risk": "read_only",
+        "suite": "conversation"
+      },
+      {
+        "name": "get_current_time",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Attach reliable timestamps to decisions and evidence.",
+        "risk": "read_only",
+        "suite": "time_and_environment"
+      },
+      {
+        "name": "get_weather_open_meteo",
+        "phases": [
+          "plan"
+        ],
+        "purpose": "Optional environment context for user workflows that need weather.",
+        "risk": "read_only",
+        "suite": "time_and_environment"
+      },
+      {
+        "name": "create_reminder",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Create explicit follow-up reminders after review.",
+        "risk": "scheduling_write",
+        "suite": "reminders"
+      },
+      {
+        "name": "intent_anchor",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Persist condition-triggered future reminders.",
+        "risk": "memory_write",
+        "suite": "reminders"
+      },
+      {
+        "name": "create_appointment",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Create explicit appointments only after user intent is captured.",
+        "risk": "scheduling_write",
+        "suite": "appointments"
+      },
+      {
+        "name": "get_system_health",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Inspect NEMO health when memory behavior is suspicious.",
+        "risk": "read_only",
+        "suite": "maintenance"
+      }
+    ],
+    "nemo_tools_by_phase": {
+      "background": [],
+      "build": [
+        "prime_context",
+        "build_context_portfolio",
+        "expand_context_evidence",
+        "record_context_feedback",
+        "compress_context_artifact",
+        "create_correction",
+        "store_conversation",
+        "get_current_time"
+      ],
+      "plan": [
+        "prime_context",
+        "context_bootstrap",
+        "build_context_portfolio",
+        "record_context_feedback",
+        "create_correction",
+        "store_conversation",
+        "get_current_time",
+        "get_weather_open_meteo"
+      ],
+      "review": [
+        "prime_context",
+        "build_context_portfolio",
+        "expand_context_evidence",
+        "record_context_feedback",
+        "get_context_portfolio_stats",
+        "compress_context_artifact",
+        "create_correction",
+        "update_memory",
+        "store_conversation",
+        "get_recent_context",
+        "get_current_time",
+        "create_reminder",
+        "intent_anchor",
+        "create_appointment",
+        "get_system_health"
+      ]
+    },
+    "permissions": [
+      {
+        "action": "ask",
+        "pattern": "*",
+        "permission": "edit",
+        "precedence": 10,
+        "source": "aider-quality-core"
+      },
+      {
+        "action": "allow",
+        "pattern": "git diff*",
+        "permission": "bash",
+        "precedence": 20,
+        "source": "safe-git"
+      },
+      {
+        "action": "allow",
+        "pattern": "python -m pytest*",
+        "permission": "bash",
+        "precedence": 20,
+        "source": "validation"
+      },
+      {
+        "action": "ask",
+        "pattern": "*",
+        "permission": "bash",
+        "precedence": 10,
+        "source": "opencode-style-default"
+      },
+      {
+        "action": "deny",
+        "pattern": "*",
+        "permission": "network",
+        "precedence": 30,
+        "source": "sandbox-default"
+      },
+      {
+        "action": "deny",
+        "pattern": "*",
+        "permission": "external_directory",
+        "precedence": 30,
+        "source": "workspace-boundary"
+      },
+      {
+        "action": "ask",
+        "pattern": "*",
+        "permission": "merge_to_main_workspace",
+        "precedence": 40,
+        "source": "review-gate"
+      }
+    ],
+    "product_base": "aider",
+    "schema_version": 1
+  },
+  "portfolio": {
+    "context": "[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run run-1\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run run-1\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run run-1\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062320-a75c143f\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062320-a75c143f\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062320-a75c143f\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062944-aae8ca22\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062944-aae8ca22\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062944-aae8ca22\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063746-eca07ae1\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063746-eca07ae1\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063746-eca07ae1\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063822-3ca25316\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063822-3ca25316\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063822-3ca25316\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164734-bd477b88\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164734-bd477b88\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164734-bd477b88\n[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164735-02549407\n[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164735-02549407\n[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164735-02549407",
+    "estimated_tokens": 458,
+    "evidence_handles": [],
+    "included": [
+      "Checkpoint writeback prepared: checkpoint-review.md for run run-1",
+      "Checkpoint writeback prepared: checkpoint-execute.md for run run-1",
+      "Checkpoint writeback prepared: checkpoint-plan.md for run run-1",
+      "Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062320-a75c143f",
+      "Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062320-a75c143f",
+      "Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062320-a75c143f",
+      "Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062944-aae8ca22",
+      "Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062944-aae8ca22",
+      "Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062944-aae8ca22",
+      "Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063746-eca07ae1",
+      "Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063746-eca07ae1",
+      "Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063746-eca07ae1",
+      "Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063822-3ca25316",
+      "Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063822-3ca25316",
+      "Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063822-3ca25316",
+      "Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164734-bd477b88",
+      "Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164734-bd477b88",
+      "Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164734-bd477b88",
+      "Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164735-02549407",
+      "Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164735-02549407",
+      "Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164735-02549407"
+    ],
+    "memory_atom_ids": [
+      "mem_9e5c45f31af6920c",
+      "mem_341db8f7f11090a5",
+      "mem_94047a36798d0fd8",
+      "mem_6b1f3e5b9c7ec85d",
+      "mem_3fb400f9b70e5f9b",
+      "mem_59592432cac65406",
+      "mem_70ef88ff81ddbd39",
+      "mem_e1963087391ea37f",
+      "mem_6361777b5cd579ac",
+      "mem_6472e989a75e4d1d",
+      "mem_8ab32ea855fe4590",
+      "mem_53ce0443cec60959",
+      "mem_1bb0583076fe754c",
+      "mem_2665206580347058",
+      "mem_b0040fa67f5da921",
+      "mem_07b05c4ddbf9476d",
+      "mem_ab6ff91612320b7a",
+      "mem_ded632d3961fbfb9",
+      "mem_31944577bfe55c5e",
+      "mem_329e7c5517184c3e",
+      "mem_9591f6fc6b0f2c36"
+    ],
+    "mode": "fast",
+    "omitted": [],
+    "phase": "execute",
+    "source": "persistent_store"
+  },
+  "readiness": {
+    "grade": "ready",
+    "has_checkpoint": true,
+    "has_review_package": true,
+    "memory_writeback_present": true,
+    "mutation_present": true,
+    "reasons": [],
+    "score": 1.0,
+    "validation_passed": true
+  },
+  "repair_plan": {
+    "attempts": [],
+    "budget": {
+      "max_attempts": 3
+    }
+  },
+  "repair_result": null,
+  "run": {
+    "failure_reason": null,
+    "id": "mc-run-20260506164737-fc3706b1",
+    "model_profile": "local-model",
+    "permission_profile": "full-handoff",
+    "phase": "review",
+    "runtime_id": "mc-task-20260506164737-fc3706b1-mc-run-20260506164737-fc3706b1",
+    "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\mc-task-20260506164737-fc3706b1-mc-run-20260506164737-fc3706b1",
+    "state": "reviewing",
+    "task_id": "mc-task-20260506164737-fc3706b1",
+    "validation_profile": "default-validation"
+  },
+  "runtime_files": [
+    "aider-output.txt",
+    "checkpoint-execute.md",
+    "checkpoint-plan.md",
+    "checkpoint-review.md",
+    "generated-implementation.md",
+    "generated-spec.md",
+    "generated-test.txt",
+    "memory.md",
+    "review-package.md",
+    "supervisor-report.md",
+    "validation.txt"
+  ],
+  "schema_version": 1,
+  "task": {
+    "autonomy_level": "full_handoff",
+    "id": "mc-task-20260506164737-fc3706b1",
+    "linked_prd": null,
+    "linked_specs": [],
+    "objective": "hola",
+    "repo_path": "C:\\dev\\dev4",
+    "status": "open",
+    "title": "Headless Handoff"
+  },
+  "timeline": [
+    {
+      "id": "event-1",
+      "kind": "context_bootstrapped",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 1,
+      "summary": "NEMO context portfolio bootstrapped."
+    },
+    {
+      "id": "event-2",
+      "kind": "plan_created",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 2,
+      "summary": "Created handoff plan with 11 steps."
+    },
+    {
+      "id": "event-3",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-plan.md",
+      "phase": "plan",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 3,
+      "summary": "Created plan checkpoint."
+    },
+    {
+      "id": "event-4",
+      "kind": "permission_decided",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 4,
+      "summary": "Full Handoff permissions preapproved in sandbox."
+    },
+    {
+      "id": "event-5",
+      "kind": "mutation_created",
+      "payload_ref": "aider-output.txt",
+      "phase": "execute",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 5,
+      "summary": "changed 1 file(s) through fake-aider"
+    },
+    {
+      "id": "event-6",
+      "kind": "validation_run",
+      "payload_ref": null,
+      "phase": "execute",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 6,
+      "summary": "validation passed=1/1 required_ok=True"
+    },
+    {
+      "id": "event-7",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "execute",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 7,
+      "summary": "Created execute checkpoint."
+    },
+    {
+      "id": "event-8",
+      "kind": "review_package_created",
+      "payload_ref": null,
+      "phase": "review",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 8,
+      "summary": "Created review package."
+    },
+    {
+      "id": "event-9",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-review.md",
+      "phase": "review",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 9,
+      "summary": "Created review checkpoint."
+    },
+    {
+      "id": "event-10",
+      "kind": "memory_written",
+      "payload_ref": null,
+      "phase": "review",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 10,
+      "summary": "Prepared NEMO writeback summary."
+    },
+    {
+      "id": "event-11",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 11,
+      "summary": "Supervisor heartbeat at minute 15: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-12",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 12,
+      "summary": "Supervisor heartbeat at minute 30: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-13",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 13,
+      "summary": "Supervisor heartbeat at minute 45: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-14",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "mc-run-20260506164737-fc3706b1",
+      "sequence": 14,
+      "summary": "Supervisor heartbeat at minute 60: validation and checkpoint trail remain replayable."
+    }
+  ],
+  "validation": {
+    "results": [
+      {
+        "command": {
+          "command": "python -m unittest",
+          "required": true
+        },
+        "output": "simulated pass",
+        "returncode": null,
+        "status": "passed"
+      }
+    ]
+  }
+}

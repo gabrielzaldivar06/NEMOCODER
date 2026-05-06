@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+apps/mission-control/node_modules/
+apps/mission-control/dist/
+apps/mission-control/tsconfig.tsbuildinfo

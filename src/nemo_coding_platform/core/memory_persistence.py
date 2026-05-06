@@ -275,6 +275,33 @@ class PersistentMemoryStore:
             feedback_count = connection.execute("SELECT COUNT(*) FROM feedback").fetchone()[0]
         return {"atom_count": int(atom_count), "evidence_count": int(evidence_count), "feedback_count": int(feedback_count)}
 
+    def list_atoms_by_id(self, atom_ids: tuple[str, ...]) -> tuple[StoredMemoryAtom, ...]:
+        if not atom_ids:
+            return ()
+        placeholders = ",".join("?" for _ in atom_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM memory_atoms WHERE id IN ({placeholders}) ORDER BY importance DESC, created_at DESC",
+                atom_ids,
+            ).fetchall()
+        return tuple(self._row_to_atom(row) for row in rows)
+
+    def list_evidence(self, *, limit: int = 20) -> tuple[StoredEvidence, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM evidence ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return tuple(self._row_to_evidence(row) for row in rows)
+
+    def list_feedback(self, *, limit: int = 20) -> tuple[dict[str, Any], ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM feedback ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return tuple({key: row[key] for key in row.keys()} for row in rows)
+
     def _mark_atoms_accessed(self, atom_ids: tuple[str, ...]) -> None:
         if not atom_ids:
             return

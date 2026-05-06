@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
-import sys
 from pathlib import Path
 
 from nemo_coding_platform.core.architecture import default_blueprint
@@ -13,6 +12,7 @@ from nemo_coding_platform.core.headless_handoff import HandoffRequest, build_han
 from nemo_coding_platform.core.headless_runner import execute_headless_handoff
 from nemo_coding_platform.core.long_handoff_supervisor import LongHandoffBudget, build_long_handoff_resume_plan, execute_long_handoff_continuation, execute_long_handoff_supervisor
 from nemo_coding_platform.core.memory import MemoryAtomType, nemo_tools_for_phase
+from nemo_coding_platform.core.mission_control import build_mission_control_state
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.model_config import ModelProfile, default_model_profile
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan, QualityMutationEngine
@@ -20,8 +20,9 @@ from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
 from nemo_coding_platform.core.orchestrator import DEFAULT_WORKFLOW, ReviewDecision, SupervisedWorkflowRunner
 from nemo_coding_platform.core.persistence import build_long_handoff_lineage, build_replay_summary, evaluate_long_handoff_continuation_policy, evaluate_long_handoff_memory_policy, load_headless_result_json, save_headless_result_json, summarize_persisted_result
-from nemo_coding_platform.core.review_gate import apply_merge_plan, build_merge_plan
+from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
 from nemo_coding_platform.core.task_run import EventKind
+from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.workspace import Workspace
 
 
@@ -57,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     headless_run.add_argument("--repo", default=".")
     headless_run.add_argument("--acceptance", action="append")
     headless_run.add_argument("--validation", action="append")
+    headless_run.add_argument("--validation-policy", choices=("none", "smoke", "targeted", "full"), default="smoke")
     headless_run.add_argument("--validation-python", action="append", default=[])
     headless_run.add_argument("--fail-validation", action="append", default=[])
     headless_run.add_argument("--real-validation", action="store_true")
@@ -75,8 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
     long_run = subparsers.add_parser("long-handoff-run", help="Run a supervised long Full Handoff slice with budgets and heartbeats")
     long_run.add_argument("objective")
     long_run.add_argument("--repo", default=".")
+    long_run.add_argument("--task-id", default="task-1")
+    long_run.add_argument("--run-id", default="run-1")
     long_run.add_argument("--acceptance", action="append")
     long_run.add_argument("--validation", action="append")
+    long_run.add_argument("--validation-policy", choices=("none", "smoke", "targeted", "full"), default="smoke")
     long_run.add_argument("--validation-python", action="append", default=[])
     long_run.add_argument("--real-validation", action="store_true")
     long_run.add_argument("--validation-cwd", default="runtime")
@@ -108,14 +113,34 @@ def build_parser() -> argparse.ArgumentParser:
     review_run.add_argument("path")
     review_run.add_argument("--save-plan", help="Write merge-plan.md to this path")
     review_run.add_argument("--json", action="store_true")
+    mission_control = subparsers.add_parser("mission-control-state", help="Export Desktop Mission Control state from persisted runs")
+    mission_control.add_argument("--repo", default=".")
+    mission_control.add_argument("--runtimes", default=".nemo-runtimes")
+    mission_control.add_argument("--save-json", help="Write Mission Control state JSON to this path")
+    mission_control.add_argument("--json", action="store_true")
+    mission_server = subparsers.add_parser("mission-control-server", help="Run the local Desktop Mission Control API bridge")
+    mission_server.add_argument("--repo", default=".")
+    mission_server.add_argument("--runtimes", default=".nemo-runtimes")
+    mission_server.add_argument("--host", default="127.0.0.1")
+    mission_server.add_argument("--port", type=int, default=8787)
+    mission_server.add_argument("--apply-results", default=".nemo-runtimes/mission-control/apply-results")
+    mission_server.add_argument("--memory-db", default=DEFAULT_MEMORY_DB)
+    mission_server.add_argument("--no-memory-db", action="store_true")
     apply_run = subparsers.add_parser("apply-run-json", help="Apply a ready run from sandbox to repo after explicit review approval")
     apply_run.add_argument("path")
     apply_run.add_argument("--approve-review", action="store_true")
     apply_run.add_argument("--save-plan", help="Write merge-plan.md to this path before applying")
     apply_run.add_argument("--save-apply-report", help="Write apply-report.md to this path after applying")
+    apply_run.add_argument("--save-apply-json", help="Write structured apply result JSON for rollback")
+    apply_run.add_argument("--backup-dir", help="Directory for update backups before applying")
     apply_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for apply writeback")
     apply_run.add_argument("--no-memory-db", action="store_true", help="Skip NEMO apply writeback")
     apply_run.add_argument("--json", action="store_true")
+    rollback_apply = subparsers.add_parser("rollback-apply-json", help="Rollback a structured apply result JSON after explicit review approval")
+    rollback_apply.add_argument("path")
+    rollback_apply.add_argument("--approve-review", action="store_true")
+    rollback_apply.add_argument("--save-rollback-report", help="Write rollback-report.md to this path after rollback")
+    rollback_apply.add_argument("--json", action="store_true")
     resume_long = subparsers.add_parser("long-handoff-resume", help="Build a resume plan from a paused long handoff JSON file")
     resume_long.add_argument("path")
     resume_long.add_argument("--save-json")
@@ -125,6 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     continue_long.add_argument("--objective")
     continue_long.add_argument("--acceptance", action="append")
     continue_long.add_argument("--validation", action="append")
+    continue_long.add_argument("--validation-policy", choices=("none", "smoke", "targeted", "full"), default="smoke")
     continue_long.add_argument("--validation-python", action="append", default=[])
     continue_long.add_argument("--real-validation", action="store_true")
     continue_long.add_argument("--validation-cwd", default="runtime")
@@ -260,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
             prd=args.objective,
             repo_path=args.repo,
             acceptance_criteria=tuple(args.acceptance or ["passes validation"]),
-            validation_commands=tuple(args.validation or ([f"{sys.executable} --version"] if args.validation_python else ["python -m unittest"])),
+            validation_commands=validation_commands_for_policy(args.validation_policy, tuple(args.validation or ())),
         )
         result = execute_headless_handoff(
             request,
@@ -273,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout,
             target_files=tuple(args.target_file),
             validation_python_scripts=tuple(args.validation_python),
+            validation_policy=args.validation_policy,
             bounded_simulation=args.bounded_simulation,
             nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db),
         )
@@ -295,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             prd=args.objective,
             repo_path=args.repo,
             acceptance_criteria=tuple(args.acceptance or ["passes validation"]),
-            validation_commands=tuple(args.validation or ([f"{sys.executable} --version"] if args.validation_python else ["python -m unittest"])),
+            validation_commands=validation_commands_for_policy(args.validation_policy, tuple(args.validation or ())),
         )
         result = execute_long_handoff_supervisor(
             request,
@@ -306,6 +333,8 @@ def main(argv: list[str] | None = None) -> int:
                 token_budget=args.token_budget,
                 pause_after_minutes=args.pause_after_minutes,
             ),
+            task_id=args.task_id,
+            run_id=args.run_id,
             real_validation=args.real_validation,
             validation_cwd=args.validation_cwd,
             provider_mode=args.provider,
@@ -314,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout,
             target_files=tuple(args.target_file),
             validation_python_scripts=tuple(args.validation_python),
+            validation_policy=args.validation_policy,
             nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db),
         )
         score = score_headless_result(result)
@@ -376,6 +406,30 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(plan.to_markdown(), end="")
         return 0 if plan.mergeable else 1
+    if args.command == "mission-control-state":
+        state = build_mission_control_state(args.repo, args.runtimes)
+        if args.save_json:
+            target = Path(args.save_json)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+        if args.json:
+            print(json.dumps(state, sort_keys=True))
+        else:
+            print(f"product={state['product']} runs={len(state['runs'])} approvals={len(state['approval_queue'])}")
+            for run in state["runs"][:10]:
+                print(f"- {run['review_status']} {run['task_id']} {run['run_id']} changes={len(run['changed_files'])}")
+        return 0
+    if args.command == "mission-control-server":
+        from nemo_coding_platform.mission_control_server import MissionControlServerConfig, run_server
+
+        config = MissionControlServerConfig.from_paths(
+            repo=args.repo,
+            runtimes=args.runtimes,
+            apply_results=args.apply_results,
+            memory_db=None if args.no_memory_db else args.memory_db,
+        )
+        run_server(args.host, args.port, config)
+        return 0
     if args.command == "apply-run-json":
         plan = build_merge_plan(load_headless_result_json(args.path))
         if args.save_plan:
@@ -383,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(plan.to_markdown(), encoding="utf-8")
         try:
-            applied = apply_merge_plan(plan, approve_review=args.approve_review)
+            applied = apply_merge_plan(plan, approve_review=args.approve_review, backup_dir=args.backup_dir)
         except PermissionError as error:
             payload = {"error": str(error), "mergeable": plan.mergeable, "risk_flags": list(plan.risk_flags)}
             if args.json:
@@ -395,11 +449,35 @@ def main(argv: list[str] | None = None) -> int:
             target = Path(args.save_apply_report)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(applied.to_markdown(), encoding="utf-8")
+        if args.save_apply_json:
+            target = Path(args.save_apply_json)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(applied.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
         _write_apply_memory(applied, args.memory_db, args.no_memory_db)
         if args.json:
             print(json.dumps(applied.to_dict(), sort_keys=True))
         else:
             print(f"applied={','.join(applied.applied_files)}")
+        return 0
+    if args.command == "rollback-apply-json":
+        applied = MergeApplyResult.from_dict(json.loads(Path(args.path).read_text(encoding="utf-8")))
+        try:
+            rollback = rollback_apply_result(applied, approve_review=args.approve_review)
+        except (PermissionError, FileNotFoundError) as error:
+            payload = {"error": str(error)}
+            if args.json:
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(f"error={error}")
+            return 1
+        if args.save_rollback_report:
+            target = Path(args.save_rollback_report)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(rollback.to_markdown(), encoding="utf-8")
+        if args.json:
+            print(json.dumps(rollback.to_dict(), sort_keys=True))
+        else:
+            print(f"restored={','.join(rollback.restored_files)} deleted={','.join(rollback.deleted_files)}")
         return 0
     if args.command == "long-handoff-resume":
         resume = build_long_handoff_resume_plan(load_headless_result_json(args.path)).to_dict()
@@ -429,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_payload,
                 objective=args.objective,
                 acceptance_criteria=tuple(args.acceptance) if args.acceptance else None,
-                validation_commands=tuple(args.validation or ([f"{sys.executable} --version"] if args.validation_python else ["python -m unittest"])),
+                validation_commands=validation_commands_for_policy(args.validation_policy, tuple(args.validation or ())),
                 budget=LongHandoffBudget(
                     max_runtime_minutes=args.max_runtime_minutes,
                     heartbeat_minutes=args.heartbeat_minutes,
@@ -445,6 +523,7 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_seconds=args.timeout,
                 target_files=tuple(args.target_file),
                 validation_python_scripts=tuple(args.validation_python),
+                validation_policy=args.validation_policy,
                 nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db),
             )
         except ValueError as error:

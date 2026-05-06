@@ -1,0 +1,35 @@
+{
+  "budget": {
+    "heartbeat_minutes": 10,
+    "max_heartbeats": 1,
+    "max_runtime_minutes": 30,
+    "pause_after_minutes": null,
+    "token_budget": 8000
+  },
+  "checkpoint_refs": [
+    "checkpoint-plan.md",
+    "checkpoint-execute.md",
+    "checkpoint-review.md"
+  ],
+  "escalation_flags": [],
+  "heartbeat_refs": [
+    "checkpoint-execute.md"
+  ],
+  "memory_writeback_handles": [
+    "in-memory-evidence-7"
+  ],
+  "model_profile": "local-model",
+  "objective": "Resume paused long handoff from policy-task:policy-root:minute-20. Continue objective: Build feature",
+  "provider": "fake-aider",
+  "provider_mode": "fake",
+  "repo_path": ".",
+  "resume_minute": null,
+  "resume_token": null,
+  "run_id": "policy-root-resume-20",
+  "schema_version": 1,
+  "task_id": "policy-task-resume",
+  "validation_commands": [
+    "python -m unittest"
+  ],
+  "validation_policy": "smoke"
+}

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nemo_coding_platform.core.aider_interface import AiderProvider, FakeAiderProvider, MutationRequest, MutationResult, SubprocessAiderProvider, apply_mutation_request
+from nemo_coding_platform.core.aider_interface import AiderProvider, MutationRequest, MutationResult, apply_mutation_request, create_aider_provider
 from nemo_coding_platform.core.checkpoint import build_checkpoint_markdown
 from nemo_coding_platform.core.contracts import ExecutionPhase, RuntimeState
 from nemo_coding_platform.core.headless_handoff import HandoffRequest, build_handoff_plan, validate_handoff_request
@@ -18,6 +18,7 @@ from nemo_coding_platform.core.product_factory import get_platform_info
 from nemo_coding_platform.core.repair import RepairBudget, RepairPlan
 from nemo_coding_platform.core.repair_engine import RepairRunResult, run_repair_loop
 from nemo_coding_platform.core.review_package import ReviewPackage, build_review_package
+from nemo_coding_platform.core.runtime import AgentRuntime
 from nemo_coding_platform.core.task_run import (
     AppendOnlyTimeline,
     Artifact,
@@ -29,9 +30,9 @@ from nemo_coding_platform.core.task_run import (
     RunEvent,
     Task,
 )
-from nemo_coding_platform.core.validation import ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
+from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
 from nemo_coding_platform.core.workspace import Workspace
-from nemo_coding_platform.core.worktree_runtime import create_worktree_runtime, reset_runtime_dirs, snapshot_runtime_files, write_runtime_file
+from nemo_coding_platform.core.worktree_runtime import snapshot_runtime_files, write_runtime_file
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,13 +93,14 @@ def execute_headless_handoff(
     timeout_seconds: float = 30.0,
     target_files: tuple[str, ...] = (),
     validation_python_scripts: tuple[str, ...] = (),
+    validation_policy: str = "smoke",
     bounded_simulation: bool = False,
 ) -> HeadlessRunResult:
     validate_handoff_request(request)
     plan = build_handoff_plan(request)
     task = Task(task_id, request.repo_path, "Headless Handoff", request.prd, AutonomyLevel.FULL_HANDOFF)
-    runtime_spec = create_worktree_runtime(task.id, run_id, ".nemo-runtimes")
-    runtime = reset_runtime_dirs(runtime_spec)
+    agent_runtime = AgentRuntime.create(task.id, run_id, ".nemo-runtimes")
+    runtime = agent_runtime.worktree
     write_runtime_file(runtime, "generated-spec.md", request.prd)
     write_runtime_file(runtime, "generated-test.txt", "\n".join(request.acceptance_criteria))
     adapter = nemo_adapter or InMemoryNemoAdapter()
@@ -120,15 +122,15 @@ def execute_headless_handoff(
         task.id,
         RuntimeState.REVIEWING,
         ExecutionPhase.REVIEW,
-        runtime.runtime_id,
+        agent_runtime.runtime_id,
         str(runtime.worktree_path),
         "local-model",
         "full-handoff",
-        "default-validation",
+        validation_policy,
     )
 
     profile = model_profile or default_model_profile()
-    provider = mutation_provider or (SubprocessAiderProvider(aider_command, cwd=Path("product/aider")) if provider_mode == "subprocess" else FakeAiderProvider())
+    provider = mutation_provider or create_aider_provider(provider_mode, aider_command, cwd=Path("product/aider"))
     engine = QualityMutationEngine(Workspace.from_path(runtime.worktree_path))
     mutation_request = MutationRequest(
         request.prd,
@@ -161,6 +163,9 @@ def execute_headless_handoff(
         validation_commands = validation_commands + generated_commands
     mutation_changed = bool(mutation_result.changed_files or mutation_result.applied_files)
     validation = (
+        ValidationSuiteResult((ValidationResult(ValidationCommand(VALIDATION_SKIPPED_COMMAND, required=False), ValidationStatus.SKIPPED, "validation skipped by policy:none"),))
+        if validation_policy == "none"
+        else
         ValidationSuiteResult(
             (
                 ValidationResult(
@@ -210,6 +215,21 @@ def execute_headless_handoff(
     )
     runtime_files = snapshot_runtime_files(runtime)
     risk_flags = tuple(filter(None, ("validation_failure" if not validation.passed else "", "no_changed_files" if not effective_mutation_result.changed_files and not effective_mutation_result.applied_files else "")))
+    aider_output = "\n".join(
+        (
+            f"provider={mutation_result.provider}",
+            f"provider_mode={mutation_result.provider_mode}",
+            f"returncode={mutation_result.returncode if mutation_result.returncode is not None else ''}",
+            f"duration_ms={mutation_result.duration_ms}",
+            "",
+            "# stdout",
+            mutation_result.stdout or "",
+            "",
+            "# stderr",
+            mutation_result.stderr or "",
+        )
+    )
+    write_runtime_file(runtime, "aider-output.txt", aider_output)
 
     checkpoint_inputs = (
         (
@@ -275,7 +295,7 @@ def execute_headless_handoff(
             (ExecutionPhase.PLAN, EventKind.PLAN_CREATED, f"Created handoff plan with {len(plan.steps)} steps.", None),
             (ExecutionPhase.PLAN, EventKind.CHECKPOINT, "Created plan checkpoint.", "checkpoint-plan.md"),
             (ExecutionPhase.PLAN, EventKind.PERMISSION_DECIDED, "Full Handoff permissions preapproved in sandbox.", None),
-            (ExecutionPhase.EXECUTE, EventKind.MUTATION_CREATED, mutation_result.summary, None),
+            (ExecutionPhase.EXECUTE, EventKind.MUTATION_CREATED, mutation_result.summary, "aider-output.txt"),
             (ExecutionPhase.EXECUTE, EventKind.VALIDATION_RUN, validation.summary(), None),
             (ExecutionPhase.EXECUTE, EventKind.CHECKPOINT, "Created execute checkpoint.", "checkpoint-execute.md"),
             (ExecutionPhase.REVIEW, EventKind.REVIEW_PACKAGE_CREATED, "Created review package.", None),
@@ -287,7 +307,7 @@ def execute_headless_handoff(
             (ExecutionPhase.PLAN, EventKind.CONTEXT_BOOTSTRAPPED, "NEMO context portfolio bootstrapped.", None),
             (ExecutionPhase.PLAN, EventKind.PLAN_CREATED, f"Created handoff plan with {len(plan.steps)} steps.", None),
             (ExecutionPhase.PLAN, EventKind.PERMISSION_DECIDED, "Full Handoff permissions preapproved in sandbox.", None),
-            (ExecutionPhase.EXECUTE, EventKind.MUTATION_CREATED, mutation_result.summary, None),
+            (ExecutionPhase.EXECUTE, EventKind.MUTATION_CREATED, mutation_result.summary, "aider-output.txt"),
             (ExecutionPhase.EXECUTE, EventKind.VALIDATION_RUN, validation.summary(), None),
             (ExecutionPhase.EXECUTE, EventKind.CHECKPOINT, "Created unattended checkpoint.", "checkpoint.md"),
             (ExecutionPhase.REVIEW, EventKind.REVIEW_PACKAGE_CREATED, "Created review package.", None),
@@ -305,6 +325,7 @@ def execute_headless_handoff(
         Artifact.from_content("artifact-spec", run.id, ArtifactType.SPEC, "generated-spec.md", "Generated specs", request.prd),
         Artifact.from_content("artifact-test", run.id, ArtifactType.TEST, "generated-test.txt", "Generated tests", "\n".join(request.acceptance_criteria)),
         Artifact.from_content("artifact-patch", run.id, ArtifactType.PATCH, "patch.diff", f"Applied provider mutation files={len(effective_mutation_result.changed_files)}", patch_content),
+        Artifact.from_content("artifact-aider-output", run.id, ArtifactType.AIDER_OUTPUT, "aider-output.txt", f"Aider output returncode={mutation_result.returncode}", aider_output),
         Artifact.from_content("artifact-validation", run.id, ArtifactType.VALIDATION, "validation.txt", "Validation summary", format_validation_report(validation)),
         Artifact.from_content("artifact-memory", run.id, ArtifactType.MEMORY_SUMMARY, "memory.md", "Memory writeback", f"NEMO writeback prepared. runtime_files={','.join(runtime_files)}"),
     ) + checkpoint_artifacts

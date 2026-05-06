@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from platform import platform as platform_name
+from platform import python_version
 from typing import Any
 
 from nemo_coding_platform.core.context_portfolio import build_context_portfolio, make_portfolio_request
@@ -49,6 +53,17 @@ class InMemoryNemoAdapter:
             return build_context_portfolio(request).to_payload()
         if tool_name == "expand_context_evidence":
             return {"handle": arguments.get("handle"), "content": "in-memory evidence expansion unavailable in MVP"}
+        if tool_name == "get_current_time":
+            now = datetime.now(UTC).isoformat()
+            return {"utc": now, "iso": now, "timezone": "UTC"}
+        if tool_name == "get_environment_info":
+            return {"cwd": str(Path.cwd()), "platform": platform_name(), "python_version": python_version()}
+        if tool_name == "get_recent_context":
+            return {"context": "", "messages": (), "source": "in_memory_unavailable"}
+        if tool_name == "get_system_health":
+            return {"status": "ok", "source": "in_memory", "calls": len(self.calls)}
+        if tool_name == "compress_context_artifact":
+            return {"handle": f"in-memory-evidence-{len(self.calls) + 1}", "compact_claim": str(arguments.get("title", "artifact")), "stored": False}
         if tool_name == "store_conversation":
             return {"stored": True, "summary": arguments.get("summary", "")}
         return {"tool": tool_name, "accepted": True}
@@ -80,6 +95,14 @@ class PersistentNemoAdapter:
             return {"context": _context_from_atoms(atoms), "portfolio": portfolio, "source": "persistent_store"}
         if tool_name == "build_context_portfolio":
             return self._build_context_portfolio_payload(phase, arguments)
+        if tool_name == "get_recent_context":
+            topic = _optional_string(arguments.get("topic", arguments.get("session_id")))
+            atoms = self.store.search_atoms(
+                topic=topic,
+                atom_types=(MemoryAtomType.SESSION_SUMMARY, MemoryAtomType.ARTIFACT_STATE),
+                limit=int(arguments.get("limit", 10)),
+            )
+            return {"context": _context_from_atoms(atoms), "messages": [_atom_payload(atom) for atom in atoms], "source": "persistent_store"}
         if tool_name == "expand_context_evidence":
             handle = str(arguments.get("handle", ""))
             evidence = self.store.expand_evidence(handle)
@@ -104,6 +127,27 @@ class PersistentNemoAdapter:
             return {"stored": True, "feedback_id": feedback_id}
         if tool_name == "get_context_portfolio_stats":
             return self.store.stats()
+        if tool_name == "get_current_time":
+            now = datetime.now(UTC).isoformat()
+            return {"utc": now, "iso": now, "timezone": "UTC"}
+        if tool_name == "get_environment_info":
+            return {
+                "cwd": str(Path.cwd()),
+                "platform": platform_name(),
+                "python_version": python_version(),
+                "memory_db": str(self.store.db_path),
+                "memory_db_exists": self.store.db_path.exists(),
+            }
+        if tool_name == "get_system_health":
+            stats = self.store.stats()
+            return {
+                "status": "ok",
+                "source": "persistent_store",
+                "memory_db": str(self.store.db_path),
+                "memory_db_exists": self.store.db_path.exists(),
+                "calls_recorded": len(self.calls),
+                **stats,
+            }
         if tool_name == "compress_context_artifact":
             content = str(arguments.get("content", ""))
             compact_claim = str(arguments.get("title", arguments.get("compact_claim", content[:160])))

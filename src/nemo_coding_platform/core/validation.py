@@ -15,6 +15,16 @@ class ValidationStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class ValidationPolicy(StrEnum):
+    NONE = "none"
+    SMOKE = "smoke"
+    TARGETED = "targeted"
+    FULL = "full"
+
+
+VALIDATION_SKIPPED_COMMAND = "validation skipped by policy:none"
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationCommand:
     command: str
@@ -73,6 +83,17 @@ def simulate_validation(commands: tuple[str, ...], fail_commands: tuple[str, ...
         for command in commands
     )
     return ValidationSuiteResult(results)
+
+
+def validation_commands_for_policy(policy: str, explicit_commands: tuple[str, ...] = ()) -> tuple[str, ...]:
+    active_policy = ValidationPolicy(policy)
+    if explicit_commands:
+        return explicit_commands
+    if active_policy == ValidationPolicy.NONE:
+        return (VALIDATION_SKIPPED_COMMAND,)
+    if active_policy == ValidationPolicy.SMOKE:
+        return (f"{sys.executable} --version",)
+    return ("python -m unittest",)
 
 
 def run_validation_suite(
