@@ -1,0 +1,16 @@
+{
+  "can_resume": true,
+  "checkpoint_refs": [
+    "checkpoint-plan.md",
+    "checkpoint-execute.md",
+    "checkpoint-review.md",
+    "checkpoint-execute.md",
+    "checkpoint-execute.md"
+  ],
+  "next_action": "Resume supervised handoff from minute 20 using latest replayable checkpoint.",
+  "reasons": [],
+  "resume_minute": 20,
+  "resume_token": "task-1:run-1:minute-20",
+  "run_id": "run-1",
+  "task_id": "task-1"
+}

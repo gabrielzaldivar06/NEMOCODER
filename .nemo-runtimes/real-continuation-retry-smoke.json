@@ -1,0 +1,709 @@
+{
+  "artifacts": [
+    {
+      "artifact_type": "spec",
+      "content_hash": "f0ac1612d9eb751c1dc9e1a8206ce25f5c474f2777dd2503f79cb8ef35eb46f8",
+      "id": "artifact-spec",
+      "path": "generated-spec.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Generated specs"
+    },
+    {
+      "artifact_type": "test",
+      "content_hash": "320d67893a4839430c7fc8b866d7de165bbbfb374f50a770a472fd3f1b6e0519",
+      "id": "artifact-test",
+      "path": "generated-test.txt",
+      "run_id": "run-1-resume-20",
+      "summary": "Generated tests"
+    },
+    {
+      "artifact_type": "patch",
+      "content_hash": "0d9b87b1035561aa276c873b2aa879eed401e6860025f412491e1c4d2ea29419",
+      "id": "artifact-patch",
+      "path": "patch.diff",
+      "run_id": "run-1-resume-20",
+      "summary": "Applied provider mutation files=1"
+    },
+    {
+      "artifact_type": "validation",
+      "content_hash": "caefd5b87c4be26141ccbca0f3ec0cb6aeb6b0abba233e614d2873f040dc886e",
+      "id": "artifact-validation",
+      "path": "validation.txt",
+      "run_id": "run-1-resume-20",
+      "summary": "Validation summary"
+    },
+    {
+      "artifact_type": "memory_summary",
+      "content_hash": "cf39c1188dfbc90c1473efd4730aaf3b27e1cf54aa5b65857fcb50ce814a031e",
+      "id": "artifact-memory",
+      "path": "memory.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Memory writeback"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "e3a0d4d116893fc40d6bb294463f49f66240d3f9a1affbad52b724283b0be42c",
+      "id": "artifact-checkpoint-1",
+      "path": "checkpoint-plan.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "8cdfd0ad95bcafcb814bb84d61de5cd4f0c2ee82f2bc3b9051edf458797395e9",
+      "id": "artifact-checkpoint-2",
+      "path": "checkpoint-execute.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "8e92944cb30517dab9cf72e7e22e98f77ff5edd19a63027dc8227f460b4d6548",
+      "id": "artifact-checkpoint-3",
+      "path": "checkpoint-review.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "review_package",
+      "content_hash": "989dad2ffeabaaa964cd6b92f19d5328613c18fbab0b6383939f7ea0f8596885",
+      "id": "artifact-review",
+      "path": "review-package.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Final review package"
+    },
+    {
+      "artifact_type": "supervisor",
+      "content_hash": "d77ba155b0a14f0e6bf8fc507d90173032f5b97059f8fc7e37d51dcd782aa8a0",
+      "id": "artifact-supervisor",
+      "path": "supervisor-report.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Long handoff supervisor budget and heartbeats"
+    },
+    {
+      "artifact_type": "supervisor",
+      "content_hash": "9be0c573b9b9bd73b200ef95f3502b856816bfc5b3f7b68d035b896bcc79a096",
+      "id": "artifact-continuation-link",
+      "path": "continuation-link.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Long handoff continuation link"
+    }
+  ],
+  "memory_traces": [
+    {
+      "evidence_handle": null,
+      "id": "mem-1",
+      "memory_ids": [],
+      "nemo_tool": "prime_context",
+      "risk": "read_only",
+      "run_id": "run-1-resume-20",
+      "suite": "startup_context",
+      "summary": "Loaded startup context."
+    },
+    {
+      "evidence_handle": null,
+      "id": "mem-2",
+      "memory_ids": [],
+      "nemo_tool": "build_context_portfolio",
+      "risk": "read_only",
+      "run_id": "run-1-resume-20",
+      "suite": "context_economy",
+      "summary": "Built context portfolio tokens=100."
+    },
+    {
+      "evidence_handle": null,
+      "id": "mem-3",
+      "memory_ids": [],
+      "nemo_tool": "store_conversation",
+      "risk": "memory_write",
+      "run_id": "run-1-resume-20",
+      "suite": "conversation",
+      "summary": "Prepared final writeback."
+    }
+  ],
+  "mutation_result": {
+    "applied_files": [],
+    "changed_files": [
+      "src/continue_literal.py"
+    ],
+    "diff_artifact": "--- before/src/continue_literal.py\n+++ after/src/continue_literal.py\n@@ -0,0 +1,7 @@\n+import sys\n+\n+def resumed(name):\n+    return f'Resumed, {name}'\n+\n+if __name__ == '__main__':\n+    print(resumed(sys.argv[1]))\n",
+    "dry_run_files": [],
+    "duration_ms": 55327,
+    "model_profile": {
+      "api_key_env": "LMSTUDIO_API_KEY",
+      "base_url": "http://localhost:1234/v1",
+      "model": "nvidia.agentic.coder-4b",
+      "name": "lmstudio-small-coder"
+    },
+    "plan": {
+      "approved": true,
+      "dry_run_completed": true,
+      "writes": []
+    },
+    "provider": "subprocess-aider",
+    "provider_mode": "subprocess",
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "Can't initialize prompt toolkit: No Windows console found. Are you running \ncmd.exe?\nCan't initialize prompt toolkit: No Windows console found. Are you running \ncmd.exe?\nTerminal does not support pretty output (UnicodeDecodeError)\nWarning for openai/nvidia.agentic.coder-4b: Unknown context window size and \ncosts, using sane defaults.\nYou can skip this check with --no-show-model-warnings\n\nhttps://aider.chat/docs/llms/warnings.html\n\nAider v0.86.3.dev+less\nModel: openai/nvidia.agentic.coder-4b with whole edit format\nGit repo: none\nRepo-map: disabled\n\n\n--------------\n\\u25ba **THINKING**\n\nI need to create the file src/continue_literal.py with the function resumed(name) that returns exactly \"Resumed, {name}\". The user wants me to output only the file listing for this new file. I'll write it in Spanish as requested.\n\nFirst line: path/to/filename.js - but wait, it's a Python file, not JS. The format says filename with any originally provided path; no extra markup. So just \"src/continue_literal.py\". Then opening ```, then entire content, then closing ```\n\nContent should be:\n```\nimport sys\n\ndef resumed(name):\n    return f'Resumed, {name}'\n\nif __name__ == '__main__':\n    print(resumed(sys.argv[1]))\n```\n\nBut wait, the user said \"Do not call any Resumed function or class.\" That's fine. Also \"return exactly the string f'Resumed, {name}'\". So the function returns that string.\n\nI'll output only this file listing.\n\n\n------------\n\\u25ba **ANSWER**\n\nsrc/continue_literal.py\n```\nimport sys\n\ndef resumed(name):\n    return f'Resumed, {name}'\n\nif __name__ == '__main__':\n    print(resumed(sys.argv[1]))\n```\nTokens: 833 sent, 295 received.\n\nsrc/continue_literal.py\nApplied edit to src/continue_literal.py",
+    "summary": "changed 1 file(s) through subprocess-aider"
+  },
+  "platform_info": {
+    "audit_event_capabilities": {
+      "default_checkpoint_minutes": 15,
+      "event_types": [
+        "phase_entered",
+        "tool_called",
+        "permission_decided",
+        "test_run",
+        "checkpoint_created",
+        "review_package_created"
+      ],
+      "risk_flags": [
+        "stale_memory",
+        "validation_failure",
+        "repeated_failure",
+        "permission_pressure",
+        "unresolved_risk"
+      ]
+    },
+    "autonomy": {
+      "assisted": {
+        "can_continue_without_human_interaction": false,
+        "can_run_background": false,
+        "can_spawn_subagents": true,
+        "can_write_main_workspace_directly": false,
+        "isolation": "worktree",
+        "level": "assisted",
+        "requires_checkpoints": false,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": false
+      },
+      "autonomous_sandbox": {
+        "can_continue_without_human_interaction": false,
+        "can_run_background": true,
+        "can_spawn_subagents": true,
+        "can_write_main_workspace_directly": false,
+        "isolation": "worktree",
+        "level": "autonomous_sandbox",
+        "requires_checkpoints": false,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": false
+      },
+      "background_agent": {
+        "can_continue_without_human_interaction": true,
+        "can_run_background": true,
+        "can_spawn_subagents": true,
+        "can_write_main_workspace_directly": false,
+        "isolation": "container",
+        "level": "background_agent",
+        "requires_checkpoints": true,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": false
+      },
+      "full_handoff": {
+        "can_continue_without_human_interaction": true,
+        "can_run_background": true,
+        "can_spawn_subagents": true,
+        "can_write_main_workspace_directly": false,
+        "isolation": "container",
+        "level": "full_handoff",
+        "requires_checkpoints": true,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": true
+      },
+      "manual": {
+        "can_continue_without_human_interaction": false,
+        "can_run_background": false,
+        "can_spawn_subagents": false,
+        "can_write_main_workspace_directly": false,
+        "isolation": "none",
+        "level": "manual",
+        "requires_checkpoints": false,
+        "requires_review_before_merge": true,
+        "requires_spec_driven_development": false
+      }
+    },
+    "capabilities": {
+      "audit_events": true,
+      "full_handoff": true,
+      "nemo_memory_plane": true,
+      "permission_gates": true,
+      "supported_isolation": [
+        "worktree",
+        "container"
+      ]
+    },
+    "command": {
+      "entrypoint": "python -m aider.nemo_platform",
+      "output": "json",
+      "stable_schema": true
+    },
+    "extension_package": "aider.nemo_platform",
+    "nemo_tools": [
+      {
+        "name": "prime_context",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Load high-priority continuity before agent work.",
+        "risk": "read_only",
+        "suite": "startup_context"
+      },
+      {
+        "name": "context_bootstrap",
+        "phases": [
+          "plan"
+        ],
+        "purpose": "Load startup context plus a dry-run context portfolio.",
+        "risk": "read_only",
+        "suite": "startup_context"
+      },
+      {
+        "name": "build_context_portfolio",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Compile bounded NEMO context for the current phase.",
+        "risk": "read_only",
+        "suite": "context_economy"
+      },
+      {
+        "name": "expand_context_evidence",
+        "phases": [
+          "build",
+          "review"
+        ],
+        "purpose": "Recover large evidence referenced by a portfolio.",
+        "risk": "read_only",
+        "suite": "context_economy"
+      },
+      {
+        "name": "record_context_feedback",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Update NEMO utility signals after use.",
+        "risk": "memory_write",
+        "suite": "context_economy"
+      },
+      {
+        "name": "get_context_portfolio_stats",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Inspect context portfolio health and token savings.",
+        "risk": "read_only",
+        "suite": "context_economy"
+      },
+      {
+        "name": "compress_context_artifact",
+        "phases": [
+          "build",
+          "review"
+        ],
+        "purpose": "Compact large outputs while preserving recoverable evidence.",
+        "risk": "memory_write",
+        "suite": "context_economy"
+      },
+      {
+        "name": "create_correction",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Persist user corrections immediately.",
+        "risk": "memory_write",
+        "suite": "memory_management"
+      },
+      {
+        "name": "update_memory",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Update curated memory after review resolves stale facts.",
+        "risk": "memory_write",
+        "suite": "memory_management"
+      },
+      {
+        "name": "store_conversation",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Persist meaningful task exchanges and outcomes.",
+        "risk": "memory_write",
+        "suite": "conversation"
+      },
+      {
+        "name": "get_recent_context",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Inspect recent raw conversation when compact context is insufficient.",
+        "risk": "read_only",
+        "suite": "conversation"
+      },
+      {
+        "name": "get_current_time",
+        "phases": [
+          "plan",
+          "build",
+          "review"
+        ],
+        "purpose": "Attach reliable timestamps to decisions and evidence.",
+        "risk": "read_only",
+        "suite": "time_and_environment"
+      },
+      {
+        "name": "get_weather_open_meteo",
+        "phases": [
+          "plan"
+        ],
+        "purpose": "Optional environment context for user workflows that need weather.",
+        "risk": "read_only",
+        "suite": "time_and_environment"
+      },
+      {
+        "name": "create_reminder",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Create explicit follow-up reminders after review.",
+        "risk": "scheduling_write",
+        "suite": "reminders"
+      },
+      {
+        "name": "intent_anchor",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Persist condition-triggered future reminders.",
+        "risk": "memory_write",
+        "suite": "reminders"
+      },
+      {
+        "name": "create_appointment",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Create explicit appointments only after user intent is captured.",
+        "risk": "scheduling_write",
+        "suite": "appointments"
+      },
+      {
+        "name": "get_system_health",
+        "phases": [
+          "review"
+        ],
+        "purpose": "Inspect NEMO health when memory behavior is suspicious.",
+        "risk": "read_only",
+        "suite": "maintenance"
+      }
+    ],
+    "nemo_tools_by_phase": {
+      "background": [],
+      "build": [
+        "prime_context",
+        "build_context_portfolio",
+        "expand_context_evidence",
+        "record_context_feedback",
+        "compress_context_artifact",
+        "create_correction",
+        "store_conversation",
+        "get_current_time"
+      ],
+      "plan": [
+        "prime_context",
+        "context_bootstrap",
+        "build_context_portfolio",
+        "record_context_feedback",
+        "create_correction",
+        "store_conversation",
+        "get_current_time",
+        "get_weather_open_meteo"
+      ],
+      "review": [
+        "prime_context",
+        "build_context_portfolio",
+        "expand_context_evidence",
+        "record_context_feedback",
+        "get_context_portfolio_stats",
+        "compress_context_artifact",
+        "create_correction",
+        "update_memory",
+        "store_conversation",
+        "get_recent_context",
+        "get_current_time",
+        "create_reminder",
+        "intent_anchor",
+        "create_appointment",
+        "get_system_health"
+      ]
+    },
+    "permissions": [
+      {
+        "action": "ask",
+        "pattern": "*",
+        "permission": "edit",
+        "precedence": 10,
+        "source": "aider-quality-core"
+      },
+      {
+        "action": "allow",
+        "pattern": "git diff*",
+        "permission": "bash",
+        "precedence": 20,
+        "source": "safe-git"
+      },
+      {
+        "action": "allow",
+        "pattern": "python -m pytest*",
+        "permission": "bash",
+        "precedence": 20,
+        "source": "validation"
+      },
+      {
+        "action": "ask",
+        "pattern": "*",
+        "permission": "bash",
+        "precedence": 10,
+        "source": "opencode-style-default"
+      },
+      {
+        "action": "deny",
+        "pattern": "*",
+        "permission": "network",
+        "precedence": 30,
+        "source": "sandbox-default"
+      },
+      {
+        "action": "deny",
+        "pattern": "*",
+        "permission": "external_directory",
+        "precedence": 30,
+        "source": "workspace-boundary"
+      },
+      {
+        "action": "ask",
+        "pattern": "*",
+        "permission": "merge_to_main_workspace",
+        "precedence": 40,
+        "source": "review-gate"
+      }
+    ],
+    "product_base": "aider",
+    "schema_version": 1
+  },
+  "portfolio": {
+    "context": "[project_fact] Current task: Create src/continue_literal.py. Define resumed(name) and return exactly the string f'Resumed, {name}'. Do not call any Resumed function or class.\n[correction] Aider is the active product base, not just a reference repository.\n[project_fact] Topic: Headless Handoff\n[preference] Use full NEMO MCP memory/tool plane, not portfolio-only memory.\n[decision] Headless Full Handoff must write only inside isolated runtime/worktree until review.",
+    "estimated_tokens": 100,
+    "evidence_handles": [],
+    "included": [
+      "Current task: Create src/continue_literal.py. Define resumed(name) and return exactly the string f'Resumed, {name}'. Do not call any Resumed function or class.",
+      "Aider is the active product base, not just a reference repository.",
+      "Topic: Headless Handoff",
+      "Use full NEMO MCP memory/tool plane, not portfolio-only memory.",
+      "Headless Full Handoff must write only inside isolated runtime/worktree until review."
+    ],
+    "mode": "fast",
+    "omitted": [],
+    "phase": "execute"
+  },
+  "readiness": {
+    "grade": "ready",
+    "has_checkpoint": true,
+    "has_review_package": true,
+    "memory_writeback_present": true,
+    "mutation_present": true,
+    "reasons": [],
+    "score": 1.0,
+    "validation_passed": true
+  },
+  "repair_plan": {
+    "attempts": [],
+    "budget": {
+      "max_attempts": 3
+    }
+  },
+  "repair_result": null,
+  "run": {
+    "failure_reason": null,
+    "id": "run-1-resume-20",
+    "model_profile": "local-model",
+    "permission_profile": "full-handoff",
+    "phase": "review",
+    "runtime_id": "task-1-resume-run-1-resume-20",
+    "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+    "state": "reviewing",
+    "task_id": "task-1-resume",
+    "validation_profile": "default-validation"
+  },
+  "runtime_files": [
+    ".aider.chat.history.md",
+    ".nemo-aider-message.md",
+    "checkpoint-execute.md",
+    "checkpoint-plan.md",
+    "checkpoint-review.md",
+    "continuation-link.md",
+    "generated-spec.md",
+    "generated-test.txt",
+    "memory.md",
+    "review-package.md",
+    "src/__pycache__/continue_literal.cpython-314.pyc",
+    "src/continue_literal.py",
+    "supervisor-report.md",
+    "validation.txt",
+    "validation_script_1.py"
+  ],
+  "schema_version": 1,
+  "task": {
+    "autonomy_level": "full_handoff",
+    "id": "task-1-resume",
+    "linked_prd": null,
+    "linked_specs": [],
+    "objective": "Create src/continue_literal.py. Define resumed(name) and return exactly the string f'Resumed, {name}'. Do not call any Resumed function or class.",
+    "repo_path": ".",
+    "status": "open",
+    "title": "Headless Handoff"
+  },
+  "timeline": [
+    {
+      "id": "event-1",
+      "kind": "context_bootstrapped",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "run-1-resume-20",
+      "sequence": 1,
+      "summary": "NEMO context portfolio bootstrapped."
+    },
+    {
+      "id": "event-2",
+      "kind": "plan_created",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "run-1-resume-20",
+      "sequence": 2,
+      "summary": "Created handoff plan with 11 steps."
+    },
+    {
+      "id": "event-3",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-plan.md",
+      "phase": "plan",
+      "run_id": "run-1-resume-20",
+      "sequence": 3,
+      "summary": "Created plan checkpoint."
+    },
+    {
+      "id": "event-4",
+      "kind": "permission_decided",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "run-1-resume-20",
+      "sequence": 4,
+      "summary": "Full Handoff permissions preapproved in sandbox."
+    },
+    {
+      "id": "event-5",
+      "kind": "mutation_created",
+      "payload_ref": null,
+      "phase": "execute",
+      "run_id": "run-1-resume-20",
+      "sequence": 5,
+      "summary": "changed 1 file(s) through subprocess-aider"
+    },
+    {
+      "id": "event-6",
+      "kind": "validation_run",
+      "payload_ref": null,
+      "phase": "execute",
+      "run_id": "run-1-resume-20",
+      "sequence": 6,
+      "summary": "validation passed=2/2 required_ok=True"
+    },
+    {
+      "id": "event-7",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "execute",
+      "run_id": "run-1-resume-20",
+      "sequence": 7,
+      "summary": "Created execute checkpoint."
+    },
+    {
+      "id": "event-8",
+      "kind": "review_package_created",
+      "payload_ref": null,
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 8,
+      "summary": "Created review package."
+    },
+    {
+      "id": "event-9",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-review.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 9,
+      "summary": "Created review checkpoint."
+    },
+    {
+      "id": "event-10",
+      "kind": "memory_written",
+      "payload_ref": null,
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 10,
+      "summary": "Prepared NEMO writeback summary."
+    },
+    {
+      "id": "event-11",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 11,
+      "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-12",
+      "kind": "resumed",
+      "payload_ref": "continuation-link.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 12,
+      "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+    }
+  ],
+  "validation": {
+    "results": [
+      {
+        "command": {
+          "command": "C:\\dev\\dev4\\.venv\\Scripts\\python.exe --version",
+          "required": true
+        },
+        "output": "Python 3.14.3",
+        "returncode": 0,
+        "status": "passed"
+      },
+      {
+        "command": {
+          "command": "C:\\dev\\dev4\\.venv\\Scripts\\python.exe C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20\\validation_script_1.py",
+          "required": true
+        },
+        "output": "",
+        "returncode": 0,
+        "status": "passed"
+      }
+    ]
+  }
+}

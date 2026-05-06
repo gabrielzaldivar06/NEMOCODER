@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nemo-coding-platform"
+version = "0.1.0"
+description = "CLI/TUI-first supervised coding platform scaffold with NEMO-native memory contracts"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "GitHub Copilot" }
+]
+
+[project.scripts]
+nemo-platform = "nemo_coding_platform.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

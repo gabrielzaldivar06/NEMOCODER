@@ -1,0 +1,30 @@
+Metadata-Version: 2.4
+Name: nemo-coding-platform
+Version: 0.1.0
+Summary: CLI/TUI-first supervised coding platform scaffold with NEMO-native memory contracts
+Author: GitHub Copilot
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+
+# NEMO Coding Platform
+
+Initial implementation scaffold for a CLI/TUI-first, supervised coding platform.
+
+## Current slice
+
+This repository starts with architecture encoded as Python contracts instead of ad hoc notes:
+
+- quality core boundaries
+- plan/execute/review workflow rules
+- unified permission model
+- runtime state machine
+- NEMO memory portfolio contracts
+- minimal CLI for inspecting the blueprint
+
+## Run
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m nemo_coding_platform blueprint
+python -m unittest discover -s tests
+```

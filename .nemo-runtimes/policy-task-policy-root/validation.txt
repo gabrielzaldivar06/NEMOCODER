@@ -1,0 +1,6 @@
+validation passed=1/1 required_ok=True
+command=python -m unittest
+status=passed
+returncode=None
+output:
+simulated pass

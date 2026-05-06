@@ -1,0 +1,12 @@
+validation passed=2/2 required_ok=True
+command=C:\dev\dev4\.venv\Scripts\python.exe --version
+status=passed
+returncode=0
+output:
+Python 3.14.3
+
+command=C:\dev\dev4\.venv\Scripts\python.exe C:\dev\dev4\.nemo-runtimes\validation-script-run-script\validation_script_1.py
+status=passed
+returncode=0
+output:
+<empty>

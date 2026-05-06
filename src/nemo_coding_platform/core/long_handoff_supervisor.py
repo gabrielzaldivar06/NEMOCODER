@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from nemo_coding_platform.core.headless_handoff import HandoffRequest
+from nemo_coding_platform.core.headless_runner import HeadlessRunResult, execute_headless_handoff
+from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, PersistentNemoAdapter
+from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
+from nemo_coding_platform.core.task_run import AppendOnlyTimeline, Artifact, ArtifactType, EventKind, MemoryTrace, RunEvent
+from nemo_coding_platform.core.worktree_runtime import WorktreeRuntimeSpec, snapshot_runtime_files, write_runtime_file
+
+
+@dataclass(frozen=True, slots=True)
+class LongHandoffBudget:
+    max_runtime_minutes: int = 120
+    heartbeat_minutes: int = 15
+    max_heartbeats: int = 4
+    token_budget: int = 32_000
+    pause_after_minutes: int | None = None
+
+    def validate(self) -> None:
+        if self.max_runtime_minutes <= 0:
+            raise ValueError("max_runtime_minutes must be positive")
+        if self.heartbeat_minutes <= 0:
+            raise ValueError("heartbeat_minutes must be positive")
+        if self.max_heartbeats <= 0:
+            raise ValueError("max_heartbeats must be positive")
+        if self.token_budget <= 0:
+            raise ValueError("token_budget must be positive")
+        if self.pause_after_minutes is not None and self.pause_after_minutes <= 0:
+            raise ValueError("pause_after_minutes must be positive when set")
+
+
+@dataclass(frozen=True, slots=True)
+class SupervisorHeartbeat:
+    elapsed_minutes: int
+    checkpoint_ref: str
+    summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class LongHandoffResumePlan:
+    can_resume: bool
+    task_id: str | None
+    run_id: str | None
+    resume_token: str | None
+    resume_minute: int | None
+    checkpoint_refs: tuple[str, ...]
+    next_action: str
+    reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "can_resume": self.can_resume,
+            "task_id": self.task_id,
+            "run_id": self.run_id,
+            "resume_token": self.resume_token,
+            "resume_minute": self.resume_minute,
+            "checkpoint_refs": list(self.checkpoint_refs),
+            "next_action": self.next_action,
+            "reasons": list(self.reasons),
+        }
+
+
+def _planned_heartbeats(budget: LongHandoffBudget) -> tuple[SupervisorHeartbeat, ...]:
+    last_elapsed = min(budget.max_runtime_minutes, budget.heartbeat_minutes * budget.max_heartbeats)
+    elapsed_values = tuple(range(budget.heartbeat_minutes, last_elapsed + 1, budget.heartbeat_minutes))
+    if not elapsed_values:
+        elapsed_values = (budget.max_runtime_minutes,)
+    return tuple(
+        SupervisorHeartbeat(
+            elapsed,
+            "checkpoint-execute.md" if elapsed < budget.max_runtime_minutes else "checkpoint-review.md",
+            f"Supervisor heartbeat at minute {elapsed}: validation and checkpoint trail remain replayable.",
+        )
+        for elapsed in elapsed_values
+    )
+
+
+def _escalation_flags(result: HeadlessRunResult, budget: LongHandoffBudget) -> tuple[str, ...]:
+    flags: list[str] = []
+    if budget.max_runtime_minutes <= budget.heartbeat_minutes:
+        flags.append("tight_runtime_budget")
+    if not result.validation.passed:
+        flags.append("validation_failed")
+    if not result.effective_changed_files:
+        flags.append("no_effective_mutation")
+    if budget.pause_after_minutes is not None and budget.pause_after_minutes <= budget.max_runtime_minutes:
+        flags.append("pause_requested")
+    return tuple(flags)
+
+
+def _supervisor_report(
+    budget: LongHandoffBudget,
+    heartbeats: tuple[SupervisorHeartbeat, ...],
+    escalation_flags: tuple[str, ...],
+    resume_token: str | None,
+) -> str:
+    lines = [
+        "# Long Handoff Supervisor",
+        "",
+        f"max_runtime_minutes={budget.max_runtime_minutes}",
+        f"heartbeat_minutes={budget.heartbeat_minutes}",
+        f"max_heartbeats={budget.max_heartbeats}",
+        f"token_budget={budget.token_budget}",
+        f"pause_after_minutes={budget.pause_after_minutes or ''}",
+        f"resume_token={resume_token or ''}",
+        "",
+        "## Heartbeats",
+    ]
+    lines.extend(f"- minute {item.elapsed_minutes}: {item.checkpoint_ref}" for item in heartbeats)
+    lines.extend(["", "## Escalation Flags"])
+    lines.extend(f"- {flag}" for flag in escalation_flags) if escalation_flags else lines.append("- none")
+    return "\n".join(lines) + "\n"
+
+
+def _parse_resume_minute(resume_token: str | None) -> int | None:
+    if not resume_token or ":minute-" not in resume_token:
+        return None
+    try:
+        return int(resume_token.rsplit(":minute-", 1)[1])
+    except ValueError:
+        return None
+
+
+def build_long_handoff_resume_plan(payload: dict[str, Any]) -> LongHandoffResumePlan:
+    task = payload.get("task", {}) if isinstance(payload.get("task"), dict) else {}
+    run = payload.get("run", {}) if isinstance(payload.get("run"), dict) else {}
+    timeline = payload.get("timeline", [])
+    artifacts = payload.get("artifacts", [])
+    task_id = task.get("id")
+    run_id = run.get("id")
+    sandbox_path = run.get("sandbox_path")
+    paused = any(isinstance(event, dict) and event.get("kind") == EventKind.PAUSED.value for event in timeline)
+    has_resume_artifact = any(isinstance(artifact, dict) and artifact.get("path") == "resume-token.txt" for artifact in artifacts)
+    checkpoint_refs = tuple(
+        event.get("payload_ref")
+        for event in timeline
+        if isinstance(event, dict) and event.get("kind") in {EventKind.CHECKPOINT.value, EventKind.HEARTBEAT.value} and event.get("payload_ref")
+    )
+    reasons: list[str] = []
+    if not paused:
+        reasons.append("run_not_paused")
+    if not has_resume_artifact:
+        reasons.append("missing_resume_artifact")
+    resume_token_path = Path(sandbox_path) / "resume-token.txt" if sandbox_path else None
+    resume_token = resume_token_path.read_text(encoding="utf-8").strip() if resume_token_path and resume_token_path.exists() else None
+    if not resume_token:
+        reasons.append("missing_resume_token_file")
+    resume_minute = _parse_resume_minute(resume_token)
+    if resume_token and resume_minute is None:
+        reasons.append("invalid_resume_token")
+    can_resume = not reasons
+    next_action = (
+        f"Resume supervised handoff from minute {resume_minute} using latest replayable checkpoint."
+        if can_resume
+        else "Cannot resume until the paused run has a valid resume token and checkpoint trail."
+    )
+    return LongHandoffResumePlan(can_resume, task_id, run_id, resume_token, resume_minute, checkpoint_refs, next_action, tuple(reasons))
+
+
+def _continuation_link_markdown(plan: LongHandoffResumePlan, source_run_id: str | None) -> str:
+    lines = [
+        "# Long Handoff Continuation",
+        "",
+        f"source_task_id={plan.task_id or ''}",
+        f"source_run_id={source_run_id or plan.run_id or ''}",
+        f"resume_token={plan.resume_token or ''}",
+        f"resume_minute={plan.resume_minute or ''}",
+        "",
+        "## Checkpoint Refs",
+    ]
+    lines.extend(f"- {checkpoint}" for checkpoint in plan.checkpoint_refs)
+    return "\n".join(lines) + "\n"
+
+
+def _continuation_memory_summary(plan: LongHandoffResumePlan, continuation: HeadlessRunResult) -> str:
+    return (
+        "Long handoff continuation linked "
+        f"source_task={plan.task_id or ''} source_run={plan.run_id or ''} "
+        f"continuation_task={continuation.task.id} continuation_run={continuation.run.id} "
+        f"resume_token={plan.resume_token or ''} resume_minute={plan.resume_minute or ''}"
+    )
+
+
+def execute_long_handoff_continuation(
+    payload: dict[str, Any],
+    *,
+    objective: str | None = None,
+    acceptance_criteria: tuple[str, ...] | None = None,
+    validation_commands: tuple[str, ...] | None = None,
+    budget: LongHandoffBudget | None = None,
+    **handoff_kwargs: object,
+) -> HeadlessRunResult:
+    plan = build_long_handoff_resume_plan(payload)
+    if not plan.can_resume:
+        raise ValueError(f"cannot continue long handoff: {', '.join(plan.reasons)}")
+    task = payload.get("task", {}) if isinstance(payload.get("task"), dict) else {}
+    run = payload.get("run", {}) if isinstance(payload.get("run"), dict) else {}
+    repo_path = str(task.get("repo_path") or ".")
+    source_objective = str(task.get("objective") or "Resume paused long handoff")
+    resume_objective = objective or f"Resume paused long handoff from {plan.resume_token}. Continue objective: {source_objective}"
+    resume_task_id = f"{plan.task_id or 'task'}-resume"
+    resume_run_id = f"{plan.run_id or 'run'}-resume-{plan.resume_minute}"
+    result = execute_long_handoff_supervisor(
+        HandoffRequest(
+            resume_objective,
+            repo_path,
+            acceptance_criteria or ("continuation remains replayable",),
+            validation_commands or ("python -m unittest",),
+        ),
+        budget=budget or LongHandoffBudget(max_runtime_minutes=30, heartbeat_minutes=10, max_heartbeats=1, token_budget=8000),
+        task_id=resume_task_id,
+        run_id=resume_run_id,
+        **handoff_kwargs,
+    )
+    link = _continuation_link_markdown(plan, run.get("id") if isinstance(run, dict) else None)
+    runtime_path = Path(result.run.sandbox_path)
+    runtime = WorktreeRuntimeSpec(result.run.runtime_id, result.task.id, result.run.id, runtime_path.parent, runtime_path, result.run.state)
+    write_runtime_file(runtime, "continuation-link.md", link)
+    memory_summary = _continuation_memory_summary(plan, result)
+    write_runtime_file(runtime, "continuation-memory.md", memory_summary + "\n")
+    sequence = len(result.timeline.events) + 1
+    timeline = result.timeline.append(
+        RunEvent(
+            f"event-{sequence}",
+            result.run.id,
+            sequence,
+            result.run.phase,
+            EventKind.RESUMED,
+            f"Continuation linked to resume token {plan.resume_token}.",
+            "continuation-link.md",
+        )
+    )
+    artifacts = result.artifacts + (
+        Artifact.from_content("artifact-continuation-link", result.run.id, ArtifactType.SUPERVISOR, "continuation-link.md", "Long handoff continuation link", link),
+        Artifact.from_content("artifact-continuation-memory", result.run.id, ArtifactType.MEMORY_SUMMARY, "continuation-memory.md", "Long handoff continuation memory link", memory_summary),
+    )
+    memory_adapter = handoff_kwargs.get("nemo_adapter")
+    active_memory_adapter = memory_adapter if isinstance(memory_adapter, (InMemoryNemoAdapter, PersistentNemoAdapter)) else InMemoryNemoAdapter()
+    _, memory_result = active_memory_adapter.call(NemoLifecyclePhase.REVIEW, "store_conversation", summary=memory_summary)
+    memory_traces = result.memory_traces + (
+        MemoryTrace("mem-continuation-link", result.run.id, "store_conversation", "conversation", "memory_write", memory_summary),
+    )
+    return HeadlessRunResult(
+        result.task,
+        result.run,
+        timeline,
+        artifacts,
+        memory_traces,
+        result.validation,
+        result.review_package,
+        result.nemo_results + (memory_result,),
+        result.repair_plan,
+        result.platform_info,
+        result.portfolio,
+        result.mutation_result,
+        result.repair_result,
+        snapshot_runtime_files(runtime),
+    )
+
+
+def execute_long_handoff_supervisor(
+    request: HandoffRequest,
+    *,
+    budget: LongHandoffBudget | None = None,
+    **handoff_kwargs: object,
+) -> HeadlessRunResult:
+    active_budget = budget or LongHandoffBudget()
+    active_budget.validate()
+    result = execute_headless_handoff(request, bounded_simulation=True, **handoff_kwargs)
+    heartbeats = _planned_heartbeats(active_budget)
+    escalation_flags = _escalation_flags(result, active_budget)
+    resume_token = (
+        f"{result.task.id}:{result.run.id}:minute-{active_budget.pause_after_minutes}"
+        if active_budget.pause_after_minutes is not None and active_budget.pause_after_minutes <= active_budget.max_runtime_minutes
+        else None
+    )
+    report = _supervisor_report(active_budget, heartbeats, escalation_flags, resume_token)
+    runtime_path = Path(result.run.sandbox_path)
+    runtime = WorktreeRuntimeSpec(result.run.runtime_id, result.task.id, result.run.id, runtime_path.parent, runtime_path, result.run.state)
+    write_runtime_file(runtime, "supervisor-report.md", report)
+    if resume_token:
+        write_runtime_file(runtime, "resume-token.txt", resume_token + "\n")
+
+    timeline = result.timeline
+    next_sequence = len(timeline.events) + 1
+    for index, heartbeat in enumerate(heartbeats, start=0):
+        timeline = timeline.append(
+            RunEvent(
+                f"event-{next_sequence + index}",
+                result.run.id,
+                next_sequence + index,
+                result.run.phase,
+                EventKind.HEARTBEAT,
+                heartbeat.summary,
+                heartbeat.checkpoint_ref,
+            )
+        )
+    next_sequence = len(timeline.events) + 1
+    if escalation_flags:
+        timeline = timeline.append(
+            RunEvent(
+                f"event-{next_sequence}",
+                result.run.id,
+                next_sequence,
+                result.run.phase,
+                EventKind.ESCALATION,
+                f"Supervisor escalation flags: {', '.join(escalation_flags)}.",
+                "supervisor-report.md",
+            )
+        )
+        next_sequence += 1
+    if resume_token:
+        timeline = timeline.append(
+            RunEvent(
+                f"event-{next_sequence}",
+                result.run.id,
+                next_sequence,
+                result.run.phase,
+                EventKind.PAUSED,
+                "Supervisor pause point reached; resume token persisted.",
+                "resume-token.txt",
+            )
+        )
+
+    artifacts = result.artifacts + (
+        Artifact.from_content("artifact-supervisor", result.run.id, ArtifactType.SUPERVISOR, "supervisor-report.md", "Long handoff supervisor budget and heartbeats", report),
+    )
+    if resume_token:
+        artifacts = artifacts + (
+            Artifact.from_content("artifact-resume-token", result.run.id, ArtifactType.SUPERVISOR, "resume-token.txt", "Long handoff resume token", resume_token),
+        )
+    runtime_files = snapshot_runtime_files(runtime)
+    return HeadlessRunResult(
+        result.task,
+        result.run,
+        timeline,
+        artifacts,
+        result.memory_traces,
+        result.validation,
+        result.review_package,
+        result.nemo_results,
+        result.repair_plan,
+        result.platform_info,
+        result.portfolio,
+        result.mutation_result,
+        result.repair_result,
+        runtime_files,
+    )
