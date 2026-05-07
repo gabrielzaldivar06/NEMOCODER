@@ -2,6 +2,18 @@
 __pycache__/
 *.py[cod]
 
+# Runtime and local memory artifacts
+.nemo-runtimes/
+.nemo-memory.db
+*.sqlite-shm
+*.sqlite-wal
+
+# Local probes and throwaway verification scripts
+scratch/
+
+# Read-only upstream clones should not enter product diffs by accident
+reference-repos/*/
+
 apps/mission-control/node_modules/
 apps/mission-control/dist/
 apps/mission-control/tsconfig.tsbuildinfo

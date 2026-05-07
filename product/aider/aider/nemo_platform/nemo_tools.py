@@ -147,6 +147,20 @@ NEMO_TOOLS: tuple[NemoToolContract, ...] = (
         "Create explicit appointments only after user intent is captured.",
     ),
     NemoToolContract(
+        "store_architectural_decision",
+        NemoToolSuite.MEMORY_MANAGEMENT,
+        NemoToolRisk.MEMORY_WRITE,
+        (AgentPhase.PLAN, AgentPhase.BUILD, AgentPhase.REVIEW),
+        "Persist structured architectural decisions (e.g. framework choices) for future consistency.",
+    ),
+    NemoToolContract(
+        "search_memories",
+        NemoToolSuite.CONTEXT_ECONOMY,
+        NemoToolRisk.READ_ONLY,
+        (AgentPhase.PLAN, AgentPhase.BUILD, AgentPhase.REVIEW),
+        "Perform semantic or keyword search across the full memory store for technical evidence.",
+    ),
+    NemoToolContract(
         "get_system_health",
         NemoToolSuite.MAINTENANCE,
         NemoToolRisk.READ_ONLY,

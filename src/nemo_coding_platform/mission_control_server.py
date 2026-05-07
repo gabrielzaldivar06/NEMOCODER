@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from difflib import SequenceMatcher
@@ -27,7 +28,10 @@ from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
 from nemo_coding_platform.core.persistence import load_headless_result_json, save_headless_result_json
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
+from nemo_coding_platform.core.rate_limiter import RateLimiter
+from nemo_coding_platform.core.self_modification import self_mod_impact, self_mod_similar_runs, self_mod_trajectory
 from nemo_coding_platform.core.validation import validation_commands_for_policy
+from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool
 
 
 DEFAULT_APPLY_RESULTS = ".nemo-runtimes/mission-control/apply-results"
@@ -84,6 +88,25 @@ class HandoffJobManager:
         run_json = config.run_results_path / f"{task_id}-{run_id}.json"
         command = self._build_command(config, merged_payload, objective, provider, timeout, task_id, run_id, run_json)
         job = HandoffJob(job_id, task_id, run_id, str(run_json), "starting", command, dict(merged_payload), ["starting handoff job"])
+        with self._lock:
+            self._jobs[job_id] = job
+        threading.Thread(target=self._run_job, args=(config, job), daemon=True).start()
+        return job
+
+    def start_self_modify(self, config: "MissionControlServerConfig", payload: dict[str, object]) -> HandoffJob:
+        settings = _load_settings(config)
+        merged_payload = {**settings, **payload}
+        objective = _objective(merged_payload)
+        provider = _provider_mode({**merged_payload, "provider": payload.get("provider") or "subprocess"})
+        timeout = _timeout_seconds(merged_payload)
+        run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        short_id = uuid4().hex[:8]
+        job_id = f"self-job-{run_suffix}-{short_id}"
+        task_id = f"self-task-{run_suffix}-{short_id}"
+        run_id = f"self-run-{run_suffix}-{short_id}"
+        run_json = config.runtimes_path / "self-mod" / "runs" / f"{_safe_stem(task_id)}-{_safe_stem(run_id)}.json"
+        command = self._build_self_modify_command(config, merged_payload, objective, provider, timeout, task_id, run_id)
+        job = HandoffJob(job_id, task_id, run_id, str(run_json), "starting", command, dict(merged_payload), ["starting self-modification job"])
         with self._lock:
             self._jobs[job_id] = job
         threading.Thread(target=self._run_job, args=(config, job), daemon=True).start()
@@ -178,6 +201,51 @@ class HandoffJobManager:
             command.extend(("--memory-db", str(config.memory_db)))
         command.extend(("--model-profile", str(payload.get("model") or "nvidia.agentic.coder-4b")))
         command.extend(("--lmstudio-base-url", str(payload.get("base_url") or "http://localhost:1234/v1")))
+        return tuple(command)
+
+    def _build_self_modify_command(
+        self,
+        config: "MissionControlServerConfig",
+        payload: dict[str, object],
+        objective: str,
+        provider: str,
+        timeout: float,
+        task_id: str,
+        run_id: str,
+    ) -> tuple[str, ...]:
+        command: list[str] = [
+            sys.executable,
+            "-m",
+            "nemo_coding_platform",
+            "self-modify",
+            objective,
+            "--repo",
+            str(config.repo_path),
+            "--provider",
+            provider,
+            "--timeout",
+            str(timeout),
+            "--validation-policy",
+            str(payload.get("validation_policy") or "targeted"),
+            "--task-id",
+            task_id,
+            "--run-id",
+            run_id,
+            "--json",
+        ]
+        command.extend(("--type", str(payload.get("task_type") or "tool_expansion")))
+        command.extend(("--model-profile", str(payload.get("model") or payload.get("default_model") or "nvidia.agentic.coder-4b")))
+        command.extend(("--lmstudio-base-url", str(payload.get("base_url") or payload.get("model_base_url") or "http://localhost:1234/v1")))
+        for item in _string_list(payload, "validation_commands", ()): 
+            command.extend(("--validation", item))
+        for item in _string_list(payload, "target_files", ()): 
+            command.extend(("--target-file", item))
+        if bool(payload.get("real_validation")):
+            command.append("--real-validation")
+        if bool(payload.get("bounded_simulation")):
+            command.append("--bounded-simulation")
+        if config.memory_db is not None:
+            command.extend(("--memory-db", str(config.memory_db)))
         return tuple(command)
 
     def _run_job(self, config: "MissionControlServerConfig", job: HandoffJob) -> None:
@@ -325,6 +393,15 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[s
         handler.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
         handler.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+        
+        # Cache-Control headers
+        if handler.path.startswith("/assets"):
+            handler.send_header("Cache-Control", "public, max-age=2592000, immutable")
+        else:
+            handler.send_header("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+            handler.send_header("Pragma", "no-cache")
+            handler.send_header("Expires", "0")
+
         handler.send_header("Content-Type", "application/json; charset=utf-8")
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()
@@ -809,6 +886,17 @@ def api_nemo(config: MissionControlServerConfig, payload: dict[str, object]) -> 
     }
 
 
+def api_self_mod_insights(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    source_json = _source_json(payload)
+    trajectory = self_mod_trajectory(source_json)
+    impact = self_mod_impact(source_json)
+    query = str(payload.get("query") or trajectory.get("objective") or "")
+    similar = {"query": query, "runs": [], "count": 0}
+    if config.memory_db is not None:
+        similar = self_mod_similar_runs(config.memory_db, query, limit=int(payload.get("limit") or 5))
+    return {"ok": True, "trajectory": trajectory, "impact": impact, "similar_runs": similar}
+
+
 def api_review(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     plan = build_merge_plan(load_headless_result_json(_source_json(payload)))
     return {"ok": plan.mergeable, "plan": plan.to_dict()}
@@ -847,7 +935,7 @@ def api_file(config: MissionControlServerConfig, payload: dict[str, object]) -> 
 
 def api_apply(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     plan = build_merge_plan(load_headless_result_json(_source_json(payload)))
-    result = apply_merge_plan(plan, approve_review=bool(payload.get("approve_review")))
+    result = apply_merge_plan(plan, approve_review=bool(payload.get("approve_review")), autonomy_profile=str(payload.get("autonomy_profile") or "manual"))
     config.apply_results_path.mkdir(parents=True, exist_ok=True)
     apply_json = config.apply_results_path / f"{_safe_stem(result.task_id)}-{_safe_stem(result.run_id)}.json"
     apply_json.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
@@ -969,19 +1057,89 @@ def api_job_resume(server: "MissionControlHttpServer", payload: dict[str, object
     return {"ok": True, "job": server.jobs.resume(server.config, _job_id(payload)).to_dict()}
 
 
+def api_self_modify_start(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
+    job = server.jobs.start_self_modify(server.config, payload)
+    return {"ok": True, "job": job.to_dict()}
+
+
+def _nemo_chat_tool_call(
+    config: MissionControlServerConfig,
+    tool_calls: list[dict[str, object]],
+    tool_name: str,
+    *,
+    lifecycle_phase: str | None = None,
+    **arguments: Any,
+) -> dict[str, Any]:
+    display_name = f"nemocode.{tool_name}"
+    if config.memory_db is None:
+        tool_calls.append({"id": f"tool-{uuid4().hex[:8]}", "name": display_name, "status": "skipped", "summary": "NEMO memory database is disabled for this Mission Control session."})
+        return {}
+    result = mcp_call_nemo_tool(tool_name, lifecycle_phase=lifecycle_phase, memory_db=str(config.memory_db), **arguments)
+    ok = bool(result.get("ok"))
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    tool_calls.append(
+        {
+            "id": f"tool-{uuid4().hex[:8]}",
+            "name": display_name,
+            "status": "completed" if ok else "failed",
+            "summary": _nemo_tool_summary(tool_name, payload if ok else result),
+        }
+    )
+    return payload if ok else {}
+
+
+def _nemo_tool_summary(tool_name: str, payload: dict[str, Any]) -> str:
+    if tool_name == "prime_context":
+        context = str(payload.get("context") or "")
+        return f"Loaded Mission Control memory context chars={len(context)}."
+    if tool_name == "build_context_portfolio":
+        return f"Built context portfolio tokens={payload.get('estimated_tokens', 0)} evidence={len(payload.get('evidence_handles', []))}."
+    if tool_name == "search_memories":
+        return f"Searched memory; matches={len(payload.get('memories', []))}."
+    if tool_name == "store_conversation":
+        return f"Stored conversation memory atom={payload.get('atom_id', 'unknown')}."
+    if "error" in payload:
+        return str(payload.get("error"))
+    return "NEMO tool completed."
+
+
+def _is_self_interface_request(message: str) -> bool:
+    text = message.lower()
+    self_terms = ("tu propia", "tus ", "propia interfaz", "propia interfase", "automejora", "self", "mission control", "interfaz", "interfase", "interface")
+    color_terms = ("color", "colores", "amarillo", "dorado", "gold", "yellow", "negro", "black")
+    change_terms = ("cambia", "cambiar", "ajusta", "modifica", "mejora", "mejorar", "replace", "sustituye")
+    return any(term in text for term in self_terms) and any(term in text for term in color_terms) and any(term in text for term in change_terms)
+
+
+def _self_interface_action(message: str, payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": "self-modify-interface-colors",
+        "kind": "self_modify",
+        "label": "Self-mod UI",
+        "summary": "Run a NEMOCODE self-modification against the real Mission Control interface files.",
+        "payload": {
+            "objective": message,
+            "task_type": "tool_expansion",
+            "target_files": ["apps/mission-control/src/styles.css", "apps/mission-control/src/main.tsx"],
+            "validation_policy": "targeted",
+            "validation_commands": ["npm --prefix apps/mission-control run build"],
+            "provider": "subprocess",
+            "timeout_seconds": payload.get("timeout_seconds") or "180",
+            "model": payload.get("default_model") or payload.get("model") or "nvidia.agentic.coder-4b",
+            "base_url": payload.get("model_base_url") or payload.get("base_url") or "http://localhost:1234/v1",
+        },
+    }
+
+
 def api_agent_message(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     payload = {**_load_settings(config), **payload}
     message = _message(payload)
     provider = _provider_mode(payload)
     source_json = payload.get("source_json")
-    tool_calls: list[dict[str, object]] = [
-        {
-            "id": f"tool-{uuid4().hex[:8]}",
-            "name": "nemo.prime_context",
-            "status": "completed",
-            "summary": "Loaded Mission Control memory and current run context.",
-        }
-    ]
+    tool_calls: list[dict[str, object]] = []
+    _nemo_chat_tool_call(config, tool_calls, "prime_context", lifecycle_phase="start", topic="Mission Control conversation", limit=8)
+    _nemo_chat_tool_call(config, tool_calls, "build_context_portfolio", lifecycle_phase="plan", task=message, topic="Mission Control conversation", token_budget=900, limit=40)
+    _nemo_chat_tool_call(config, tool_calls, "search_memories", lifecycle_phase="review", query=message, topic="NEMOCODE self-modification", limit=5)
     actions: list[dict[str, object]] = []
     selected: dict[str, Any] | None = None
     mergeable = False
@@ -1025,6 +1183,8 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     selected_objective = "the selected run"
     if selected and isinstance(selected.get("task"), dict):
         selected_objective = str(selected["task"].get("objective") or selected_objective)
+    if _is_self_interface_request(message):
+        actions.append(_self_interface_action(message, payload))
     if "continue" in text or "continua" in text or "seguir" in text:
         actions.append(
             {
@@ -1076,6 +1236,18 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 },
             }
         )
+    _nemo_chat_tool_call(
+        config,
+        tool_calls,
+        "store_conversation",
+        lifecycle_phase="review",
+        summary=f"Mission Control chat user request: {message}",
+        topic="Mission Control conversation",
+        tags=("mission-control", "agent-chat"),
+        atom_type=MemoryAtomType.SESSION_SUMMARY.value,
+        source_scope="mission_control_chat",
+        importance=8 if actions else 6,
+    )
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
     if provider == "subprocess":
         context_summary = _agent_context_summary(selected, changed_files, risk_flags, mergeable)
@@ -1089,7 +1261,10 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
             }
         )
     else:
-        response = "[fake planner] I inspected the selected run and prepared the next safe actions." if selected else "[fake planner] I prepared actions from your prompt."
+        if any(action.get("kind") == "self_modify" for action in actions):
+            response = "[fake planner] I called the NEMO memory tool plane and prepared a real self-modification action against Mission Control UI files."
+        else:
+            response = "[fake planner] I called the NEMO memory tool plane and prepared the next safe actions." if selected else "[fake planner] I called the NEMO memory tool plane and prepared actions from your prompt."
     return {
         "ok": True,
         "message": {
@@ -1115,6 +1290,8 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         _json_response(self, 204, {})
 
     def do_GET(self) -> None:
+        if not self._check_rate_limit():
+            return
         route = urlparse(self.path).path
         if route == "/api/jobs":
             self._handle(lambda _: api_jobs(self.server), {})
@@ -1128,6 +1305,8 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         self._handle(lambda _: api_state(self.server.config), {})
 
     def do_POST(self) -> None:
+        if not self._check_rate_limit():
+            return
         handlers = {
             "/api/refresh": lambda payload: api_state(self.server.config),
             "/api/settings": lambda payload: api_settings(self.server, payload),
@@ -1141,8 +1320,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/job/cancel": lambda payload: api_job_cancel(self.server, payload),
             "/api/job/pause": lambda payload: api_job_pause(self.server, payload),
             "/api/job/resume": lambda payload: api_job_resume(self.server, payload),
+            "/api/self-modify/start": lambda payload: api_self_modify_start(self.server, payload),
             "/api/agent/message": lambda payload: api_agent_message(self.server.config, payload),
             "/api/nemo": lambda payload: api_nemo(self.server.config, payload),
+            "/api/self-mod/insights": lambda payload: api_self_mod_insights(self.server.config, payload),
             "/api/review": lambda payload: api_review(self.server.config, payload),
             "/api/apply": lambda payload: api_apply(self.server.config, payload),
             "/api/apply-selection": lambda payload: api_apply_selection(self.server.config, payload),
@@ -1170,12 +1351,24 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError) as error:
             _json_response(self, 400, {"error": str(error)})
 
+    def _check_rate_limit(self) -> bool:
+        client_ip = self.client_address[0]
+        status = self.server.rate_limiter.check(client_ip)
+        if status == "reject":
+            _json_response(self, 429, {"error": "Too many requests"})
+            return False
+        if status == "throttle":
+            time.sleep(self.server.rate_limiter.sleep_seconds)
+            # We don't reject after throttle, we just slow down
+        return True
+
 
 class MissionControlHttpServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], config: MissionControlServerConfig) -> None:
         super().__init__(server_address, MissionControlRequestHandler)
         self.config = config
         self.jobs = HandoffJobManager()
+        self.rate_limiter = RateLimiter()
 
 
 def run_server(host: str, port: int, config: MissionControlServerConfig) -> None:

@@ -155,12 +155,52 @@ class PersistentMemoryStore:
             raise KeyError(atom_id)
         return self._row_to_atom(row)
 
+    def update_atom(
+        self,
+        atom_id: str,
+        *,
+        content: str | None = None,
+        topic: str | None = None,
+        tags: tuple[str, ...] | None = None,
+        importance: int | None = None,
+        evidence_handle: str | None = None,
+    ) -> StoredMemoryAtom:
+        current = self.get_atom(atom_id)
+        updated_content = current.atom.content if content is None else content
+        updated_topic = current.topic if topic is None else topic
+        updated_tags = current.tags if tags is None else tags
+        updated_importance = current.importance if importance is None else importance
+        updated_evidence_handle = current.atom.evidence_handle if evidence_handle is None else evidence_handle
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE memory_atoms
+                SET content = ?, topic = ?, tags_json = ?, importance = ?, evidence_handle = ?
+                WHERE id = ?
+                """,
+                (
+                    updated_content,
+                    updated_topic,
+                    json.dumps(list(updated_tags), sort_keys=True),
+                    updated_importance,
+                    updated_evidence_handle,
+                    atom_id,
+                ),
+            )
+        return self.get_atom(atom_id)
+
+    def delete_atom(self, atom_id: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM memory_atoms WHERE id = ?", (atom_id,))
+        return cursor.rowcount > 0
+
     def search_atoms(
         self,
         *,
         topic: str | None = None,
         tags: tuple[str, ...] = (),
         atom_types: tuple[MemoryAtomType, ...] = (),
+        query: str | None = None,
         limit: int = 20,
     ) -> tuple[StoredMemoryAtom, ...]:
         clauses: list[str] = []
@@ -171,6 +211,9 @@ class PersistentMemoryStore:
         if atom_types:
             clauses.append("atom_type IN (" + ",".join("?" for _ in atom_types) + ")")
             params.extend(atom_type.value for atom_type in atom_types)
+        if query:
+            clauses.append("content LIKE ?")
+            params.append(f"%{query}%")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._connect() as connection:
             rows = connection.execute(

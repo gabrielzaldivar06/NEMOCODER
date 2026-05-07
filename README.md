@@ -1,6 +1,6 @@
-# NEMO Coding Platform
+# NEMOCODE
 
-Initial implementation scaffold for a desktop-first, highly autonomous coding platform with a local CLI harness.
+Initial implementation scaffold for NEMOCODE: a desktop-first, highly autonomous coding platform with a local CLI harness.
 
 The final product definition is captured in [docs/prd/final-prd.md](docs/prd/final-prd.md). The broader direction is also documented in [docs/prd/global-prd.md](docs/prd/global-prd.md): desktop app for coding, Aider/OpenCode-quality workflow, OpenHands-style strong autonomy, and NEMO MCP as the full memory plane.
 

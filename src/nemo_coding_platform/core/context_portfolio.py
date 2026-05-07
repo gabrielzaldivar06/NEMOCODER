@@ -29,10 +29,14 @@ class PortfolioResult:
             "context": self.context,
             "estimated_tokens": self.estimated_tokens,
             "evidence_handles": list(self.evidence_handles),
+            "included_entries": [_entry_payload(entry) for entry in self.entries],
+            "omitted_entries": [_entry_payload(entry) for entry in self.omitted],
+            "omitted_evidence_handles": [handle for handle in self.evidence_handles],
             "included": [entry.atom.content for entry in self.entries],
             "omitted": [entry.atom.content for entry in self.omitted],
             "mode": self.request.mode.value,
             "phase": self.request.phase.value,
+            "token_budget": self.request.token_budget,
         }
 
 
@@ -56,6 +60,19 @@ PHASE_BONUS: dict[ExecutionPhase, set[MemoryAtomType]] = {
 
 def estimate_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
+
+
+def _entry_payload(entry: PortfolioEntry) -> dict[str, object]:
+    return {
+        "type": entry.atom.atom_type.value,
+        "content": entry.atom.content,
+        "source_scope": entry.atom.source_scope,
+        "evidence_handle": entry.atom.evidence_handle,
+        "estimated_tokens": entry.estimated_tokens,
+        "utility_score": entry.utility_score,
+        "risk_score": entry.risk_score,
+        "included": entry.included,
+    }
 
 
 def default_atoms_for_task(task: str, topic: str) -> tuple[MemoryAtom, ...]:

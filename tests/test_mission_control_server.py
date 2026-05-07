@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
-from nemo_coding_platform.mission_control_server import HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_cleanup, api_file, api_handoff, api_nemo, api_repo_open, api_review, api_rollback, api_settings
+from nemo_coding_platform.mission_control_server import HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_cleanup, api_file, api_handoff, api_nemo, api_repo_open, api_review, api_rollback, api_self_modify_start, api_settings
 from tests.test_review_gate_cli import write_ready_run
 
 
@@ -208,6 +208,66 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertTrue(any(action["kind"] == "revise" for action in message["actions"]))
         self.assertTrue(any(action["kind"] == "apply" for action in message["actions"]))
         self.assertIn("[fake planner]", message["content"])
+
+    def test_agent_message_calls_real_nemo_tools_when_memory_is_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            payload = api_agent_message(config, {"message": "busca contexto de automejora", "provider": "fake"})
+            store = PersistentMemoryStore(memory_db)
+            atoms = store.search_atoms(topic="Mission Control conversation", tags=("agent-chat",), limit=5)
+
+        tool_names = {tool["name"] for tool in payload["message"]["tool_calls"]}
+        self.assertIn("nemocode.prime_context", tool_names)
+        self.assertIn("nemocode.build_context_portfolio", tool_names)
+        self.assertIn("nemocode.search_memories", tool_names)
+        self.assertIn("nemocode.store_conversation", tool_names)
+        self.assertGreaterEqual(len(atoms), 1)
+
+    def test_agent_message_routes_interface_color_request_to_self_mod_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+
+            payload = api_agent_message(config, {"message": "cambia tus colores el amarillo o dorado por negro", "provider": "fake"})
+
+        actions = payload["message"]["actions"]
+        self_mod = next(action for action in actions if action["kind"] == "self_modify")
+        self.assertEqual(self_mod["payload"]["provider"], "subprocess")
+        self.assertIn("apps/mission-control/src/styles.css", self_mod["payload"]["target_files"])
+        self.assertIn("apps/mission-control/src/main.tsx", self_mod["payload"]["target_files"])
+
+    def test_self_modify_start_builds_self_modification_job_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                payload = api_self_modify_start(
+                    server,
+                    {
+                        "objective": "cambia tus colores el amarillo o dorado por negro",
+                        "provider": "subprocess",
+                        "target_files": ["apps/mission-control/src/styles.css", "apps/mission-control/src/main.tsx"],
+                        "validation_commands": ["npm --prefix apps/mission-control run build"],
+                    },
+                )
+                command = payload["job"]["command"]
+            finally:
+                server.jobs.cancel(payload["job"]["job_id"])
+                server.server_close()
+
+        self.assertIn("self-modify", command)
+        self.assertIn("apps/mission-control/src/styles.css", command)
+        self.assertIn("apps/mission-control/src/main.tsx", command)
+        self.assertIn("npm --prefix apps/mission-control run build", command)
 
     def test_agent_message_uses_lmstudio_for_subprocess_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

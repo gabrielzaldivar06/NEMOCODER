@@ -2,26 +2,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shlex
+import time
 from pathlib import Path
 
 from nemo_coding_platform.core.architecture import default_blueprint
 from nemo_coding_platform.core.contracts import ExecutionPhase
 from nemo_coding_platform.core.evals import score_headless_result
 from nemo_coding_platform.core.headless_handoff import HandoffRequest, build_handoff_plan
-from nemo_coding_platform.core.headless_runner import execute_headless_handoff
+from nemo_coding_platform.core.headless_runner import execute_headless_handoff, HeadlessRunResult
 from nemo_coding_platform.core.long_handoff_supervisor import LongHandoffBudget, build_long_handoff_resume_plan, execute_long_handoff_continuation, execute_long_handoff_supervisor
 from nemo_coding_platform.core.memory import MemoryAtomType, nemo_tools_for_phase
 from nemo_coding_platform.core.mission_control import build_mission_control_state
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.model_config import ModelProfile, default_model_profile
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan, QualityMutationEngine
-from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
+from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, NemoCallResult, PersistentNemoAdapter, McpNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
 from nemo_coding_platform.core.orchestrator import DEFAULT_WORKFLOW, ReviewDecision, SupervisedWorkflowRunner
 from nemo_coding_platform.core.persistence import build_long_handoff_lineage, build_replay_summary, evaluate_long_handoff_continuation_policy, evaluate_long_handoff_memory_policy, load_headless_result_json, save_headless_result_json, summarize_persisted_result
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
+from nemo_coding_platform.core.self_modification import SelfModRequest, SelfModTaskType, execute_self_modification, self_mod_apply, self_mod_impact, self_mod_review, self_mod_rollback, self_mod_similar_runs, self_mod_status, self_mod_trajectory
+from nemo_coding_platform.core.skills import find_skill_by_name
 from nemo_coding_platform.core.task_run import EventKind
+from nemo_coding_platform.core.watch_mode import FileWatcher, WatchRequest
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.workspace import Workspace
 
@@ -71,9 +76,64 @@ def build_parser() -> argparse.ArgumentParser:
     headless_run.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
     headless_run.add_argument("--timeout", type=float, default=30.0)
     headless_run.add_argument("--bounded-simulation", action="store_true")
-    headless_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for this run")
+    headless_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store")
     headless_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
+    headless_run.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
+    headless_run.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    headless_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Aider prompt")
+    headless_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
+    headless_run.add_argument("--permissions-file", help="Path to .nemocode-permissions.json")
+    headless_run.add_argument("--image", help="Path to a design reference image (Vision)")
     headless_run.add_argument("--json", action="store_true")
+    self_modify = subparsers.add_parser("self-modify", help="Run a controlled self-modification task against NEMOCODE itself")
+    self_modify.add_argument("description")
+    self_modify.add_argument("--type", choices=[item.value for item in SelfModTaskType], default=SelfModTaskType.BUG_FIX.value)
+    self_modify.add_argument("--repo", help="NEMOCODE repo root; auto-discovered when omitted")
+    self_modify.add_argument("--target-file", action="append", default=[])
+    self_modify.add_argument("--validation", action="append")
+    self_modify.add_argument("--validation-policy", choices=("none", "smoke", "targeted", "full"), default="smoke")
+    self_modify.add_argument("--repair-budget", type=int, default=2)
+    self_modify.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
+    self_modify.add_argument("--aider-command")
+    self_modify.add_argument("--model-profile", default=default_model_profile().model)
+    self_modify.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
+    self_modify.add_argument("--timeout", type=float, default=30.0)
+    self_modify.add_argument("--bounded-simulation", action="store_true")
+    self_modify.add_argument("--real-validation", action="store_true")
+    self_modify.add_argument("--memory-db", default=DEFAULT_MEMORY_DB)
+    self_modify.add_argument("--task-id", default="self-mod-task")
+    self_modify.add_argument("--run-id", default="self-mod-run")
+    self_modify.add_argument("--json", action="store_true")
+    self_mod_status_cmd = subparsers.add_parser("self-mod-status", help="Summarize a persisted self-modification run")
+    self_mod_status_cmd.add_argument("run_json")
+    self_mod_status_cmd.add_argument("--json", action="store_true")
+    self_mod_review_cmd = subparsers.add_parser("self-mod-review", help="Build a self-modification review plan and risk report")
+    self_mod_review_cmd.add_argument("run_json")
+    self_mod_review_cmd.add_argument("--permissions-file")
+    self_mod_review_cmd.add_argument("--json", action="store_true")
+    self_mod_apply_cmd = subparsers.add_parser("self-mod-apply", help="Apply a reviewed self-modification run after explicit approval")
+    self_mod_apply_cmd.add_argument("run_json")
+    self_mod_apply_cmd.add_argument("--approve-review", action="store_true")
+    self_mod_apply_cmd.add_argument("--permissions-file")
+    self_mod_apply_cmd.add_argument("--backup-dir")
+    self_mod_apply_cmd.add_argument("--autonomy-profile", choices=("manual", "trusted", "aggressive"), default="manual")
+    self_mod_apply_cmd.add_argument("--save-apply-json")
+    self_mod_apply_cmd.add_argument("--json", action="store_true")
+    self_mod_rollback_cmd = subparsers.add_parser("self-mod-rollback", help="Rollback a self-modification apply JSON after explicit approval")
+    self_mod_rollback_cmd.add_argument("apply_json")
+    self_mod_rollback_cmd.add_argument("--approve-review", action="store_true")
+    self_mod_rollback_cmd.add_argument("--json", action="store_true")
+    self_mod_trajectory_cmd = subparsers.add_parser("self-mod-trajectory", help="Build a replayable self-improvement trajectory from a self-modification run")
+    self_mod_trajectory_cmd.add_argument("run_json")
+    self_mod_trajectory_cmd.add_argument("--json", action="store_true")
+    self_mod_impact_cmd = subparsers.add_parser("self-mod-impact", help="Analyze changed surfaces and validation needs for a self-modification run")
+    self_mod_impact_cmd.add_argument("run_json")
+    self_mod_impact_cmd.add_argument("--json", action="store_true")
+    self_mod_similar_cmd = subparsers.add_parser("self-mod-similar-runs", help="Retrieve similar self-modification runs from NEMO memory")
+    self_mod_similar_cmd.add_argument("query")
+    self_mod_similar_cmd.add_argument("--memory-db", default=DEFAULT_MEMORY_DB)
+    self_mod_similar_cmd.add_argument("--limit", type=int, default=6)
+    self_mod_similar_cmd.add_argument("--json", action="store_true")
     long_run = subparsers.add_parser("long-handoff-run", help="Run a supervised long Full Handoff slice with budgets and heartbeats")
     long_run.add_argument("objective")
     long_run.add_argument("--repo", default=".")
@@ -97,9 +157,21 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--max-heartbeats", type=int, default=4)
     long_run.add_argument("--token-budget", type=int, default=32000)
     long_run.add_argument("--pause-after-minutes", type=int)
-    long_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for this run")
+    long_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store")
     long_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
+    long_run.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
+    long_run.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    long_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Aider prompt")
+    long_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
+    long_run.add_argument("--permissions-file", help="Path to .nemocode-permissions.json")
+    long_run.add_argument("--image", help="Path to a design reference image (Vision)")
     long_run.add_argument("--json", action="store_true")
+
+    watch = subparsers.add_parser("watch", help="Watch for # ai! comments in the repository and trigger handoffs")
+    watch.add_argument("--repo", default=".", help="Repository root to watch")
+    watch.add_argument("--provider", default="fake", choices=["fake", "subprocess"])
+    watch.add_argument("--model-profile", default="nvidia.agentic.coder-4b")
+    watch.add_argument("--lmstudio-base-url", default="http://localhost:1234/v1")
     show_run = subparsers.add_parser("show-run-json", help="Summarize a persisted headless run JSON file")
     show_run.add_argument("path")
     show_run.add_argument("--json", action="store_true")
@@ -133,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     apply_run.add_argument("--save-apply-report", help="Write apply-report.md to this path after applying")
     apply_run.add_argument("--save-apply-json", help="Write structured apply result JSON for rollback")
     apply_run.add_argument("--backup-dir", help="Directory for update backups before applying")
+    apply_run.add_argument("--autonomy-profile", choices=("manual", "trusted", "aggressive"), default="manual", help="Allow safe auto-apply without --approve-review when profile permits it")
     apply_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for apply writeback")
     apply_run.add_argument("--no-memory-db", action="store_true", help="Skip NEMO apply writeback")
     apply_run.add_argument("--json", action="store_true")
@@ -141,6 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     rollback_apply.add_argument("--approve-review", action="store_true")
     rollback_apply.add_argument("--save-rollback-report", help="Write rollback-report.md to this path after rollback")
     rollback_apply.add_argument("--json", action="store_true")
+    
+    mcp_server = subparsers.add_parser("mcp-server", help="Run the real MCP server (SSE protocol) for integration with LLM clients")
+    mcp_server.add_argument("--host", default="127.0.0.1")
+    mcp_server.add_argument("--port", type=int, default=8765)
     resume_long = subparsers.add_parser("long-handoff-resume", help="Build a resume plan from a paused long handoff JSON file")
     resume_long.add_argument("path")
     resume_long.add_argument("--save-json")
@@ -168,6 +245,8 @@ def build_parser() -> argparse.ArgumentParser:
     continue_long.add_argument("--pause-after-minutes", type=int)
     continue_long.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for this continuation")
     continue_long.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
+    continue_long.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
+    continue_long.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
     continue_long.add_argument("--lineage-context", action="append", default=[], help="Existing run JSON to use as autonomy lineage context")
     continue_long.add_argument("--allow-fork", action="store_true", help="Allow continuing a source run that already has a continuation")
     continue_long.add_argument("--json", action="store_true")
@@ -177,10 +256,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _persistent_nemo_adapter(memory_db: str | None, no_memory_db: bool = False) -> PersistentNemoAdapter | None:
-    if no_memory_db or not memory_db:
-        return None
-    return PersistentNemoAdapter(PersistentMemoryStore(Path(memory_db)))
+def _persistent_nemo_adapter(db_path: str, no_memory_db: bool, mcp_url: str | None = None, mcp_prefix: str = ""):
+    if mcp_url:
+        return McpNemoAdapter(mcp_url, tool_prefix=mcp_prefix)
+    if no_memory_db:
+        return InMemoryNemoAdapter()
+    return PersistentNemoAdapter(PersistentMemoryStore(Path(db_path)))
 
 
 def _nemo_memory_summaries(memory_db: str | None, no_memory_db: bool = False) -> list[str]:
@@ -201,6 +282,19 @@ def _print_continuation_policy_block(policy: dict[str, object], json_output: boo
     else:
         print(f"error={payload['error']} reasons={','.join(payload['reasons'])}")
     return 1
+
+
+def _resolve_skill_prompt(skill_name: str | None, skills_root: str, *, quiet: bool = False) -> str:
+    """Load the prompt for *skill_name* from *skills_root*, or return empty string."""
+    if not skill_name:
+        return ""
+    from pathlib import Path
+    skill = find_skill_by_name(skill_name, Path(skills_root))
+    if skill is None:
+        if not quiet:
+            logging.warning("skill '%s' not found in %r", skill_name, skills_root)
+        return ""
+    return skill.prompt
 
 
 def _write_apply_memory(applied: object, memory_db: str | None, no_memory_db: bool = False) -> None:
@@ -288,6 +382,7 @@ def main(argv: list[str] | None = None) -> int:
             acceptance_criteria=tuple(args.acceptance or ["passes validation"]),
             validation_commands=validation_commands_for_policy(args.validation_policy, tuple(args.validation or ())),
         )
+        skill_prompt = _resolve_skill_prompt(args.skill, args.skills_root, quiet=bool(args.json))
         result = execute_headless_handoff(
             request,
             tuple(args.fail_validation),
@@ -301,7 +396,10 @@ def main(argv: list[str] | None = None) -> int:
             validation_python_scripts=tuple(args.validation_python),
             validation_policy=args.validation_policy,
             bounded_simulation=args.bounded_simulation,
-            nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db),
+            nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
+            skill_prompt=skill_prompt,
+            permissions_file=args.permissions_file or "",
+            image_path=args.image or "",
         )
         score = score_headless_result(result)
         if args.save_json:
@@ -316,6 +414,121 @@ def main(argv: list[str] | None = None) -> int:
             print(f"task={result.task.id} run={result.run.id}")
             print(f"events={len(result.timeline.events)} artifacts={len(result.artifacts)} score={score.score}")
             print(result.review_package.to_markdown())
+        return 0
+    if args.command == "self-modify":
+        request = SelfModRequest(
+            description=args.description,
+            task_type=SelfModTaskType(args.type),
+            target_files=tuple(args.target_file),
+            validation_policy=args.validation_policy,
+            validation_commands=tuple(args.validation or ()),
+            repair_budget=args.repair_budget,
+            memory_db=args.memory_db,
+            repo_root=args.repo,
+            provider_mode=args.provider,
+            timeout_seconds=args.timeout,
+            bounded_simulation=args.bounded_simulation,
+            real_validation=args.real_validation,
+        )
+        result = execute_self_modification(
+            request,
+            task_id=args.task_id,
+            run_id=args.run_id,
+            model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
+            aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+        )
+        payload = result.to_summary_dict()
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"task={payload['task_id']} run={payload['run_id']} validation_passed={payload['validation_passed']} grade={payload['grade']}")
+            print(f"repo={payload['repo_root']}")
+            print(f"changed_files={','.join(payload['changed_files'])}")
+            print(f"permissions_file={payload['permissions_file']}")
+            print(f"run_json={payload['run_json']}")
+        return 0
+    if args.command == "self-mod-status":
+        payload = self_mod_status(args.run_json)
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"task={payload['task_id']} run={payload['run_id']} grade={payload['grade']} mergeable={payload['mergeable']}")
+            print(f"risk_flags={','.join(payload['risk_flags'])}")
+        return 0
+    if args.command == "self-mod-review":
+        payload = self_mod_review(args.run_json, args.permissions_file)
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"mergeable={payload['mergeable']} risk_flags={','.join(payload['risk_flags'])}")
+            print(json.dumps(payload["merge_plan"], indent=2, sort_keys=True))
+        return 0 if payload["mergeable"] else 1
+    if args.command == "self-mod-apply":
+        try:
+            payload = self_mod_apply(args.run_json, approve_review=args.approve_review, backup_dir=args.backup_dir, permissions_file=args.permissions_file, autonomy_profile=args.autonomy_profile)
+        except PermissionError as error:
+            error_payload = {"error": str(error)}
+            if args.json:
+                print(json.dumps(error_payload, sort_keys=True))
+            else:
+                print(f"error={error}")
+            return 1
+        if args.save_apply_json:
+            target = Path(args.save_apply_json)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"applied={','.join(payload['applied_files'])}")
+        return 0
+    if args.command == "self-mod-rollback":
+        try:
+            payload = self_mod_rollback(args.apply_json, approve_review=args.approve_review)
+        except (PermissionError, FileNotFoundError) as error:
+            error_payload = {"error": str(error)}
+            if args.json:
+                print(json.dumps(error_payload, sort_keys=True))
+            else:
+                print(f"error={error}")
+            return 1
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"restored={','.join(payload['restored_files'])} deleted={','.join(payload['deleted_files'])}")
+        return 0
+    if args.command == "self-mod-trajectory":
+        payload = self_mod_trajectory(args.run_json)
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"task={payload['task_id']} run={payload['run_id']} grade={payload['grade']} mergeable={payload['mergeable']}")
+            print(f"changed_files={','.join(payload['changed_files'])}")
+            print(f"risks={','.join(payload['risk_flags']) or 'none'}")
+        return 0
+    if args.command == "self-mod-impact":
+        payload = self_mod_impact(args.run_json)
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"changed_files={','.join(payload['changed_files'])}")
+            print(f"suggested_tests={','.join(payload['suggested_tests']) or 'none'}")
+            print(f"risk_flags={','.join(payload['risk_flags']) or 'none'}")
+        return 0
+    if args.command == "self-mod-similar-runs":
+        query = args.query
+        try:
+            if Path(query).exists():
+                query = self_mod_trajectory(query).get("objective") or query
+        except OSError:
+            pass
+        payload = self_mod_similar_runs(args.memory_db, str(query), limit=args.limit)
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"matches={payload['count']} query={payload['query']}")
+            for run in payload["runs"]:
+                print(f"- {run['id']}: {run['content']}")
         return 0
     if args.command == "long-handoff-run":
         request = HandoffRequest(
@@ -344,7 +557,9 @@ def main(argv: list[str] | None = None) -> int:
             target_files=tuple(args.target_file),
             validation_python_scripts=tuple(args.validation_python),
             validation_policy=args.validation_policy,
-            nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db),
+            nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
+            permissions_file=args.permissions_file or "",
+            image_path=args.image or "",
         )
         score = score_headless_result(result)
         if args.save_json:
@@ -419,6 +634,25 @@ def main(argv: list[str] | None = None) -> int:
             for run in state["runs"][:10]:
                 print(f"- {run['review_status']} {run['task_id']} {run['run_id']} changes={len(run['changed_files'])}")
         return 0
+    if args.command == "watch":
+        print(f"NEMOCODE watching {args.repo} for '# ai!' comments... (Ctrl+C to stop)")
+        
+        def on_comments(requests: list[WatchRequest]):
+            for req in requests:
+                print(f"\n[AI Comment Detected] {req.filepath}:{req.line_number} -> {req.objective}")
+                # For now, we just print. In a real scenario, we might trigger a background task.
+                print("Tip: Run 'nemocode headless-run \"{req.objective}\" --target-file {req.filepath}' to execute.")
+
+        watcher = FileWatcher(args.repo, on_comments)
+        watcher.start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nStopping watcher...")
+            watcher.stop()
+        return 0
+
     if args.command == "mission-control-server":
         from nemo_coding_platform.mission_control_server import MissionControlServerConfig, run_server
 
@@ -430,6 +664,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         run_server(args.host, args.port, config)
         return 0
+
+    if args.command == "mcp-server":
+        from nemo_coding_platform.mcp_server import run_mcp_server
+        run_mcp_server(args.host, args.port)
+        return 0
+
     if args.command == "apply-run-json":
         plan = build_merge_plan(load_headless_result_json(args.path))
         if args.save_plan:
@@ -437,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(plan.to_markdown(), encoding="utf-8")
         try:
-            applied = apply_merge_plan(plan, approve_review=args.approve_review, backup_dir=args.backup_dir)
+            applied = apply_merge_plan(plan, approve_review=args.approve_review, backup_dir=args.backup_dir, autonomy_profile=args.autonomy_profile)
         except PermissionError as error:
             payload = {"error": str(error), "mergeable": plan.mergeable, "risk_flags": list(plan.risk_flags)}
             if args.json:
@@ -524,7 +764,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_files=tuple(args.target_file),
                 validation_python_scripts=tuple(args.validation_python),
                 validation_policy=args.validation_policy,
-                nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db),
+                nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
             )
         except ValueError as error:
             print(f"error={error}")

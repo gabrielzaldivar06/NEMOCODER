@@ -126,6 +126,38 @@ class ReviewGateTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 apply_merge_plan(plan, approve_review=False)
 
+    def test_trusted_autonomy_applies_ready_risk_free_plan_without_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            repo.mkdir()
+            sandbox.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            plan = build_merge_plan(ready_payload(repo, sandbox, ["created.txt"]))
+
+            result = apply_merge_plan(plan, autonomy_profile="trusted")
+
+        self.assertEqual(result.applied_files, ("created.txt",))
+        self.assertFalse(result.review_approved)
+        self.assertTrue(result.auto_applied)
+        self.assertEqual(result.autonomy_profile, "trusted")
+
+    def test_trusted_autonomy_does_not_apply_risky_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            repo.mkdir()
+            sandbox.mkdir()
+            (sandbox / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+            plan = build_merge_plan(ready_payload(repo, sandbox, ["pyproject.toml"]))
+
+            with self.assertRaises(PermissionError) as raised:
+                apply_merge_plan(plan, autonomy_profile="trusted")
+
+        self.assertIn("merge_plan_not_mergeable", str(raised.exception))
+
     def test_apply_copies_only_planned_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

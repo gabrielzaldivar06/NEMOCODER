@@ -102,6 +102,8 @@ class MergeApplyResult:
     review_approved: bool
     backup_dir: str | None
     backup_files: tuple[str, ...]
+    auto_applied: bool = False
+    autonomy_profile: str = "manual"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -114,6 +116,8 @@ class MergeApplyResult:
             "review_approved": self.review_approved,
             "backup_dir": self.backup_dir,
             "backup_files": list(self.backup_files),
+            "auto_applied": self.auto_applied,
+            "autonomy_profile": self.autonomy_profile,
         }
 
     @classmethod
@@ -134,6 +138,8 @@ class MergeApplyResult:
             review_approved=bool(payload.get("review_approved")),
             backup_dir=str(payload.get("backup_dir")) if payload.get("backup_dir") else None,
             backup_files=string_tuple("backup_files"),
+            auto_applied=bool(payload.get("auto_applied")),
+            autonomy_profile=str(payload.get("autonomy_profile") or "manual"),
         )
 
     def to_markdown(self) -> str:
@@ -144,6 +150,8 @@ class MergeApplyResult:
             f"run_id={self.run_id}",
             f"repo_path={self.repo_path}",
             f"review_approved={str(self.review_approved).lower()}",
+            f"auto_applied={str(self.auto_applied).lower()}",
+            f"autonomy_profile={self.autonomy_profile}",
             "",
             "## Applied Files",
         ]
@@ -286,9 +294,15 @@ def build_merge_plan(payload: dict[str, Any]) -> MergePlan:
     return MergePlan(task_id, run_id, str(repo.root), str(sandbox.root), str(summary.get("grade")), changed_files, tuple(files), unique_risks, mergeable)
 
 
-def apply_merge_plan(plan: MergePlan, *, approve_review: bool = False, backup_dir: str | None = None) -> MergeApplyResult:
+def apply_merge_plan(plan: MergePlan, *, approve_review: bool = False, backup_dir: str | None = None, autonomy_profile: str = "manual") -> MergeApplyResult:
+    auto_applied = False
     if not approve_review:
-        raise PermissionError("review approval required before applying run changes")
+        from nemo_coding_platform.core.autonomy_gate import evaluate_auto_apply
+
+        decision = evaluate_auto_apply(plan, autonomy_profile)
+        if not decision.allowed:
+            raise PermissionError(f"review approval required before applying run changes: {', '.join(decision.reasons)}")
+        auto_applied = True
     if not plan.mergeable:
         raise PermissionError(f"merge plan is not mergeable: {', '.join(plan.risk_flags)}")
     applied: list[str] = []
@@ -313,7 +327,7 @@ def apply_merge_plan(plan: MergePlan, *, approve_review: bool = False, backup_di
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         applied.append(item.path)
-    return MergeApplyResult(plan.task_id, plan.run_id, plan.repo_path, tuple(applied), tuple(created_files), tuple(updated_files), True, str(backup_root) if backup_files else None, tuple(backup_files))
+    return MergeApplyResult(plan.task_id, plan.run_id, plan.repo_path, tuple(applied), tuple(created_files), tuple(updated_files), approve_review, str(backup_root) if backup_files else None, tuple(backup_files), auto_applied, autonomy_profile)
 
 
 def rollback_apply_result(result: MergeApplyResult, *, approve_review: bool = False) -> MergeRollbackResult:

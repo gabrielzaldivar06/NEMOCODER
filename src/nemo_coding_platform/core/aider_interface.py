@@ -11,6 +11,7 @@ from typing import Protocol
 from nemo_coding_platform.core.model_config import ModelProfile, default_model_profile
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan, QualityMutationEngine
 from nemo_coding_platform.core.runtime_diff import diff_snapshots, snapshot_path
+from nemo_coding_platform.core.workspace import mask_host_paths
 
 
 AIDER_MESSAGE_FILE = ".nemo-aider-message.md"
@@ -30,6 +31,8 @@ def render_aider_message(request: MutationRequest) -> str:
     validation = request.validation_output.strip() or "No validation output yet."
     context = request.context.strip() or "No NEMO context supplied."
     repair = f"Repair attempt: {request.repair_attempt}" if request.repair_attempt else "Initial implementation."
+    skill_section = ("\n", "# Skill Guidance", request.skill_prompt) if request.skill_prompt.strip() else ()
+    design_section = ("\n", "# Design Reference", f"An image has been provided for this task: {request.image_path}\nUse your vision capabilities to analyze it and implement the UI accordingly.") if request.image_path else ()
     return "\n".join(
         (
             "You are implementing a NEMO Full Handoff task inside an isolated runtime worktree.",
@@ -44,12 +47,20 @@ def render_aider_message(request: MutationRequest) -> str:
             "",
             "# Target Files",
             targets,
+            *skill_section,
+            *design_section,
             "",
             "# NEMO Context",
             context,
             "",
             "# Previous Validation Output",
             validation,
+            "",
+            "# NEMO Autonomy Tools",
+            "You have access to the NEMO memory plane. Use these shell commands if needed:",
+            "- `!python -m aider.nemo_platform call search_memories --args '{\"query\": \"API_NAME\"}'`: Search for unknown APIs or facts.",
+            "- `!python -m aider.nemo_platform call expand_context_evidence --args '{\"handle\": \"ev_...\"}'`: Expand a portfolio handle.",
+            "- `!python -m aider.nemo_platform call store_architectural_decision --args '{\"decision\": \"...\", \"importance\": 8}'`: Record a technical choice.",
             "",
             "Produce the implementation now. Keep changes focused and validation-friendly.",
         )
@@ -99,6 +110,8 @@ class MutationRequest:
     timeout_seconds: float = 30.0
     repair_attempt: int = 0
     previous_diff: str = ""
+    skill_prompt: str = ""  # Injected from a SKILL.md when --skill is used.
+    image_path: str = ""    # Optional path to a design reference (Vision).
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,9 +176,18 @@ class SubprocessAiderProvider:
         cwd = Path(request.runtime_path).resolve() if request.runtime_path else self.cwd
         message_file = write_aider_message(cwd, request)
         command = self.command or build_default_aider_command(profile, message_file)
-        product_aider = str(_repo_root() / "product" / "aider")
+        
+        root = _repo_root()
+        product_aider = str(root / "product" / "aider")
+        project_src = str(root / "src")
+        
         existing_pythonpath = environ.get("PYTHONPATH", "")
-        pythonpath = product_aider if not existing_pythonpath else f"{product_aider};{existing_pythonpath}"
+        # Include both the Aider fork and the project src so the CLI can import the platform core
+        pythonpath = ";".join(filter(None, [product_aider, project_src, existing_pythonpath]))
+        
+        # Determine DB path - fallback to a default if not explicitly provided
+        db_path = environ.get("NEMO_DB_PATH", str(root / ".nemo-memory.db"))
+        
         self.last_command = tuple(command)
         self.last_message_file = str(message_file)
         try:
@@ -188,6 +210,7 @@ class SubprocessAiderProvider:
                     "NEMO_MUTATION_OBJECTIVE": request.objective,
                     "NEMO_MUTATION_SPEC_PATH": request.spec_path,
                     "NEMO_AIDER_MESSAGE_FILE": str(message_file),
+                    "NEMO_DB_PATH": db_path,
                     "PYTHONPATH": pythonpath,
                 },
             )
@@ -225,6 +248,11 @@ def apply_mutation_request(engine: QualityMutationEngine, provider: AiderProvide
     after = snapshot_path(engine.workspace.root)
     runtime_diff = diff_snapshots(before, after)
     profile = request.model_profile or default_model_profile()
+    # Mask real host paths from provider output before storing in artifacts or memory.
+    raw_stdout = getattr(provider, "last_stdout", "")
+    raw_stderr = getattr(provider, "last_stderr", "")
+    safe_stdout = mask_host_paths(raw_stdout, engine.workspace)
+    safe_stderr = mask_host_paths(raw_stderr, engine.workspace)
     return MutationResult(
         provider.name,
         approved_plan,
@@ -234,8 +262,8 @@ def apply_mutation_request(engine: QualityMutationEngine, provider: AiderProvide
         request.provider_mode,
         profile,
         getattr(provider, "last_returncode", None),
-        getattr(provider, "last_stdout", ""),
-        getattr(provider, "last_stderr", ""),
+        safe_stdout,
+        safe_stderr,
         runtime_diff.changed_files,
         runtime_diff.unified_diff,
         elapsed,

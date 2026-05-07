@@ -13,6 +13,7 @@ from nemo_coding_platform.core.model_config import ModelProfile, default_model_p
 from nemo_coding_platform.core.mutations import QualityMutationEngine
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, NemoCallResult, PersistentNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
+from nemo_coding_platform.core.permission_engine import PermissionRuleset, load_ruleset_from_file, default_ruleset, PermissionAction
 from nemo_coding_platform.core.product import AutonomyLevel
 from nemo_coding_platform.core.product_factory import get_platform_info
 from nemo_coding_platform.core.repair import RepairBudget, RepairPlan
@@ -30,6 +31,7 @@ from nemo_coding_platform.core.task_run import (
     RunEvent,
     Task,
 )
+from nemo_coding_platform.core.todo_guard import build_todo_reminder, extract_todos_from_plan
 from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
 from nemo_coding_platform.core.workspace import Workspace
 from nemo_coding_platform.core.worktree_runtime import snapshot_runtime_files, write_runtime_file
@@ -95,6 +97,9 @@ def execute_headless_handoff(
     validation_python_scripts: tuple[str, ...] = (),
     validation_policy: str = "smoke",
     bounded_simulation: bool = False,
+    skill_prompt: str = "",
+    permissions_file: str = "",
+    image_path: str = "",
 ) -> HeadlessRunResult:
     validate_handoff_request(request)
     plan = build_handoff_plan(request)
@@ -132,6 +137,33 @@ def execute_headless_handoff(
     profile = model_profile or default_model_profile()
     provider = mutation_provider or create_aider_provider(provider_mode, aider_command, cwd=Path("product/aider"))
     engine = QualityMutationEngine(Workspace.from_path(runtime.worktree_path))
+
+    # --- Permission System (inspired by opencode) ---
+    repo_root = Path(request.repo_path).resolve()
+    perm_path = Path(permissions_file) if permissions_file else repo_root / ".nemocode-permissions.json"
+    ruleset = load_ruleset_from_file(perm_path) if perm_path.exists() else default_ruleset(AutonomyLevel.FULL_HANDOFF)
+    
+    allowed_files = []
+    denied_files = []
+    for f in target_files:
+        if ruleset.evaluate("write_file", f) == PermissionAction.ALLOW:
+            allowed_files.append(f)
+        else:
+            denied_files.append(f)
+
+    if target_files and denied_files and not allowed_files:
+        raise PermissionError(f"all requested target files denied by permissions policy: {', '.join(denied_files)}")
+
+    # If user provided explicit targets, honor permissions by keeping only allowed ones.
+    effective_targets = tuple(allowed_files) if target_files else target_files
+    for relative_target in effective_targets:
+        source_path = repo_root / relative_target
+        if not source_path.exists() or not source_path.is_file():
+            continue
+        runtime_target = runtime.resolve_inside(relative_target)
+        runtime_target.parent.mkdir(parents=True, exist_ok=True)
+        runtime_target.write_bytes(source_path.read_bytes())
+
     mutation_request = MutationRequest(
         request.prd,
         "generated-spec.md",
@@ -140,10 +172,12 @@ def execute_headless_handoff(
         provider_mode,
         request.repo_path,
         str(runtime.worktree_path),
-        target_files,
+        effective_targets,
         profile,
         "",
         timeout_seconds,
+        skill_prompt=skill_prompt,
+        image_path=image_path,
     )
     mutation_result = apply_mutation_request(engine, provider, mutation_request)
 
@@ -183,7 +217,17 @@ def execute_headless_handoff(
     )
     repair_result: RepairRunResult | None = None
     repair_plan = RepairPlan(RepairBudget(request.repair_budget))
+    todo_reminder_injected = False
     if not validation.passed:
+        # --- Todo-Awareness Guard (inspired by deer-flow TodoMiddleware) ---
+        # If validation failed, build a system_reminder from incomplete plan
+        # steps and prepend it to the repair context so the agent cannot
+        # silently exit without completing the original checklist.
+        todos = extract_todos_from_plan(plan)
+        todo_reminder = build_todo_reminder(todos)
+        if todo_reminder:
+            todo_reminder_injected = True
+
         if real_validation:
             validator = lambda: run_validation_suite(validation_commands, cwd=resolved_validation_cwd)
         else:
@@ -197,6 +241,7 @@ def execute_headless_handoff(
             provider,
             mutation_request,
             validator=validator,
+            todo_reminder=todo_reminder,
         )
         repair_plan = repair_result.plan
         validation = repair_result.validation
@@ -214,7 +259,17 @@ def execute_headless_handoff(
         MemoryTrace("mem-3", run.id, "store_conversation", "conversation", "memory_write", "Prepared final writeback."),
     )
     runtime_files = snapshot_runtime_files(runtime)
-    risk_flags = tuple(filter(None, ("validation_failure" if not validation.passed else "", "no_changed_files" if not effective_mutation_result.changed_files and not effective_mutation_result.applied_files else "")))
+    permission_risks = tuple(f"permission_denied:{path}" for path in denied_files)
+    risk_flags = tuple(
+        filter(
+            None,
+            (
+                "validation_failure" if not validation.passed else "",
+                "no_changed_files" if not effective_mutation_result.changed_files and not effective_mutation_result.applied_files else "",
+                *permission_risks,
+            ),
+        )
+    )
     aider_output = "\n".join(
         (
             f"provider={mutation_result.provider}",
@@ -312,6 +367,15 @@ def execute_headless_handoff(
             (ExecutionPhase.EXECUTE, EventKind.CHECKPOINT, "Created unattended checkpoint.", "checkpoint.md"),
             (ExecutionPhase.REVIEW, EventKind.REVIEW_PACKAGE_CREATED, "Created review package.", None),
             (ExecutionPhase.REVIEW, EventKind.MEMORY_WRITTEN, "Prepared NEMO writeback summary.", None),
+        )
+    if denied_files:
+        event_specs = event_specs + (
+            (
+                ExecutionPhase.PLAN,
+                EventKind.PERMISSION_DENIED,
+                f"Permission denied for target files: {', '.join(denied_files)}.",
+                None,
+            ),
         )
     for index, (phase, kind, summary, payload_ref) in enumerate(event_specs, start=1):
         timeline = timeline.append(RunEvent(f"event-{index}", run.id, index, phase, kind, summary, payload_ref))

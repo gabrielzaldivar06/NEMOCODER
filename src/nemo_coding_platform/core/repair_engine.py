@@ -7,6 +7,8 @@ from nemo_coding_platform.core.aider_interface import AiderProvider, MutationReq
 from nemo_coding_platform.core.mutations import QualityMutationEngine
 from nemo_coding_platform.core.repair import RepairBudget, RepairPlan
 from nemo_coding_platform.core.validation import ValidationSuiteResult, simulate_validation
+from nemo_coding_platform.core.context_compaction import compact_context
+from nemo_coding_platform.core.post_mutation_lint import lint_changed_files, format_lint_evidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +35,11 @@ def format_validation_evidence(validation: ValidationSuiteResult, attempt: int) 
     return "\n".join(lines)
 
 
+def _diffs_are_identical(a: str, b: str) -> bool:
+    """Return True when two diffs represent the same change (or are both empty)."""
+    return a.strip() == b.strip()
+
+
 def run_repair_loop(
     initial_validation: ValidationSuiteResult,
     commands: tuple[str, ...],
@@ -42,30 +49,54 @@ def run_repair_loop(
     provider: AiderProvider,
     base_request: MutationRequest,
     validator: Callable[[], ValidationSuiteResult] | None = None,
+    todo_reminder: str = "",
 ) -> RepairRunResult:
     plan = RepairPlan(budget)
     validation = initial_validation
     mutations: list[MutationResult] = []
     stop_reason = ""
+    lint_evidence = ""
     while not validation.passed and plan.can_record_attempt():
         attempt_number = len(plan.attempts) + 1
         failed = ", ".join(result.command.command for result in validation.results if not result.passed) or "validation"
         plan = plan.next_attempt("validation_failed", f"repair failed command(s): {failed}")
         validation_evidence = format_validation_evidence(validation, attempt_number)
         previous_diff = mutations[-1].diff_artifact if mutations else base_request.previous_diff
+
+        # --- Loop Detection (inspired by deer-flow loop_detection_middleware) ---
+        # If the most recent repair produced the same diff as the one before it,
+        # stop immediately instead of exhausting the budget.
+        if len(mutations) >= 2 and _diffs_are_identical(mutations[-1].diff_artifact, mutations[-2].diff_artifact):
+            stop_reason = "repair_loop_detected"
+            break
+        # Also stop if the last repair was a no-op and we've seen it before.
+        if len(mutations) >= 1 and not mutations[-1].diff_artifact.strip():
+            if len(mutations) >= 2 and not mutations[-2].diff_artifact.strip():
+                stop_reason = "repair_loop_detected"
+                break
+
+        # Prepend the todo reminder to the context on the first attempt only.
+        reminder_prefix = (todo_reminder + "\n\n") if todo_reminder and attempt_number == 1 else ""
+
         repair_context = "\n".join(
             item
             for item in (
-                base_request.context,
+                reminder_prefix + base_request.context,
                 "",
                 "# Repair Evidence",
                 validation_evidence,
+                "",
+                lint_evidence,
                 "",
                 "# Previous Diff",
                 previous_diff or "No previous diff captured.",
             )
             if item is not None
         )
+        
+        # --- Context Compaction (inspired by opencode) ---
+        repair_context = compact_context(repair_context)
+        
         repair_request = MutationRequest(
             objective=f"Repair validation failure for: {base_request.objective}",
             spec_path=base_request.spec_path,
@@ -80,9 +111,15 @@ def run_repair_loop(
             timeout_seconds=base_request.timeout_seconds,
             repair_attempt=attempt_number,
             previous_diff=previous_diff,
+            skill_prompt=base_request.skill_prompt,
         )
         mutation = apply_mutation_request(engine, provider, repair_request)
         mutations.append(mutation)
+        
+        # --- Post-Mutation Linting (inspired by aider) ---
+        lint_results = lint_changed_files(mutation.changed_files, base_request.runtime_path)
+        lint_evidence = format_lint_evidence(lint_results)
+        
         if not mutation.changed_files and not mutation.applied_files:
             stop_reason = "repair_noop"
             break
@@ -90,3 +127,4 @@ def run_repair_loop(
     if not validation.passed and not stop_reason and not plan.can_record_attempt():
         stop_reason = "repair_budget_exhausted"
     return RepairRunResult(plan, tuple(mutations), validation, stop_reason)
+

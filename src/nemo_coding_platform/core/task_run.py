@@ -29,6 +29,8 @@ class EventKind(StrEnum):
     ESCALATION = "escalation"
     PAUSED = "paused"
     RESUMED = "resumed"
+    TODO_REMINDER = "todo_reminder"
+    PERMISSION_DENIED = "permission_denied"
 
 
 class ArtifactType(StrEnum):

@@ -99,7 +99,7 @@ type AgentToolCall = {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply";
+  kind: "continue" | "revise" | "apply" | "self_modify";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -192,6 +192,36 @@ type NemoState = {
   evidence: NemoEvidence[];
   feedback: NemoFeedback[];
 };
+type SelfModInsights = {
+  ok: boolean;
+  trajectory: {
+    task_id: string;
+    run_id: string;
+    objective: string;
+    grade: string;
+    score: number;
+    validation_passed: boolean;
+    mergeable: boolean;
+    risk_flags: string[];
+    changed_files: string[];
+    timeline: TimelineEvent[];
+    artifacts: Array<{ type?: string; path?: string; summary?: string }>;
+  };
+  impact: {
+    changed_files: string[];
+    impacted_modules: string[];
+    suggested_tests: string[];
+    validation_commands: string[];
+    validation_statuses: string[];
+    risk_flags: string[];
+    touches_source: boolean;
+    touches_tests: boolean;
+    touches_ui: boolean;
+    touches_mcp: boolean;
+    touches_cli: boolean;
+  };
+  similar_runs: { query: string; count: number; runs: Array<{ id: string; content: string; tags: string[]; importance: number; evidence_handle: string | null; score: number }> };
+};
 
 function normalizeFilePreview(payload: FilePreview): FilePreview {
   return {
@@ -223,6 +253,9 @@ function normalizeRun(run: MissionRun): MissionRun {
 function normalizeState(payload: MissionState): MissionState {
   return { ...payload, runs: (payload.runs ?? []).map(normalizeRun), approval_queue: (payload.approval_queue ?? []).map(normalizeRun), settings: normalizeSettings(payload.settings) };
 }
+
+type ActivityPanel = "explorer" | "search" | "runs" | "agent" | "settings";
+type WorkspaceTab = "editor" | "review" | "agent";
 
 const fallbackState: MissionState = {
   schema_version: 1,
@@ -261,12 +294,18 @@ function statusTone(status: string): string {
   return "quiet";
 }
 
+function fileName(path: string): string {
+  const normalized = path.replaceAll("\\", "/");
+  return normalized.split("/").filter(Boolean).pop() || normalized || "welcome.md";
+}
+
 function App() {
   const [state, setState] = useState<MissionState>(fallbackState);
   const [selectedRunSource, setSelectedRunSource] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [nemoState, setNemoState] = useState<NemoState | null>(null);
+  const [selfInsights, setSelfInsights] = useState<SelfModInsights | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<MissionState["settings"]>(fallbackState.settings);
   const [repoDraft, setRepoDraft] = useState<string>(fallbackState.repo_path);
   const [cloneDraft, setCloneDraft] = useState({ url: "", destination: "" });
@@ -291,6 +330,8 @@ function App() {
   const [agentDraft, setAgentDraft] = useState<string>("");
   const [homeAgentDraft, setHomeAgentDraft] = useState<string>("");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
+  const [activeActivity, setActiveActivity] = useState<ActivityPanel>("explorer");
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>("editor");
   const [handoffDraft, setHandoffDraft] = useState({
     objective: "",
     acceptance: "passes validation",
@@ -372,12 +413,23 @@ function App() {
       .catch(() => setNemoState(null));
   };
 
+  const loadSelfInsights = (run: MissionRun | undefined) => {
+    if (!run) {
+      setSelfInsights(null);
+      return;
+    }
+    postJson<SelfModInsights>("/api/self-mod/insights", { source_json: run.source_json })
+      .then((payload) => setSelfInsights(payload))
+      .catch(() => setSelfInsights(null));
+  };
+
   const selectRun = (run: MissionRun) => {
     const nextFile = run.changed_files[0] ?? "";
     setSelectedRunSource(run.source_json);
     setSelectedFile(nextFile);
     loadFilePreview(run, nextFile);
     loadNemoState(run);
+    loadSelfInsights(run);
   };
 
   const selectFile = (filePath: string) => {
@@ -413,6 +465,18 @@ function App() {
         setState(payload.state);
         refreshApplyHistory();
         setStatus(`Applied run. Rollback JSON: ${payload.apply_json}`);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const autoApplyRun = (run: MissionRun) => {
+    setStatus("Auto-applying trusted run");
+    postJson<ApplyResult>("/api/apply", { source_json: run.source_json, autonomy_profile: "trusted" })
+      .then((payload) => {
+        setApplyResults((current) => ({ ...current, [run.source_json]: payload.apply_json }));
+        setState(payload.state);
+        refreshApplyHistory();
+        setStatus(`Auto-applied trusted run. Rollback JSON: ${payload.apply_json}`);
       })
       .catch((error: Error) => setStatus(error.message));
   };
@@ -524,6 +588,17 @@ function App() {
       .catch((error: Error) => setStatus(error.message));
   };
 
+  const activatePanel = (panel: ActivityPanel) => {
+    setActiveActivity(panel);
+    if (panel === "agent" || panel === "settings") setActiveWorkspaceTab("agent");
+    if (panel === "runs") setActiveWorkspaceTab("review");
+    if (panel === "explorer") setActiveWorkspaceTab("editor");
+    if (panel === "search") {
+      setActiveWorkspaceTab("agent");
+      setStatus("Search from Agent Control with NEMO context");
+    }
+  };
+
   const sendAgentMessage = (contentOverride?: string) => {
     const content = (contentOverride ?? agentDraft).trim();
     if (!content || agentBusy) return;
@@ -565,6 +640,16 @@ function App() {
           if (sourceJson) setApplyResults((current) => ({ ...current, [sourceJson]: payload.apply_json }));
           setState(payload.state);
           setStatus(`Applied run. Rollback JSON: ${payload.apply_json}`);
+        })
+        .catch((error: Error) => setStatus(error.message));
+      return;
+    }
+    if (action.kind === "self_modify") {
+      setStatus(`Starting self-modification: ${action.label}`);
+      postJson<HandoffJobResult>("/api/self-modify/start", action.payload)
+        .then((payload) => {
+          setActiveJob(payload.job);
+          setStatus(`Self-modification job started: ${payload.job.job_id}`);
         })
         .catch((error: Error) => setStatus(error.message));
       return;
@@ -650,6 +735,7 @@ function App() {
   useEffect(() => {
     if (selectedRun && activeFile) loadFilePreview(selectedRun, activeFile);
     loadNemoState(selectedRun);
+    loadSelfInsights(selectedRun);
   }, [selectedRunSource]);
 
   useEffect(() => {
@@ -661,11 +747,11 @@ function App() {
   return (
     <main className="ide-shell">
       <aside className="activity-bar" aria-label="Activity bar">
-        <button className="activity active" title="Explorer"><Files size={20} /></button>
-        <button className="activity" title="Search"><Search size={20} /></button>
-        <button className="activity" title="Runs"><GitBranch size={20} /></button>
-        <button className="activity" title="Agent"><MessageSquareText size={20} /></button>
-        <button className="activity" title="Settings"><Settings size={20} /></button>
+        <button className={`activity ${activeActivity === "explorer" ? "active" : ""}`} onClick={() => activatePanel("explorer")} title="Explorer"><Files size={20} /></button>
+        <button className={`activity ${activeActivity === "search" ? "active" : ""}`} onClick={() => activatePanel("search")} title="Search with agent"><Search size={20} /></button>
+        <button className={`activity ${activeActivity === "runs" ? "active" : ""}`} onClick={() => activatePanel("runs")} title="Review runs"><GitBranch size={20} /></button>
+        <button className={`activity ${activeActivity === "agent" ? "active" : ""}`} onClick={() => activatePanel("agent")} title="Agent"><MessageSquareText size={20} /></button>
+        <button className={`activity ${activeActivity === "settings" ? "active" : ""}`} onClick={() => activatePanel("settings")} title="Settings"><Settings size={20} /></button>
       </aside>
 
       <aside className="explorer">
@@ -692,8 +778,8 @@ function App() {
               </button>
               {selectedRun?.source_json === run.source_json && <div className="file-tree">
                 {run.changed_files.length === 0 ? <span className="tree-empty">No changed files</span> : run.changed_files.map((file) => (
-                  <button className={activeFile === file ? "active" : ""} key={file} onClick={() => selectFile(file)}>
-                    <FileCode2 size={14} /> {file}
+                  <button className={activeFile === file ? "active" : ""} key={file} onClick={() => selectFile(file)} title={file}>
+                    <FileCode2 size={14} /> <span>{fileName(file)}</span>
                   </button>
                 ))}
               </div>}
@@ -716,29 +802,31 @@ function App() {
 
         {composerOpen && <HandoffComposer draft={handoffDraft} onChange={setHandoffDraft} onSubmit={startHandoff} onClose={() => setComposerOpen(false)} running={handoffRunning} />}
 
-        <MissionHome
-          state={state}
-          readyRuns={readyRuns}
-          blockedRuns={blockedRuns}
-          nemoState={nemoState}
-          status={status}
-          draft={homeAgentDraft}
-          provider={settingsDraft.provider}
-          messages={agentMessages}
-          onDraftChange={setHomeAgentDraft}
-          onSubmit={sendHomeAgentMessage}
-          onProviderChange={setProviderMode}
-          onOpenComposer={() => setComposerOpen(true)}
-          running={agentBusy}
-        />
+        {activeWorkspaceTab === "editor" && (
+          <MissionHome
+            state={state}
+            readyRuns={readyRuns}
+            blockedRuns={blockedRuns}
+            nemoState={nemoState}
+            status={status}
+            draft={homeAgentDraft}
+            provider={settingsDraft.provider}
+            messages={agentMessages}
+            onDraftChange={setHomeAgentDraft}
+            onSubmit={sendHomeAgentMessage}
+            onProviderChange={setProviderMode}
+            onOpenComposer={() => setComposerOpen(true)}
+            running={agentBusy}
+          />
+        )}
 
         <div className="tab-row">
-          <button className="tab active"><FileCode2 size={14} /> {activeFile || "welcome.md"}</button>
-          <button className="tab"><GitCompare size={14} /> Review</button>
-          <button className="tab"><MessageSquareText size={14} /> Agent</button>
+          <button className={`tab ${activeWorkspaceTab === "editor" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("editor")} title={activeFile || "welcome.md"}><FileCode2 size={14} /> <span>{fileName(activeFile)}</span></button>
+          <button className={`tab ${activeWorkspaceTab === "review" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("review")} title="Review"><GitCompare size={14} /> <span>Review</span></button>
+          <button className={`tab ${activeWorkspaceTab === "agent" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("agent")} title="Agent"><MessageSquareText size={14} /> <span>Agent</span></button>
         </div>
 
-        <div className="workspace-main">
+        <div className={`workspace-main show-${activeWorkspaceTab}`}>
           <EditorPane
             run={selectedRun}
             filePreview={filePreview}
@@ -756,6 +844,7 @@ function App() {
             applyJson={selectedRun ? applyResults[selectedRun.source_json] : undefined}
             onReview={reviewRun}
             onApply={applyRun}
+            onAutoApply={autoApplyRun}
             onRollback={rollbackRun}
             messages={agentMessages}
             draft={agentDraft}
@@ -764,6 +853,7 @@ function App() {
             onSend={sendAgentMessage}
             onRunAction={runAgentAction}
             nemoState={nemoState}
+            selfInsights={selfInsights}
             settingsDraft={settingsDraft}
             onSettingsChange={setSettingsDraft}
             onSaveSettings={saveSettings}
@@ -842,7 +932,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, 
           <strong>{blockedRuns ? `${blockedRuns} bloqueado(s)` : "Todo en orden"}</strong>
         </div>
         <StatusGauge label="Contexto" value={contextLabel} percent={Math.min(100, Math.max(18, atomCount * 2))} tone="blue" />
-        <StatusGauge label="Memoria" value={`${atomCount} atoms`} percent={Math.min(100, Math.max(20, atomCount * 3))} tone="gold" />
+        <StatusGauge label="Memoria" value={`${atomCount} atoms`} percent={Math.min(100, Math.max(20, atomCount * 3))} tone="green" />
         <StatusGauge label="Feedback" value={`${feedbackCount} eventos`} percent={Math.min(100, Math.max(18, feedbackCount * 12))} tone="violet" />
         <div className="agent-stack">
           <strong>Agentes activos <span>{readyRuns}</span></strong>
@@ -865,7 +955,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, 
   );
 }
 
-function StatusGauge({ label, value, percent, tone }: { label: string; value: string; percent: number; tone: "blue" | "gold" | "violet" }) {
+function StatusGauge({ label, value, percent, tone }: { label: string; value: string; percent: number; tone: "blue" | "green" | "violet" }) {
   return <div className={`status-gauge ${tone}`}><div><span>{label}</span><strong>{value}</strong></div><i><b style={{ width: `${percent}%` }} /></i></div>;
 }
 
@@ -878,11 +968,12 @@ function EditorPane({ run, filePreview, activeFile, decisions, onToggleHunk, onS
     return <section className="editor-pane"><EmptyState /></section>;
   }
   const acceptedCount = filePreview?.hunks.filter((hunk) => decisions[hunk.id] ?? true).length ?? 0;
+  const activeFileLabel = fileName(activeFile || filePreview?.file_path || "");
   return (
     <section className="editor-pane">
       <div className="editor-toolbar">
         <div>
-          <strong>{activeFile || "No file selected"}</strong>
+          <strong title={activeFile || undefined}>{activeFile ? activeFileLabel : "No file selected"}</strong>
           <span>{filePreview?.operation ?? "review"} / {acceptedCount} accepted hunk(s)</span>
         </div>
         <span className={`pill ${statusTone(run.review_status)}`}>{statusLabel(run.review_status)}</span>
@@ -891,8 +982,8 @@ function EditorPane({ run, filePreview, activeFile, decisions, onToggleHunk, onS
       {filePreview ? <div className="review-surface">
         <div className="review-toolbar">
           <div>
-            <strong>{filePreview.file_path}</strong>
-            <span>{filePreview.target_path}</span>
+            <strong title={filePreview.file_path}>{fileName(filePreview.file_path)}</strong>
+            <span title={filePreview.target_path}>{filePreview.file_path}</span>
           </div>
           <div className="review-toolbar-actions">
             <button onClick={() => onSetFileDecision(filePreview, true)}>Accept file</button>
@@ -1015,6 +1106,7 @@ type AgentPaneProps = {
   applyJson?: string;
   onReview: (run: MissionRun) => void;
   onApply: (run: MissionRun) => void;
+  onAutoApply: (run: MissionRun) => void;
   onRollback: (run: MissionRun) => void;
   messages: AgentMessage[];
   draft: string;
@@ -1023,6 +1115,7 @@ type AgentPaneProps = {
   onSend: () => void;
   onRunAction: (action: AgentAction) => void;
   nemoState: NemoState | null;
+  selfInsights: SelfModInsights | null;
   settingsDraft: MissionState["settings"];
   onSettingsChange: (settings: MissionState["settings"]) => void;
   onSaveSettings: () => void;
@@ -1038,7 +1131,7 @@ type AgentPaneProps = {
   onCleanup: (dryRun: boolean) => void;
 };
 
-function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, onApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, cleanupResult, onCleanup }: AgentPaneProps) {
+function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, cleanupResult, onCleanup }: AgentPaneProps) {
   return (
     <aside className="agent-pane">
       <div className="panel-title"><Bot size={16} /> Agent Control</div>
@@ -1076,11 +1169,13 @@ function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, on
         <div className="review-actions">
           <button onClick={() => onReview(run)}><GitPullRequest size={16} /> Build plan</button>
           <button disabled={!run.mergeable} onClick={() => onApply(run)}><CheckCircle2 size={16} /> Apply</button>
+          <button disabled={!run.mergeable} onClick={() => onAutoApply(run)} title="Apply without manual review when trusted autonomy rules pass"><ShieldCheck size={16} /> Auto Apply</button>
           <button onClick={() => onRollback(run)}><RotateCcw size={16} /> Rollback</button>
         </div>
         {applyJson && <p className="muted">Last apply JSON: {applyJson}</p>}
       </> : <EmptyState />}
 
+      <SelfImprovementPanel insights={selfInsights} />
       <NemoMemoryPanel nemoState={nemoState} />
 
       <ReviewPlanPanel plan={reviewPlan} />
@@ -1100,6 +1195,41 @@ function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, on
         onCleanup={onCleanup}
       />
     </aside>
+  );
+}
+
+function SelfImprovementPanel({ insights }: { insights: SelfModInsights | null }) {
+  const trajectory = insights?.trajectory;
+  const impact = insights?.impact;
+  const similarRuns = insights?.similar_runs.runs ?? [];
+  return (
+    <section className="self-improve-panel">
+      <div className="panel-title"><ShieldCheck size={16} /> Self-Improvement</div>
+      {!trajectory || !impact ? <span className="empty-inline">Select a persisted run to inspect trajectory and impact.</span> : <>
+        <div className="trajectory-grid">
+          <div><span>Grade</span><strong>{trajectory.grade}</strong></div>
+          <div><span>Merge</span><strong>{trajectory.mergeable ? "ready" : "blocked"}</strong></div>
+          <div><span>Events</span><strong>{trajectory.timeline.length}</strong></div>
+          <div><span>Similar</span><strong>{insights?.similar_runs.count ?? 0}</strong></div>
+        </div>
+        <div className="impact-flags">
+          {[
+            impact.touches_source && "source",
+            impact.touches_tests && "tests",
+            impact.touches_ui && "ui",
+            impact.touches_mcp && "mcp",
+            impact.touches_cli && "cli",
+          ].filter(Boolean).map((item) => <span key={String(item)}>{String(item)}</span>)}
+        </div>
+        <div className="mini-list">
+          {(impact.suggested_tests.length ? impact.suggested_tests : ["No extra validation suggested"]).slice(0, 5).map((item) => <span key={item}>{item}</span>)}
+        </div>
+        {impact.risk_flags.length > 0 && <div className="risk-box">{impact.risk_flags.map((risk) => <span key={risk}>{risk}</span>)}</div>}
+        <NemoSection title="Similar runs" empty="No prior trajectory matches yet.">
+          {similarRuns.slice(0, 4).map((item) => <NemoLine key={item.id} tone="trajectory" value={item.content} meta={`importance ${item.importance}`} />)}
+        </NemoSection>
+      </>}
+    </section>
   );
 }
 

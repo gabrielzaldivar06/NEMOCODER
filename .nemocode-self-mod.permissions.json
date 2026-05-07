@@ -1,0 +1,29 @@
+{
+  "git_push": "deny",
+  "run_command": {
+    "*": "deny",
+    "*.venv/Scripts/python.exe -m unittest*": "allow",
+    "c:/dev/dev4/.venv/Scripts/python.exe -m unittest*": "allow",
+    "git push*": "deny",
+    "npm run build": "allow",
+    "python -m unittest*": "allow"
+  },
+  "write_file": {
+    "*": "deny",
+    "*.db": "deny",
+    "*.sqlite": "deny",
+    "*.sqlite-shm": "deny",
+    "*.sqlite-wal": "deny",
+    ".env*": "deny",
+    ".git/**": "deny",
+    ".nemo-runtimes/**": "deny",
+    ".venv/**": "deny",
+    "API.md": "allow",
+    "README.md": "allow",
+    "TESTING.md": "allow",
+    "apps/mission-control/**": "allow",
+    "skills/**": "allow",
+    "src/nemo_coding_platform/**": "allow",
+    "tests/**": "allow"
+  }
+}
