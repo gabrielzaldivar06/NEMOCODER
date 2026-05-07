@@ -1,1 +1,0 @@
-Create a UI async handoff smoke artifact.
