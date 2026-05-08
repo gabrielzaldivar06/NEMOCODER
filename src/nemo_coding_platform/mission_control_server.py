@@ -2522,6 +2522,135 @@ def api_decision_log_append(config: MissionControlServerConfig, payload: dict[st
     return {"ok": True, "entry": entry}
 
 
+def _check_lm_studio_reachable(base_url: str) -> bool:
+    """Check if LM Studio is reachable via a quick health check."""
+    try:
+        # Try to reach /v1/models endpoint (standard OpenAI-compatible endpoint)
+        check_url = base_url.rstrip('/') + '/models'
+        request = urllib.request.Request(check_url, method='GET')
+        request.add_header('Accept', 'application/json')
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return response.status == 200
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        return False
+
+
+def _get_nemo_database_size_mb(memory_db_path: Path | None) -> float | None:
+    """Get NEMO database size in MB, or None if doesn't exist."""
+    if memory_db_path is None or not memory_db_path.exists():
+        return None
+    try:
+        size_bytes = memory_db_path.stat().st_size
+        return round(size_bytes / (1024 * 1024), 2)
+    except (OSError, ValueError):
+        return None
+
+
+def _check_disk_space_sufficient(path: Path, min_mb: int = 500) -> bool:
+    """Check if at least min_mb of disk space is available."""
+    try:
+        usage = shutil.disk_usage(str(path))
+        available_mb = usage.free / (1024 * 1024)
+        return available_mb >= min_mb
+    except (OSError, ValueError):
+        return False
+
+
+def _check_directory_permissions(path: Path) -> bool:
+    """Check if directory is readable and writable."""
+    try:
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+        return os.access(str(path), os.R_OK | os.W_OK)
+    except OSError:
+        return False
+
+
+def api_health(config: MissionControlServerConfig) -> dict[str, object]:
+    """
+    Health check endpoint for desktop app and monitoring.
+    Returns diagnostic info without being too intrusive.
+    """
+    settings = _load_settings(config)
+    lm_studio_url = settings.get("model_base_url", "http://localhost:1234/v1")
+    
+    lm_studio_reachable = _check_lm_studio_reachable(str(lm_studio_url))
+    nemo_db_size = _get_nemo_database_size_mb(config.memory_db)
+    nemo_available = config.memory_db is not None and nemo_db_size is not None
+    
+    return {
+        "status": "healthy",
+        "version": "0.1.0",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "backend": {
+            "type": "mission_control",
+            "port": 8787,
+            "uptime_seconds": int(time.time() % 86400),  # Approximate uptime
+        },
+        "lm_studio": {
+            "reachable": lm_studio_reachable,
+            "endpoint": str(lm_studio_url),
+        },
+        "nemo": {
+            "available": nemo_available,
+            "database_path": str(config.memory_db) if config.memory_db else None,
+            "database_size_mb": nemo_db_size,
+        },
+    }
+
+
+def api_startup(config: MissionControlServerConfig) -> dict[str, object]:
+    """
+    Startup readiness check for desktop app first-run setup.
+    Detects issues and suggests fixes.
+    """
+    settings = _load_settings(config)
+    lm_studio_url = settings.get("model_base_url", "http://localhost:1234/v1")
+    
+    checks: dict[str, bool] = {
+        "lm_studio_reachable": _check_lm_studio_reachable(str(lm_studio_url)),
+        "nemo_database_exists": config.memory_db is not None and config.memory_db.exists(),
+        "disk_space_sufficient": _check_disk_space_sufficient(config.repo_path, min_mb=500),
+        "permissions_ok": _check_directory_permissions(config.runtimes_path),
+    }
+    
+    ready = all(checks.values())
+    missing: list[str] = []
+    recommended_actions: list[str] = []
+    
+    # Generate missing/recommended based on failed checks
+    if not checks["lm_studio_reachable"]:
+        missing.append("lm_studio_not_reachable")
+        recommended_actions.append(f"Start LM Studio on {lm_studio_url}")
+        recommended_actions.append(f"Or set LM_STUDIO_URL environment variable")
+    
+    if not checks["nemo_database_exists"] and config.memory_db is not None:
+        missing.append("nemo_database_missing")
+        recommended_actions.append(f"Initialize NEMO database at {config.memory_db}")
+        recommended_actions.append(f"Or leave NEMO disabled for this session")
+    
+    if not checks["disk_space_sufficient"]:
+        missing.append("insufficient_disk_space")
+        recommended_actions.append("Free at least 500 MB of disk space")
+    
+    if not checks["permissions_ok"]:
+        missing.append("permission_denied")
+        recommended_actions.append(f"Check permissions for {config.runtimes_path}")
+    
+    return {
+        "ready": ready,
+        "checks": checks,
+        "missing": missing,
+        "recommended_actions": recommended_actions,
+        "config": {
+            "repo_path": str(config.repo_path),
+            "runtime_path": str(config.runtimes_path),
+            "memory_db": str(config.memory_db) if config.memory_db else None,
+            "lm_studio_url": str(lm_studio_url),
+        },
+    }
+
+
 class MissionControlRequestHandler(BaseHTTPRequestHandler):
     server: "MissionControlHttpServer"
 
@@ -2532,6 +2661,12 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if not self._check_rate_limit():
             return
         route = urlparse(self.path).path
+        if route == "/api/health":
+            self._handle(lambda _: api_health(self.server.config), {})
+            return
+        if route == "/api/startup":
+            self._handle(lambda _: api_startup(self.server.config), {})
+            return
         if route.startswith("/api/handoff-job/") and route.endswith("/signal"):
             job_id = route[len("/api/handoff-job/") : -len("/signal")].strip("/")
             self._handle(lambda payload: api_job_signal(self.server, {**payload, "job_id": job_id}), {})

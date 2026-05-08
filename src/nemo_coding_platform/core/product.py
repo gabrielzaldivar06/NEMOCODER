@@ -61,8 +61,8 @@ class AutonomyContract:
 DESKTOP_PRODUCT = DesktopProductContract(
     target_surface=ProductSurface.DESKTOP,
     cli_role=ProductSurface.CLI_HARNESS,
-    shell=DesktopShell.UNDECIDED,
-    backend_protocol=BackendProtocol.UNDECIDED,
+    shell=DesktopShell.TAURI,
+    backend_protocol=BackendProtocol.HTTP_LOCAL,
     requires_repo_picker=True,
     requires_task_workspace=True,
     requires_approval_queue=True,

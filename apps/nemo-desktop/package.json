@@ -1,0 +1,27 @@
+{
+  "name": "nemo-desktop",
+  "version": "0.1.0",
+  "description": "Nemocode Desktop - Local-first AI coding agent with Spec-Driven Development",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^1.5.0",
+    "@tauri-apps/cli": "^1.5.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.1.0",
+    "typescript": "^5.2.0",
+    "vite": "^4.5.0"
+  }
+}
