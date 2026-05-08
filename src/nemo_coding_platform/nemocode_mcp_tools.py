@@ -91,7 +91,7 @@ def mcp_self_modify(
     repair_budget: int = 2,
     memory_db: str = ".nemo-runtimes/nemo-memory.sqlite",
     repo_root: str | None = None,
-    provider_mode: str = "fake",
+    provider_mode: str = "subprocess",
     bounded_simulation: bool = False,
     real_validation: bool = False,
     **kwargs: Any,

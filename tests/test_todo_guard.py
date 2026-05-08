@@ -61,7 +61,7 @@ class TestExtractTodosFromPlan(unittest.TestCase):
     def test_extracts_actionable_steps(self) -> None:
         plan = _make_plan(
             (HandoffStepKind.BOOTSTRAP_NEMO, "Load NEMO context"),
-            (HandoffStepKind.IMPLEMENT_WITH_AIDER, "Run Aider mutation"),
+            (HandoffStepKind.IMPLEMENT_WITH_ENGINE, "Run NEMO CODE mutation"),
             (HandoffStepKind.RUN_VALIDATION, "Run tests"),
             (HandoffStepKind.WRITE_NEMO_MEMORY, "NEMO review writeback"),
         )
@@ -70,7 +70,7 @@ class TestExtractTodosFromPlan(unittest.TestCase):
         contents = [item.content for item in todos.items]
         self.assertNotIn("Load NEMO context", contents)
         self.assertNotIn("NEMO review writeback", contents)
-        self.assertIn("Run Aider mutation", contents)
+        self.assertIn("Run NEMO CODE mutation", contents)
         self.assertIn("Run tests", contents)
 
     def test_empty_plan_gives_empty_todos(self) -> None:

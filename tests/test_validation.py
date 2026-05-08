@@ -61,6 +61,26 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(validation_commands_for_policy("full"), ("python -m unittest",))
         self.assertEqual(validation_commands_for_policy("smoke", ("custom check",)), ("custom check",))
 
+    def test_validation_time_budget_marks_exhaustion(self) -> None:
+        result = run_validation_suite(
+            (f"{sys.executable} --version", f"{sys.executable} --version"),
+            time_budget_seconds=0.0001,
+        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("budget exhausted" in item.output for item in result.results))
+
+    def test_validation_escalation_mode_skips_slow_commands(self) -> None:
+        result = run_validation_suite(
+            (f"{sys.executable} --version",),
+            escalation_mode=True,
+            timeout_seconds=45.0,
+            slow_command_timeout_seconds=30.0,
+        )
+
+        self.assertEqual(result.results[0].status.value, "skipped")
+        self.assertTrue(result.passed)
+
 
 if __name__ == "__main__":
     unittest.main()

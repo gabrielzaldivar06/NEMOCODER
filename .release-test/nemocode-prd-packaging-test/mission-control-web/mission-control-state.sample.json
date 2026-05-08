@@ -1,0 +1,2089 @@
+{
+  "approval_queue": [
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build resumable source handoff for real continuation smoke",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\real-continuation-source-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "src/continue_real.py"
+      ],
+      "event_count": 13,
+      "grade": "needs_review",
+      "mergeable": false,
+      "objective": "Create src/continue_real.py with resumed(name) returning Resumed, name. Keep it minimal.",
+      "repo_path": ".",
+      "review_status": "blocked",
+      "risk_flags": [
+        "run_not_ready",
+        "validation_failed",
+        "missing_source_file"
+      ],
+      "run_id": "run-1-resume-20",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "score": 0,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\real-continuation-smoke.json",
+      "task_id": "task-1-resume",
+      "timeline": [
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 0 file(s) through subprocess-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/2 required_ok=False"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor escalation flags: validation_failed."
+        },
+        {
+          "kind": "resumed",
+          "payload_ref": "continuation-link.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "src/continue_literal.py"
+      ],
+      "event_count": 12,
+      "grade": "ready",
+      "mergeable": false,
+      "objective": "Create src/continue_literal.py. Define resumed(name) and return exactly the string f'Resumed, {name}'. Do not call any Resumed function or class.",
+      "repo_path": ".",
+      "review_status": "blocked",
+      "risk_flags": [
+        "missing_source_file"
+      ],
+      "run_id": "run-1-resume-20",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\real-continuation-retry-smoke.json",
+      "task_id": "task-1-resume",
+      "timeline": [
+        {
+          "kind": "context_bootstrapped",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 1,
+          "summary": "NEMO context portfolio bootstrapped."
+        },
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through subprocess-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=2/2 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "resumed",
+          "payload_ref": "continuation-link.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build supervised long handoff feature",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\long-handoff-supervisor-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build resumable supervised handoff",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\long-handoff-resume-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build resumable supervised handoff",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\long-handoff-continue-source-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 12,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Resume paused long handoff from task-1:run-1:minute-20. Continue objective: Build resumable supervised handoff",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1-resume-20",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\long-handoff-continue-smoke.json",
+      "task_id": "task-1-resume",
+      "timeline": [
+        {
+          "kind": "context_bootstrapped",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 1,
+          "summary": "NEMO context portfolio bootstrapped."
+        },
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "resumed",
+          "payload_ref": "continuation-link.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build source for continuation memory link",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\continuation-memory-source-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 12,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 12,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Resume paused long handoff from task-1:run-1:minute-20. Continue objective: Build source for continuation memory link",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1-resume-20",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\continuation-memory-smoke.json",
+      "task_id": "task-1-resume",
+      "timeline": [
+        {
+          "kind": "context_bootstrapped",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 1,
+          "summary": "NEMO context portfolio bootstrapped."
+        },
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "resumed",
+          "payload_ref": "continuation-link.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+        }
+      ]
+    },
+    {
+      "artifact_count": 9,
+      "changed_files": [
+        "src/wave.py"
+      ],
+      "event_count": 10,
+      "grade": "ready",
+      "mergeable": false,
+      "objective": "Create src/wave.py with wave(name) returning Wave, name. Keep it minimal.",
+      "repo_path": ".",
+      "review_status": "blocked",
+      "risk_flags": [
+        "missing_source_file"
+      ],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\aider-bounded-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "context_bootstrapped",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 1,
+          "summary": "NEMO context portfolio bootstrapped."
+        },
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 0 file(s) through subprocess-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=2/2 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        }
+      ]
+    }
+  ],
+  "product": "NEMO Desktop Mission Control",
+  "repo_path": "C:\\dev\\dev4",
+  "repos": [
+    ".",
+    "C:\\dev\\dev4"
+  ],
+  "runs": [
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build resumable source handoff for real continuation smoke",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\real-continuation-source-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "src/continue_real.py"
+      ],
+      "event_count": 13,
+      "grade": "needs_review",
+      "mergeable": false,
+      "objective": "Create src/continue_real.py with resumed(name) returning Resumed, name. Keep it minimal.",
+      "repo_path": ".",
+      "review_status": "blocked",
+      "risk_flags": [
+        "run_not_ready",
+        "validation_failed",
+        "missing_source_file"
+      ],
+      "run_id": "run-1-resume-20",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "score": 0,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\real-continuation-smoke.json",
+      "task_id": "task-1-resume",
+      "timeline": [
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 0 file(s) through subprocess-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/2 required_ok=False"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor escalation flags: validation_failed."
+        },
+        {
+          "kind": "resumed",
+          "payload_ref": "continuation-link.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "src/continue_literal.py"
+      ],
+      "event_count": 12,
+      "grade": "ready",
+      "mergeable": false,
+      "objective": "Create src/continue_literal.py. Define resumed(name) and return exactly the string f'Resumed, {name}'. Do not call any Resumed function or class.",
+      "repo_path": ".",
+      "review_status": "blocked",
+      "risk_flags": [
+        "missing_source_file"
+      ],
+      "run_id": "run-1-resume-20",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\real-continuation-retry-smoke.json",
+      "task_id": "task-1-resume",
+      "timeline": [
+        {
+          "kind": "context_bootstrapped",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 1,
+          "summary": "NEMO context portfolio bootstrapped."
+        },
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through subprocess-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=2/2 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "resumed",
+          "payload_ref": "continuation-link.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build supervised long handoff feature",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\long-handoff-supervisor-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build resumable supervised handoff",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\long-handoff-resume-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build resumable supervised handoff",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\long-handoff-continue-source-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 12,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Resume paused long handoff from task-1:run-1:minute-20. Continue objective: Build resumable supervised handoff",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1-resume-20",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\long-handoff-continue-smoke.json",
+      "task_id": "task-1-resume",
+      "timeline": [
+        {
+          "kind": "context_bootstrapped",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 1,
+          "summary": "NEMO context portfolio bootstrapped."
+        },
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "resumed",
+          "payload_ref": "continuation-link.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+        }
+      ]
+    },
+    {
+      "artifact_count": 11,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 14,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Build source for continuation memory link",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\continuation-memory-source-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Supervisor heartbeat at minute 20: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "escalation",
+          "payload_ref": "supervisor-report.md",
+          "phase": "review",
+          "sequence": 13,
+          "summary": "Supervisor escalation flags: pause_requested."
+        },
+        {
+          "kind": "paused",
+          "payload_ref": "resume-token.txt",
+          "phase": "review",
+          "sequence": 14,
+          "summary": "Supervisor pause point reached; resume token persisted."
+        }
+      ]
+    },
+    {
+      "artifact_count": 12,
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "event_count": 12,
+      "grade": "ready",
+      "mergeable": true,
+      "objective": "Resume paused long handoff from task-1:run-1:minute-20. Continue objective: Build source for continuation memory link",
+      "repo_path": ".",
+      "review_status": "awaiting_review",
+      "risk_flags": [],
+      "run_id": "run-1-resume-20",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\continuation-memory-smoke.json",
+      "task_id": "task-1-resume",
+      "timeline": [
+        {
+          "kind": "context_bootstrapped",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 1,
+          "summary": "NEMO context portfolio bootstrapped."
+        },
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 1 file(s) through fake-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=1/1 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        },
+        {
+          "kind": "heartbeat",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "review",
+          "sequence": 11,
+          "summary": "Supervisor heartbeat at minute 10: validation and checkpoint trail remain replayable."
+        },
+        {
+          "kind": "resumed",
+          "payload_ref": "continuation-link.md",
+          "phase": "review",
+          "sequence": 12,
+          "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+        }
+      ]
+    },
+    {
+      "artifact_count": 9,
+      "changed_files": [
+        "src/wave.py"
+      ],
+      "event_count": 10,
+      "grade": "ready",
+      "mergeable": false,
+      "objective": "Create src/wave.py with wave(name) returning Wave, name. Keep it minimal.",
+      "repo_path": ".",
+      "review_status": "blocked",
+      "risk_flags": [
+        "missing_source_file"
+      ],
+      "run_id": "run-1",
+      "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-run-1",
+      "score": 1,
+      "source_json": "C:\\dev\\dev4\\.nemo-runtimes\\aider-bounded-smoke.json",
+      "task_id": "task-1",
+      "timeline": [
+        {
+          "kind": "context_bootstrapped",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 1,
+          "summary": "NEMO context portfolio bootstrapped."
+        },
+        {
+          "kind": "plan_created",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 2,
+          "summary": "Created handoff plan with 11 steps."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-plan.md",
+          "phase": "plan",
+          "sequence": 3,
+          "summary": "Created plan checkpoint."
+        },
+        {
+          "kind": "permission_decided",
+          "payload_ref": null,
+          "phase": "plan",
+          "sequence": 4,
+          "summary": "Full Handoff permissions preapproved in sandbox."
+        },
+        {
+          "kind": "mutation_created",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 5,
+          "summary": "changed 0 file(s) through subprocess-aider"
+        },
+        {
+          "kind": "validation_run",
+          "payload_ref": null,
+          "phase": "execute",
+          "sequence": 6,
+          "summary": "validation passed=2/2 required_ok=True"
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-execute.md",
+          "phase": "execute",
+          "sequence": 7,
+          "summary": "Created execute checkpoint."
+        },
+        {
+          "kind": "review_package_created",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 8,
+          "summary": "Created review package."
+        },
+        {
+          "kind": "checkpoint",
+          "payload_ref": "checkpoint-review.md",
+          "phase": "review",
+          "sequence": 9,
+          "summary": "Created review checkpoint."
+        },
+        {
+          "kind": "memory_written",
+          "payload_ref": null,
+          "phase": "review",
+          "sequence": 10,
+          "summary": "Prepared NEMO writeback summary."
+        }
+      ]
+    }
+  ],
+  "runtimes_path": "C:\\dev\\dev4\\.nemo-runtimes",
+  "schema_version": 1,
+  "settings": {
+    "default_model": "nvidia.agentic.coder-4b",
+    "memory_db": ".nemo-runtimes/nemo-memory.sqlite",
+    "model_base_url": "http://localhost:1234/v1",
+    "nemo_required": true,
+    "quality_core": "product/aider"
+  }
+}

@@ -1,5 +1,5 @@
 import unittest
-from nemo_coding_platform.core.aider_interface import MutationRequest, render_aider_message, ModelProfile
+from nemo_coding_platform.core.engine_interface import MutationRequest, render_engine_message, ModelProfile
 
 
 class TestVisionRendering(unittest.TestCase):
@@ -13,7 +13,7 @@ class TestVisionRendering(unittest.TestCase):
             skill_prompt="Use Tailwind"
         )
         
-        message = render_aider_message(request)
+        message = render_engine_message(request)
         self.assertIn("# Design Reference", message)
         self.assertIn("docs/mockup.png", message)
         self.assertIn("Use your vision capabilities", message)
@@ -28,7 +28,7 @@ class TestVisionRendering(unittest.TestCase):
             context="Existing code"
         )
         
-        message = render_aider_message(request)
+        message = render_engine_message(request)
         self.assertNotIn("# Design Reference", message)
 
 

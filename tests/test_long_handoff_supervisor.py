@@ -41,6 +41,9 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         self.assertEqual(state["validation_policy"], "smoke")
         self.assertIn("checkpoint-execute.md", state["checkpoint_refs"])
         self.assertTrue(state["memory_writeback_handles"])
+        self.assertTrue(state["execution_snapshot_ids"])
+        self.assertIn("checkpoint-execute", state["execution_snapshot_ids"])
+        self.assertIsNone(state["latest_atomic_checkpoint"])
 
     def test_long_handoff_cli_saves_replayable_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -93,6 +96,34 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         self.assertTrue(plan.validation_commands)
         self.assertTrue(plan.memory_writeback_handles)
         self.assertIn("checkpoint-execute.md", plan.checkpoint_refs)
+        self.assertIsNone(plan.latest_atomic_checkpoint)
+        self.assertEqual(plan.repair_cursor, 0)
+        self.assertEqual(plan.resume_validation_state, ())
+
+    def test_resume_plan_extracts_atomic_checkpoint_cursor(self) -> None:
+        result = execute_long_handoff_supervisor(
+            HandoffRequest("Build atomic", ".", ("passes tests",), ("python -m unittest",)),
+            budget=LongHandoffBudget(max_runtime_minutes=30, heartbeat_minutes=10, max_heartbeats=2, token_budget=1200, pause_after_minutes=20),
+            task_id="atomic-task",
+            run_id="atomic-run",
+        )
+        payload = headless_result_to_dict(result)
+        snapshots = payload.get("execution_snapshots")
+        self.assertIsInstance(snapshots, dict)
+        snapshots["checkpoint-repair-00002"] = {
+            "snapshot": {
+                "resume_mode": "atomic",
+                "repair_cursor": 2,
+                "validation_state": ["smoke:FAILED"],
+            }
+        }
+        payload["execution_snapshots"] = snapshots
+
+        plan = build_long_handoff_resume_plan(payload)
+
+        self.assertEqual(plan.latest_atomic_checkpoint, "checkpoint-repair-00002")
+        self.assertEqual(plan.repair_cursor, 2)
+        self.assertEqual(plan.resume_validation_state, ("smoke:FAILED",))
 
     def test_resume_plan_falls_back_to_persisted_json_when_state_file_is_missing(self) -> None:
         result = execute_long_handoff_supervisor(
@@ -110,6 +141,18 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         self.assertEqual(plan.provider_mode, "fake")
         self.assertEqual(plan.validation_policy, "smoke")
         self.assertEqual(plan.validation_commands, ("python -m unittest",))
+
+    def test_headless_json_persists_execution_snapshots(self) -> None:
+        result = execute_long_handoff_supervisor(
+            HandoffRequest("Persist snapshots", ".", ("passes tests",), ("python -m unittest",)),
+            budget=LongHandoffBudget(max_runtime_minutes=30, heartbeat_minutes=10, max_heartbeats=2, token_budget=1200, pause_after_minutes=20),
+        )
+
+        payload = headless_result_to_dict(result)
+
+        snapshots = payload.get("execution_snapshots")
+        self.assertIsInstance(snapshots, dict)
+        self.assertIn("checkpoint-execute", snapshots)
 
     def test_long_handoff_resume_cli_outputs_resume_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,6 +207,32 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         self.assertTrue(any(item.call.tool_name == "store_conversation" and "continue-run-resume-20" in item.call.arguments.get("summary", "") for item in continuation.nemo_results))
         self.assertTrue(any(trace.id == "mem-continuation-link" and "continue-run-resume-20" in trace.summary for trace in continuation.memory_traces))
         self.assertEqual(score_headless_result(continuation).grade, "ready")
+
+    def test_continuation_emits_restore_artifact_when_atomic_checkpoint_exists(self) -> None:
+        paused = execute_long_handoff_supervisor(
+            HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
+            budget=LongHandoffBudget(max_runtime_minutes=30, heartbeat_minutes=10, max_heartbeats=2, token_budget=1200, pause_after_minutes=20),
+            task_id="continue-atomic-task",
+            run_id="continue-atomic-run",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/paused.json"
+            save_headless_result_json(paused, path)
+            payload = load_headless_result_json(path)
+            snapshots = payload.get("execution_snapshots")
+            self.assertIsInstance(snapshots, dict)
+            snapshots["checkpoint-repair-00001"] = {
+                "snapshot": {
+                    "resume_mode": "atomic",
+                    "repair_cursor": 1,
+                    "validation_state": ["smoke:FAILED"],
+                }
+            }
+            payload["execution_snapshots"] = snapshots
+            continuation = execute_long_handoff_continuation(payload)
+
+        self.assertIn("resume-restore.md", continuation.runtime_files)
+        self.assertTrue(any(event.kind == EventKind.RESUMED and event.payload_ref == "resume-restore.md" for event in continuation.timeline.events))
 
     def test_long_handoff_continue_cli_saves_replayable_continuation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -505,6 +574,125 @@ class LongHandoffSupervisorTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertTrue(payload["resumed"])
+
+    def test_snapshot_captures_changed_files_into_runtime_store(self) -> None:
+        """snapshot_changed_files copies repo files to runtime/file-snapshots/{id}/."""
+        from nemo_coding_platform.core.checkpoint import snapshot_changed_files
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runtime = Path(tmp) / "runtime"
+            (repo / "src").mkdir()
+            (repo / "src" / "feature.py").write_text("def feature(): return 1\n", encoding="utf-8")
+            (repo / "tests" / "test_feature.py").parent.mkdir(parents=True, exist_ok=True)
+            (repo / "tests" / "test_feature.py").write_text("import feature\n", encoding="utf-8")
+
+            stored = snapshot_changed_files(
+                repo_path=repo,
+                changed_files=["src/feature.py", "tests/test_feature.py", "nonexistent.py"],
+                runtime_path=runtime,
+                checkpoint_id="checkpoint-repair-00001",
+            )
+
+            snap_root = runtime / "file-snapshots" / "checkpoint-repair-00001"
+            self.assertCountEqual(stored, ["src/feature.py", "tests/test_feature.py"])
+            self.assertTrue((snap_root / "src" / "feature.py").exists())
+            self.assertTrue((snap_root / "tests" / "test_feature.py").exists())
+            # nonexistent.py must not be created
+            self.assertFalse((snap_root / "nonexistent.py").exists())
+
+    def test_restore_file_snapshot_writes_files_back_to_repo(self) -> None:
+        """restore_file_snapshot rewrites snapshotted files to the repo."""
+        from nemo_coding_platform.core.checkpoint import restore_file_snapshot, snapshot_changed_files
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runtime = Path(tmp) / "runtime"
+            (repo / "src").mkdir()
+            (repo / "src" / "module.py").write_text("v1\n", encoding="utf-8")
+            snapshot_changed_files(str(repo), ["src/module.py"], str(runtime), "cp-1")
+
+            # Simulate file being changed after checkpoint
+            (repo / "src" / "module.py").write_text("v2-broken\n", encoding="utf-8")
+
+            restored = restore_file_snapshot(str(runtime), "cp-1", str(repo))
+
+            self.assertEqual(restored, ["src/module.py"])
+            self.assertEqual((repo / "src" / "module.py").read_text(encoding="utf-8"), "v1\n")
+
+    def test_restore_returns_empty_when_no_snapshot_exists(self) -> None:
+        from nemo_coding_platform.core.checkpoint import restore_file_snapshot
+        with tempfile.TemporaryDirectory() as tmp:
+            restored = restore_file_snapshot(tmp, "nonexistent-checkpoint", tmp)
+        self.assertEqual(restored, [])
+
+    def test_atomic_resume_restores_files_and_records_in_restore_md(self) -> None:
+        """Full integration: snapshot captured during run, restored in continuation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / "src").mkdir()
+            (repo / "src" / "impl.py").write_text("# original\n", encoding="utf-8")
+
+            paused = execute_long_handoff_supervisor(
+                HandoffRequest("Build feature", str(repo), ("passes tests",), ("python -m unittest",)),
+                budget=LongHandoffBudget(max_runtime_minutes=30, heartbeat_minutes=10, max_heartbeats=2, token_budget=1200, pause_after_minutes=20),
+                task_id="restore-task",
+                run_id="restore-run",
+            )
+            payload = headless_result_to_dict(paused)
+
+            # Inject a synthetic atomic snapshot that points to the paused run's sandbox.
+            sandbox_path = paused.run.sandbox_path
+            snapshots = payload.get("execution_snapshots") or {}
+            snapshots["checkpoint-repair-00001"] = {
+                "snapshot": {
+                    "resume_mode": "atomic",
+                    "repair_cursor": 1,
+                    "validation_state": ["smoke:FAILED"],
+                    "changed_files": ["src/impl.py"],
+                },
+                "snapshot_runtime_path": sandbox_path,
+                "changed_files": ["src/impl.py"],
+            }
+            payload["execution_snapshots"] = snapshots
+
+            # Also create the actual file-snapshot in the sandbox so restore has something to read.
+            from nemo_coding_platform.core.checkpoint import snapshot_changed_files as _snap
+            _snap(str(repo), ["src/impl.py"], sandbox_path, "checkpoint-repair-00001")
+
+            continuation = execute_long_handoff_continuation(payload)
+
+        self.assertIn("resume-restore.md", continuation.runtime_files)
+        restore_md_content = (Path(continuation.run.sandbox_path) / "resume-restore.md").read_text(encoding="utf-8")
+        self.assertIn("snapshot_runtime_path=", restore_md_content)
+        self.assertIn("src/impl.py", restore_md_content)
+
+    def test_resume_plan_exposes_snapshot_runtime_path(self) -> None:
+        """build_long_handoff_resume_plan extracts snapshot_runtime_path from atomic checkpoint."""
+        result = execute_long_handoff_supervisor(
+            HandoffRequest("Build snapshot path", ".", ("passes tests",), ("python -m unittest",)),
+            budget=LongHandoffBudget(max_runtime_minutes=30, heartbeat_minutes=10, max_heartbeats=2, token_budget=1200, pause_after_minutes=20),
+            task_id="srp-task",
+            run_id="srp-run",
+        )
+        sandbox_path = result.run.sandbox_path
+        payload = headless_result_to_dict(result)
+        snapshots = payload.get("execution_snapshots") or {}
+        snapshots["checkpoint-repair-00001"] = {
+            "snapshot": {
+                "resume_mode": "atomic",
+                "repair_cursor": 1,
+                "validation_state": [],
+            },
+            "snapshot_runtime_path": sandbox_path,
+        }
+        payload["execution_snapshots"] = snapshots
+
+        plan = build_long_handoff_resume_plan(payload)
+
+        self.assertEqual(plan.latest_atomic_checkpoint, "checkpoint-repair-00001")
+        self.assertEqual(plan.snapshot_runtime_path, sandbox_path)
 
 
 if __name__ == "__main__":

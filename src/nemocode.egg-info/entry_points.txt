@@ -1,0 +1,2 @@
+[console_scripts]
+nemocode = nemo_coding_platform.cli:main

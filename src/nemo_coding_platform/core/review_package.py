@@ -8,7 +8,7 @@ from nemo_coding_platform.core.task_run import Artifact, ArtifactType, MemoryTra
 from nemo_coding_platform.core.validation import ValidationSuiteResult, format_validation_report
 
 if TYPE_CHECKING:
-    from nemo_coding_platform.core.aider_interface import MutationResult
+    from nemo_coding_platform.core.engine_interface import MutationResult
 
 
 class ReviewStatus(StrEnum):

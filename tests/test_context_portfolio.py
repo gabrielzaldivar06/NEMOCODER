@@ -7,16 +7,16 @@ from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 
 class ContextPortfolioTests(unittest.TestCase):
     def test_low_budget_keeps_corrections_and_preferences_first(self) -> None:
-        request = make_portfolio_request("build aider handoff", "nemo", ExecutionPhase.PLAN, token_budget=15)
+        request = make_portfolio_request("build nemo code handoff", "nemo", ExecutionPhase.PLAN, token_budget=15)
         atoms = (
             MemoryAtom(MemoryAtomType.EVIDENCE, "Long optional background evidence that can be omitted safely.", "repo", "ev-1"),
-            MemoryAtom(MemoryAtomType.CORRECTION, "Aider is the active base.", "project"),
+            MemoryAtom(MemoryAtomType.CORRECTION, "NEMO CODE is the active base.", "project"),
             MemoryAtom(MemoryAtomType.PREFERENCE, "Use all NEMO tools.", "user"),
         )
 
         result = build_context_portfolio(request, atoms)
 
-        self.assertIn("Aider is the active base", result.context)
+        self.assertIn("NEMO CODE is the active base", result.context)
         self.assertIn("Use all NEMO tools", result.context)
         self.assertEqual(result.evidence_handles, ("ev-1",))
         self.assertLessEqual(result.estimated_tokens, request.token_budget)

@@ -14,6 +14,8 @@ class MissionControlRun:
     task_id: str
     run_id: str
     objective: str
+    linked_prd: str | None
+    linked_specs: tuple[str, ...]
     repo_path: str
     sandbox_path: str
     runtime_id: str
@@ -33,12 +35,15 @@ class MissionControlRun:
     mergeable: bool
     source_json: str
     timeline: tuple[dict[str, object], ...]
+    decision_log: tuple[dict[str, object], ...]
 
     def to_dict(self) -> dict[str, object]:
         return {
             "task_id": self.task_id,
             "run_id": self.run_id,
             "objective": self.objective,
+            "linked_prd": self.linked_prd,
+            "linked_specs": list(self.linked_specs),
             "repo_path": self.repo_path,
             "sandbox_path": self.sandbox_path,
             "runtime_id": self.runtime_id,
@@ -58,6 +63,7 @@ class MissionControlRun:
             "mergeable": self.mergeable,
             "source_json": self.source_json,
             "timeline": list(self.timeline),
+            "decision_log": list(self.decision_log),
         }
 
 
@@ -109,6 +115,33 @@ def _load_continuation_state(sandbox_path: str) -> dict[str, object] | None:
     return payload if isinstance(payload, dict) else {"error": "continuation_state_invalid", "path": str(path)}
 
 
+def _load_decision_log(sandbox_path: str, limit: int = 40) -> tuple[dict[str, object], ...]:
+    if not sandbox_path:
+        return ()
+    path = Path(sandbox_path) / "decision-log.json"
+    if not path.exists():
+        return ()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ()
+    if not isinstance(payload, list):
+        return ()
+    rows: list[dict[str, object]] = []
+    for item in payload[:limit]:
+        if isinstance(item, dict):
+            rows.append(
+                {
+                    "id": item.get("id"),
+                    "ts": item.get("ts"),
+                    "action": item.get("action"),
+                    "status": item.get("status"),
+                    "detail": item.get("detail"),
+                }
+            )
+    return tuple(rows)
+
+
 def _review_status(grade: str, changed_files: tuple[str, ...], mergeable: bool, risk_flags: tuple[str, ...]) -> str:
     if risk_flags:
         return "blocked"
@@ -143,6 +176,8 @@ def _mission_run_from_payload(path: Path, payload: dict[str, Any]) -> MissionCon
         task_id=str(summary.get("task_id") or task.get("id") or ""),
         run_id=str(summary.get("run_id") or run.get("id") or ""),
         objective=str(task.get("objective") or task.get("title") or "Untitled task"),
+        linked_prd=str(task.get("linked_prd")) if isinstance(task.get("linked_prd"), str) and task.get("linked_prd") else None,
+        linked_specs=tuple(str(item) for item in task.get("linked_specs", []) if isinstance(item, str)) if isinstance(task.get("linked_specs"), list) else (),
         repo_path=str(task.get("repo_path") or ""),
         sandbox_path=sandbox_path,
         runtime_id=str(run.get("runtime_id") or ""),
@@ -162,6 +197,7 @@ def _mission_run_from_payload(path: Path, payload: dict[str, Any]) -> MissionCon
         mergeable=mergeable,
         source_json=str(path),
         timeline=_timeline_preview(payload),
+        decision_log=_load_decision_log(sandbox_path),
     )
 
 
@@ -187,7 +223,7 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
     state_settings = {
         "model_base_url": "http://localhost:1234/v1",
         "default_model": "nvidia.agentic.coder-4b",
-        "provider": "fake",
+        "provider": "subprocess",
         "memory_db": ".nemo-runtimes/nemo-memory.sqlite",
         "runtime_path": str(runtime_root),
         "timeout_seconds": 120,
@@ -197,7 +233,7 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
         "token_budget": 32000,
         "validation_policy": "smoke",
         "nemo_required": True,
-        "quality_core": "product/aider",
+        "quality_core": "product/nemo_code_runtime",
         "recent_repos": list(recent_repos),
     }
     if settings:
@@ -206,7 +242,7 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
         state_settings["validation_policy"] = "smoke"
     return {
         "schema_version": 1,
-        "product": "NEMO Desktop Mission Control",
+        "product": "NEMO CODE Mission Control",
         "repo_path": str(repo),
         "runtimes_path": str(runtime_root),
         "repos": repos,

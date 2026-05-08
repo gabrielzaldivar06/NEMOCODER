@@ -4,10 +4,10 @@ from nemo_coding_platform.core.product_factory import get_platform_info
 
 
 class ProductFactoryTests(unittest.TestCase):
-    def test_discovers_aider_platform_info(self) -> None:
-        info = get_platform_info("aider")
+    def test_discovers_nemo_code_platform_info(self) -> None:
+        info = get_platform_info("nemo-code")
 
-        self.assertEqual(info["product_base"], "aider")
+        self.assertEqual(info["product_base"], "nemo_code")
         self.assertTrue(info["capabilities"]["full_handoff"])
         self.assertIn("prime_context", info["nemo_tools_by_phase"]["plan"])
 

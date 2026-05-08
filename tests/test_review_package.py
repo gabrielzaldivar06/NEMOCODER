@@ -1,6 +1,6 @@
 import unittest
 
-from nemo_coding_platform.core.aider_interface import MutationResult
+from nemo_coding_platform.core.engine_interface import MutationResult
 from nemo_coding_platform.core.contracts import ExecutionPhase, RuntimeState
 from nemo_coding_platform.core.mutations import MutationPlan
 from nemo_coding_platform.core.product import AutonomyLevel
@@ -34,7 +34,7 @@ class ReviewPackageTests(unittest.TestCase):
             )
         )
         mutation = MutationResult(
-            "subprocess-aider",
+            "subprocess-nemo-code",
             MutationPlan(writes=(), approved=True, dry_run_completed=True),
             (),
             (),

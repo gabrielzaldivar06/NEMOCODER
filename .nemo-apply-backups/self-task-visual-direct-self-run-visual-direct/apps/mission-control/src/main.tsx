@@ -254,6 +254,22 @@ function normalizeState(payload: MissionState): MissionState {
   return { ...payload, runs: (payload.runs ?? []).map(normalizeRun), approval_queue: (payload.approval_queue ?? []).map(normalizeRun), settings: normalizeSettings(payload.settings) };
 }
 
+type ActivityPanel = "explorer" | "search" | "runs" | "agent" | "settings";
+type WorkspaceTab = "editor" | "review" | "agent";
+
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+function renderInlineRichText(value: string): React.ReactNode[] {
+  const parts = value.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={`b-${index}`}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={`c-${index}`}>{part.slice(1, -1)}</code>;
+    return <React.Fragment key={`t-${index}`}>{part}</React.Fragment>;
+  });
+}
+
 const fallbackState: MissionState = {
   schema_version: 1,
   product: "NEMO Desktop Mission Control",
@@ -291,7 +307,7 @@ function statusTone(status: string): string {
   return "quiet";
 }
 
-function App() {
+export function App() {
   const [state, setState] = useState<MissionState>(fallbackState);
   const [selectedRunSource, setSelectedRunSource] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<string>("");
@@ -322,6 +338,10 @@ function App() {
   const [agentDraft, setAgentDraft] = useState<string>("");
   const [homeAgentDraft, setHomeAgentDraft] = useState<string>("");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
+  const [activeActivity, setActiveActivity] = useState<ActivityPanel>("explorer");
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>("editor");
+  const [bottomPanelOpen, setBottomPanelOpen] = useState<boolean>(false);
+  const [sideSearchDraft, setSideSearchDraft] = useState<string>("");
   const [handoffDraft, setHandoffDraft] = useState({
     objective: "",
     acceptance: "passes validation",
@@ -706,6 +726,14 @@ function App() {
       .catch((error: Error) => setStatus(error.message));
   };
 
+  const activatePanel = (panel: ActivityPanel) => {
+    setActiveActivity(panel);
+    if (panel === "explorer") setActiveWorkspaceTab("editor");
+    if (panel === "runs") setActiveWorkspaceTab("review");
+    if (panel === "agent" || panel === "settings" || panel === "search") setActiveWorkspaceTab("agent");
+    if (panel === "search") setStatus("Search mode enabled. Use a query and run /search.");
+  };
+
   useEffect(() => {
     refreshState();
     refreshApplyHistory();
@@ -726,11 +754,11 @@ function App() {
   return (
     <main className="ide-shell">
       <aside className="activity-bar" aria-label="Activity bar">
-        <button className="activity active" title="Explorer"><Files size={20} /></button>
-        <button className="activity" title="Search"><Search size={20} /></button>
-        <button className="activity" title="Runs"><GitBranch size={20} /></button>
-        <button className="activity" title="Agent"><MessageSquareText size={20} /></button>
-        <button className="activity" title="Settings"><Settings size={20} /></button>
+        <button className={`activity ${activeActivity === "explorer" ? "active" : ""}`} onClick={() => activatePanel("explorer")} title="Explorer" aria-label="Open explorer panel"><Files size={20} /></button>
+        <button className={`activity ${activeActivity === "search" ? "active" : ""}`} onClick={() => activatePanel("search")} title="Search" aria-label="Open search panel"><Search size={20} /></button>
+        <button className={`activity ${activeActivity === "runs" ? "active" : ""}`} onClick={() => activatePanel("runs")} title="Runs" aria-label="Open runs panel"><GitBranch size={20} /></button>
+        <button className={`activity ${activeActivity === "agent" ? "active" : ""}`} onClick={() => activatePanel("agent")} title="Agent" aria-label="Open agent panel"><MessageSquareText size={20} /></button>
+        <button className={`activity ${activeActivity === "settings" ? "active" : ""}`} onClick={() => activatePanel("settings")} title="Settings" aria-label="Open settings panel"><Settings size={20} /></button>
       </aside>
 
       <aside className="explorer">
@@ -742,12 +770,12 @@ function App() {
           </div>
         </div>
 
-        <section className="repo-strip">
+        {(activeActivity === "explorer" || activeActivity === "settings") && <section className="repo-strip">
           <div className="section-heading"><ChevronDown size={14} /> Workspace</div>
           {state.repos.map((repo) => <button className="repo-item" key={repo} onClick={() => openRepo(repo)} title="Open repo"><HardDrive size={14} /> {repo}</button>)}
-        </section>
+        </section>}
 
-        <section className="run-tree">
+        {(activeActivity === "explorer" || activeActivity === "runs") && <section className="run-tree">
           <div className="section-heading"><ChevronDown size={14} /> Agent Runs</div>
           {state.runs.length === 0 ? <EmptyState /> : state.runs.map((run) => (
             <div className={`tree-run ${selectedRun?.source_json === run.source_json ? "selected" : ""}`} key={run.source_json}>
@@ -764,7 +792,77 @@ function App() {
               </div>}
             </div>
           ))}
-        </section>
+        </section>}
+
+        {(activeActivity === "explorer" || activeActivity === "runs") && (
+          <section className="approval-queue" aria-label="Approval queue">
+            <div className="section-heading"><ChevronDown size={14} /> Approval Queue</div>
+            {state.approval_queue.length === 0 ? (
+              <span className="tree-empty">No runs awaiting approval.</span>
+            ) : (
+              <div className="queue-list">
+                {state.approval_queue.map((run) => (
+                  <div className={`queue-item ${selectedRun?.source_json === run.source_json ? "selected" : ""}`} key={run.source_json}>
+                    <button className="queue-item-open" onClick={() => selectRun(run)} title={run.objective} aria-label={`Open queued run ${run.run_id}`}>
+                      <Circle size={9} className={statusTone(run.review_status)} />
+                      <span>{run.objective}</span>
+                    </button>
+                    <div className="queue-item-actions">
+                      <button onClick={() => reviewRun(run)} aria-label={`Review queued run ${run.run_id}`}>Review</button>
+                      <button onClick={() => applyRun(run)} disabled={!run.mergeable} aria-label={`Apply queued run ${run.run_id}`}>Apply</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeActivity === "search" && (
+          <section className="repo-strip quick-search-panel" aria-label="Search panel">
+            <div className="section-heading"><ChevronDown size={14} /> Memory Search</div>
+            <p className="tree-empty">Run semantic search directly in Agent chat.</p>
+            <input
+              className="repo-path-input"
+              type="text"
+              value={sideSearchDraft}
+              placeholder="query..."
+              onChange={(event) => setSideSearchDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || !sideSearchDraft.trim()) return;
+                const query = sideSearchDraft.trim();
+                setAgentDraft(`/search ${query}`);
+                setActiveWorkspaceTab("agent");
+                sendAgentMessage(`/search ${query}`);
+              }}
+            />
+            <button
+              className="repo-open-btn"
+              disabled={!sideSearchDraft.trim()}
+              onClick={() => {
+                const query = sideSearchDraft.trim();
+                if (!query) return;
+                setAgentDraft(`/search ${query}`);
+                setActiveWorkspaceTab("agent");
+                sendAgentMessage(`/search ${query}`);
+              }}
+            >
+              <Search size={14} /> Search
+            </button>
+          </section>
+        )}
+
+        {activeActivity === "settings" && (
+          <section className="repo-strip" aria-label="Quick settings panel">
+            <div className="section-heading"><ChevronDown size={14} /> Quick Settings</div>
+            <div className="mini-list">
+              <span>Provider: {settingsDraft.provider}</span>
+              <span>Model: {settingsDraft.default_model}</span>
+              <span>URL: {settingsDraft.model_base_url}</span>
+              <button onClick={() => setActiveWorkspaceTab("agent")}>Open full settings</button>
+            </div>
+          </section>
+        )}
       </aside>
 
       <section className="workbench">
@@ -776,6 +874,7 @@ function App() {
           <div className="command-actions">
             <button onClick={refreshState} title="Refresh state"><RefreshCw size={16} /> Refresh</button>
             <button onClick={() => setComposerOpen((open) => !open)} title="Start handoff"><Play size={16} /> New Handoff</button>
+            <button onClick={() => setBottomPanelOpen((open) => !open)} title="Toggle timeline and terminal panel"><PanelBottom size={16} /> {bottomPanelOpen ? "Hide Panel" : "Show Panel"}</button>
           </div>
         </header>
 
@@ -798,56 +897,60 @@ function App() {
         />
 
         <div className="tab-row">
-          <button className="tab active"><FileCode2 size={14} /> {activeFile || "welcome.md"}</button>
-          <button className="tab"><GitCompare size={14} /> Review</button>
-          <button className="tab"><MessageSquareText size={14} /> Agent</button>
+          <button className={`tab ${activeWorkspaceTab === "editor" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("editor")}><FileCode2 size={14} /> {activeFile || "welcome.md"}</button>
+          <button className={`tab ${activeWorkspaceTab === "review" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("review")}><GitCompare size={14} /> Review</button>
+          <button className={`tab ${activeWorkspaceTab === "agent" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("agent")}><MessageSquareText size={14} /> Agent</button>
         </div>
 
-        <div className="workspace-main">
-          <EditorPane
-            run={selectedRun}
-            filePreview={filePreview}
-            activeFile={activeFile}
-            decisions={filePreview ? hunkDecisions[filePreview.file_path] ?? {} : {}}
-            onToggleHunk={toggleHunkDecision}
-            onSetFileDecision={setFileDecision}
-            onApplySelected={applySelectedDiff}
-          />
-          <AgentPane
-            run={selectedRun}
-            state={state}
-            readyRuns={readyRuns}
-            blockedRuns={blockedRuns}
-            applyJson={selectedRun ? applyResults[selectedRun.source_json] : undefined}
-            onReview={reviewRun}
-            onApply={applyRun}
-            onAutoApply={autoApplyRun}
-            onRollback={rollbackRun}
-            messages={agentMessages}
-            draft={agentDraft}
-            busy={agentBusy}
-            onDraftChange={setAgentDraft}
-            onSend={sendAgentMessage}
-            onRunAction={runAgentAction}
-            nemoState={nemoState}
-            selfInsights={selfInsights}
-            settingsDraft={settingsDraft}
-            onSettingsChange={setSettingsDraft}
-            onSaveSettings={saveSettings}
-            repoDraft={repoDraft}
-            onRepoDraftChange={setRepoDraft}
-            onOpenRepo={openRepo}
-            cloneDraft={cloneDraft}
-            onCloneDraftChange={setCloneDraft}
-            onCloneRepo={cloneRepo}
-            reviewPlan={reviewPlan}
-            applyHistory={applyHistory}
-            cleanupResult={cleanupResult}
-            onCleanup={cleanupArtifacts}
-          />
+        <div className={`workspace-main show-${activeWorkspaceTab}`}>
+          {(activeWorkspaceTab === "editor" || activeWorkspaceTab === "review") && (
+            <EditorPane
+              run={selectedRun}
+              filePreview={filePreview}
+              activeFile={activeFile}
+              decisions={filePreview ? hunkDecisions[filePreview.file_path] ?? {} : {}}
+              onToggleHunk={toggleHunkDecision}
+              onSetFileDecision={setFileDecision}
+              onApplySelected={applySelectedDiff}
+            />
+          )}
+          {activeWorkspaceTab === "agent" && (
+            <AgentPane
+              run={selectedRun}
+              state={state}
+              readyRuns={readyRuns}
+              blockedRuns={blockedRuns}
+              applyJson={selectedRun ? applyResults[selectedRun.source_json] : undefined}
+              onReview={reviewRun}
+              onApply={applyRun}
+              onAutoApply={autoApplyRun}
+              onRollback={rollbackRun}
+              messages={agentMessages}
+              draft={agentDraft}
+              busy={agentBusy}
+              onDraftChange={setAgentDraft}
+              onSend={sendAgentMessage}
+              onRunAction={runAgentAction}
+              nemoState={nemoState}
+              selfInsights={selfInsights}
+              settingsDraft={settingsDraft}
+              onSettingsChange={setSettingsDraft}
+              onSaveSettings={saveSettings}
+              repoDraft={repoDraft}
+              onRepoDraftChange={setRepoDraft}
+              onOpenRepo={openRepo}
+              cloneDraft={cloneDraft}
+              onCloneDraftChange={setCloneDraft}
+              onCloneRepo={cloneRepo}
+              reviewPlan={reviewPlan}
+              applyHistory={applyHistory}
+              cleanupResult={cleanupResult}
+              onCleanup={cleanupArtifacts}
+            />
+          )}
         </div>
 
-        <BottomPanel run={selectedRun} status={status} job={activeJob} onControl={controlJob} />
+        {bottomPanelOpen && <BottomPanel run={selectedRun} status={status} job={activeJob} onControl={controlJob} />}
       </section>
     </main>
   );
@@ -1108,12 +1211,25 @@ type AgentPaneProps = {
 };
 
 function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, cleanupResult, onCleanup }: AgentPaneProps) {
+  const assistantMessages = messages.filter((message) => message.role === "assistant");
+  const lastAssistant = assistantMessages[assistantMessages.length - 1];
+  const totalToolCalls = assistantMessages.reduce((sum, message) => sum + (message.tool_calls?.length ?? 0), 0);
+  const contextTokens = nemoState?.context_portfolio?.estimated_tokens ?? 0;
+  const tokenBudget = Math.max(1, settingsDraft.token_budget || 1);
+  const contextUsage = Math.min(100, Math.round((contextTokens / tokenBudget) * 100));
   return (
     <aside className="agent-pane">
       <div className="panel-title"><Bot size={16} /> Agent Control</div>
       <section className="agent-chat">
+        <div className="chat-header">
+          <span className="chat-msg-count">{messages.length} msg</span>
+          <span className="chat-kpi">tools {totalToolCalls}</span>
+          <span className="chat-kpi">ctx {contextTokens}/{tokenBudget}t ({contextUsage}%)</span>
+          {lastAssistant && <span className="chat-kpi">last ~{estimateTokens(lastAssistant.content)} tok</span>}
+        </div>
         <div className="chat-thread">
           {messages.map((message) => <AgentChatMessage message={message} onRunAction={onRunAction} key={message.id} />)}
+          {busy && <div className="chat-system-note">Agent is using tools...</div>}
         </div>
         <div className="chat-composer">
           <textarea
@@ -1151,25 +1267,31 @@ function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, on
         {applyJson && <p className="muted">Last apply JSON: {applyJson}</p>}
       </> : <EmptyState />}
 
-      <SelfImprovementPanel insights={selfInsights} />
-      <NemoMemoryPanel nemoState={nemoState} />
+      <details className="agent-collapsible" open>
+        <summary>NEMO + Review</summary>
+        <ReviewPlanPanel plan={reviewPlan} />
+        <NemoMemoryPanel nemoState={nemoState} />
+        <ApplyHistoryPanel applies={applyHistory} />
+      </details>
 
-      <ReviewPlanPanel plan={reviewPlan} />
-      <ApplyHistoryPanel applies={applyHistory} />
-      <RepoSettingsPanel
-        state={state}
-        settings={settingsDraft}
-        onSettingsChange={onSettingsChange}
-        onSaveSettings={onSaveSettings}
-        repoDraft={repoDraft}
-        onRepoDraftChange={onRepoDraftChange}
-        onOpenRepo={onOpenRepo}
-        cloneDraft={cloneDraft}
-        onCloneDraftChange={onCloneDraftChange}
-        onCloneRepo={onCloneRepo}
-        cleanupResult={cleanupResult}
-        onCleanup={onCleanup}
-      />
+      <details className="agent-collapsible">
+        <summary>Self-Improvement + Settings</summary>
+        <SelfImprovementPanel insights={selfInsights} />
+        <RepoSettingsPanel
+          state={state}
+          settings={settingsDraft}
+          onSettingsChange={onSettingsChange}
+          onSaveSettings={onSaveSettings}
+          repoDraft={repoDraft}
+          onRepoDraftChange={onRepoDraftChange}
+          onOpenRepo={onOpenRepo}
+          cloneDraft={cloneDraft}
+          onCloneDraftChange={onCloneDraftChange}
+          onCloneRepo={onCloneRepo}
+          cleanupResult={cleanupResult}
+          onCleanup={onCleanup}
+        />
+      </details>
     </aside>
   );
 }
@@ -1354,7 +1476,11 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
   return (
     <article className={`chat-message ${message.role}`}>
       <div className="message-role">{message.role}</div>
-      <p>{message.content}</p>
+      <MessageRichText content={message.content} animate={message.role === "assistant"} />
+      <div className="message-meta-row">
+        <span className="message-meta-pill">~{estimateTokens(message.content)} tok</span>
+        {message.tool_calls && message.tool_calls.length > 0 && <span className="message-meta-pill">tools {message.tool_calls.length}</span>}
+      </div>
       {message.tool_calls && message.tool_calls.length > 0 && <div className="tool-call-list">
         {message.tool_calls.map((tool) => (
           <div className="tool-call" key={tool.id}>
@@ -1375,6 +1501,75 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
         ))}
       </div>}
     </article>
+  );
+}
+
+function MessageRichText({ content, animate }: { content: string; animate: boolean }) {
+  const lines = content.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let listItems: string[] = [];
+  let codeLines: string[] = [];
+  let inCode = false;
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    blocks.push(<ul key={`l-${blocks.length}`}>{listItems.map((item, index) => <li key={`i-${index}`}>{renderInlineRichText(item)}</li>)}</ul>);
+    listItems = [];
+  };
+
+  const flushCode = () => {
+    if (!codeLines.length) return;
+    blocks.push(<pre key={`c-${blocks.length}`}><code>{codeLines.join("\n")}</code></pre>);
+    codeLines = [];
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      flushList();
+      if (inCode) {
+        flushCode();
+        inCode = false;
+      } else {
+        inCode = true;
+      }
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+    if (/^[-*]\s+/.test(trimmed)) {
+      listItems.push(trimmed.replace(/^[-*]\s+/, ""));
+      return;
+    }
+    flushList();
+    if (!trimmed) {
+      blocks.push(<div className="rich-spacer" key={`s-${blocks.length}`} />);
+      return;
+    }
+    if (/^###\s+/.test(trimmed)) {
+      blocks.push(<h4 key={`h4-${blocks.length}`}>{renderInlineRichText(trimmed.replace(/^###\s+/, ""))}</h4>);
+      return;
+    }
+    if (/^##\s+/.test(trimmed)) {
+      blocks.push(<h3 key={`h3-${blocks.length}`}>{renderInlineRichText(trimmed.replace(/^##\s+/, ""))}</h3>);
+      return;
+    }
+    if (/^#\s+/.test(trimmed)) {
+      blocks.push(<h2 key={`h2-${blocks.length}`}>{renderInlineRichText(trimmed.replace(/^#\s+/, ""))}</h2>);
+      return;
+    }
+    blocks.push(<p key={`p-${blocks.length}`}>{renderInlineRichText(line)}</p>);
+  });
+
+  flushList();
+  if (inCode) flushCode();
+
+  return (
+    <div className={`chat-rich ${animate ? "animate" : ""}`}>
+      {blocks.map((block, index) => <div className="rich-block" style={{ animationDelay: `${index * 35}ms` }} key={`b-${index}`}>{block}</div>)}
+    </div>
   );
 }
 
@@ -1426,4 +1621,7 @@ function EmptyState() {
   return <div className="empty">No live workspace data available.</div>;
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  createRoot(rootElement).render(<App />);
+}

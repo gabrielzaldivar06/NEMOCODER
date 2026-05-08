@@ -26,12 +26,12 @@ class MissionControlTests(unittest.TestCase):
 
             state = build_mission_control_state(repo, runtimes)
 
-        self.assertEqual(state["product"], "NEMO Desktop Mission Control")
+        self.assertEqual(state["product"], "NEMO CODE Mission Control")
         self.assertEqual(len(state["runs"]), 1)
         self.assertEqual(len(state["approval_queue"]), 1)
         self.assertEqual(state["runs"][0]["review_status"], "awaiting_review")
         self.assertTrue(state["runs"][0]["mergeable"])
-        self.assertEqual(state["settings"]["quality_core"], "product/aider")
+        self.assertEqual(state["settings"]["quality_core"], "product/nemo_code_runtime")
 
     def test_cli_exports_state_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,6 +108,52 @@ class MissionControlTests(unittest.TestCase):
         self.assertEqual(run["execution_phase"], "review")
         self.assertEqual(run["validation_profile"], "smoke")
         self.assertEqual(run["continuation_state"]["resume_token"], "task:run:minute-20")
+
+    def test_state_exposes_linked_prd_and_specs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            runtimes = root / "runs"
+            repo.mkdir()
+            sandbox.mkdir()
+            runtimes.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            payload = ready_payload(repo, sandbox, ["created.txt"])
+            payload["task"]["linked_prd"] = "Structured PRD for Mission Control details workspace"
+            payload["task"]["linked_specs"] = ["generated-spec.md", "contract-spec.md"]
+            (runtimes / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+
+            state = build_mission_control_state(repo, runtimes)
+            run = state["runs"][0]
+
+        self.assertEqual(run["linked_prd"], "Structured PRD for Mission Control details workspace")
+        self.assertEqual(run["linked_specs"], ["generated-spec.md", "contract-spec.md"])
+
+    def test_state_exposes_decision_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            runtimes = root / "runs"
+            repo.mkdir()
+            sandbox.mkdir()
+            runtimes.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            (sandbox / "decision-log.json").write_text(
+                json.dumps([
+                    {"id": "dec-1", "ts": 1710000000000, "action": "Evaluate", "status": "success", "detail": "Evaluation refreshed"}
+                ]),
+                encoding="utf-8",
+            )
+            (runtimes / "run.json").write_text(json.dumps(ready_payload(repo, sandbox, ["created.txt"])), encoding="utf-8")
+
+            state = build_mission_control_state(repo, runtimes)
+            run = state["runs"][0]
+
+        self.assertEqual(len(run["decision_log"]), 1)
+        self.assertEqual(run["decision_log"][0]["action"], "Evaluate")
+        self.assertEqual(run["decision_log"][0]["status"], "success")
 
     def test_state_normalizes_missing_validation_policy_setting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

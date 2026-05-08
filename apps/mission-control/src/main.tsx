@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, HardDrive, Home, MessageSquareText, PanelBottom, Play, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, TerminalSquare, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, HardDrive, Home, MessageSquareText, PanelBottom, Play, Plus, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, TerminalSquare, Wrench } from "lucide-react";
 import "./styles.css";
 
 type TimelineEvent = {
@@ -80,6 +80,18 @@ type ReviewPlan = { mergeable: boolean; risk_flags: string[]; files: Array<{ pat
 type ApplyHistoryItem = { path: string; task_id: string; run_id: string; applied_files: string[]; backup_root: string | null; backup_files: string[]; created_at: string };
 type ApplyHistoryResult = { applies: ApplyHistoryItem[] };
 type CleanupResult = { dry_run: boolean; candidates: string[]; deleted: string[]; max_age_days: number };
+type OrphanCleanupResult = {
+  dry_run: boolean;
+  max_age_minutes: number;
+  orphans: Array<{ kind: string; job_id?: string; path?: string; reason: string; age_seconds?: number }>;
+  summary: {
+    in_memory: number;
+    snapshots: number;
+    total: number;
+    marked_jobs: string[];
+    deleted_snapshots: string[];
+  };
+};
 type HandoffJob = {
   job_id: string;
   task_id: string;
@@ -99,7 +111,7 @@ type AgentToolCall = {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -111,6 +123,7 @@ type AgentMessage = {
   tool_calls?: AgentToolCall[];
   actions?: AgentAction[];
 };
+type AutonomyMode = "manual" | "trusted" | "aggressive";
 type AgentMessageResult = { message: AgentMessage };
 type DiffRow = {
   kind: "context" | "insert" | "delete";
@@ -223,6 +236,78 @@ type SelfModInsights = {
   similar_runs: { query: string; count: number; runs: Array<{ id: string; content: string; tags: string[]; importance: number; evidence_handle: string | null; score: number }> };
 };
 
+type TerminalRunResult = {
+  ok: boolean;
+  command: string;
+  cwd: string;
+  exit_code: number | null;
+  duration_ms: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+};
+
+type BrowserState = {
+  homepage: string;
+  last_url: string;
+  history: string[];
+  search_query: string;
+  search_history: string[];
+};
+
+type BrowserSearchItem = {
+  title: string;
+  url: string;
+  snippet: string;
+};
+
+type BrowserSearchState = {
+  query: string;
+  engine: string;
+  results: BrowserSearchItem[];
+};
+
+type ExtensionItem = {
+  name: string;
+  enabled: boolean;
+  version: string;
+};
+
+type GitStatusEntry = {
+  xy: string;
+  path: string;
+  original_path: string | null;
+  staged: boolean;
+  unstaged: boolean;
+};
+
+type GitStatusState = {
+  repo_path: string;
+  branch: string;
+  ahead: number;
+  behind: number;
+  entries: GitStatusEntry[];
+};
+
+type GitBranchItem = {
+  name: string;
+  current: boolean;
+};
+
+type GitRemote = {
+  name: string;
+  fetch: string;
+  push: string;
+};
+
+type GitDiffHunk = {
+  id: string;
+  header: string;
+  preview: string;
+};
+
+type AppSection = "home" | "runs" | "versioning" | "terminal" | "browser" | "extensions" | "memory" | "settings";
+
 function normalizeFilePreview(payload: FilePreview): FilePreview {
   return {
     ...payload,
@@ -234,7 +319,7 @@ function normalizeFilePreview(payload: FilePreview): FilePreview {
 }
 
 function normalizeSettings(settings: Partial<MissionState["settings"]> | undefined): MissionState["settings"] {
-  return { ...fallbackState.settings, ...(settings ?? {}) };
+  return { ...initialState.settings, ...(settings ?? {}) };
 }
 
 function normalizeRun(run: MissionRun): MissionRun {
@@ -254,12 +339,22 @@ function normalizeState(payload: MissionState): MissionState {
   return { ...payload, runs: (payload.runs ?? []).map(normalizeRun), approval_queue: (payload.approval_queue ?? []).map(normalizeRun), settings: normalizeSettings(payload.settings) };
 }
 
-type ActivityPanel = "explorer" | "search" | "runs" | "agent" | "settings";
-type WorkspaceTab = "editor" | "review" | "agent";
+function estimateTokens(text: string): number {
+  return Math.max(1, Math.ceil(text.length / 4));
+}
 
-const fallbackState: MissionState = {
+function renderInlineRichText(value: string): React.ReactNode[] {
+  const parts = value.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={`b-${index}`}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={`c-${index}`}>{part.slice(1, -1)}</code>;
+    return <React.Fragment key={`t-${index}`}>{part}</React.Fragment>;
+  });
+}
+
+const initialState: MissionState = {
   schema_version: 1,
-  product: "NEMO Desktop Mission Control",
+  product: "NEMO CODE Mission Control",
   repo_path: "c:/dev/dev4",
   runtimes_path: "c:/dev/dev4/.nemo-runtimes",
   repos: ["c:/dev/dev4"],
@@ -268,7 +363,7 @@ const fallbackState: MissionState = {
   settings: {
     model_base_url: "http://localhost:1234/v1",
     default_model: "nvidia.agentic.coder-4b",
-    provider: "fake",
+    provider: "subprocess",
     memory_db: ".nemo-runtimes/nemo-memory.sqlite",
     runtime_path: "c:/dev/dev4/.nemo-runtimes",
     timeout_seconds: 120,
@@ -278,7 +373,7 @@ const fallbackState: MissionState = {
     token_budget: 32000,
     validation_policy: "smoke",
     nemo_required: true,
-    quality_core: "product/aider",
+    quality_core: "product/nemo_code_runtime",
     recent_repos: ["c:/dev/dev4"],
   },
 };
@@ -294,24 +389,44 @@ function statusTone(status: string): string {
   return "quiet";
 }
 
-function fileName(path: string): string {
-  const normalized = path.replaceAll("\\", "/");
-  return normalized.split("/").filter(Boolean).pop() || normalized || "welcome.md";
+function parseGitDiffHunks(diffText: string): GitDiffHunk[] {
+  if (!diffText.trim()) return [];
+  const lines = diffText.split("\n");
+  const hunks: GitDiffHunk[] = [];
+  let currentHeader = "";
+  let currentLines: string[] = [];
+  const pushCurrent = () => {
+    if (!currentHeader) return;
+    const preview = currentLines.slice(0, 6).join("\n");
+    hunks.push({ id: `${currentHeader}-${hunks.length}`, header: currentHeader, preview });
+  };
+  for (const line of lines) {
+    if (line.startsWith("@@ ")) {
+      pushCurrent();
+      currentHeader = line.trim();
+      currentLines = [];
+      continue;
+    }
+    if (currentHeader) currentLines.push(line);
+  }
+  pushCurrent();
+  return hunks;
 }
 
-function App() {
-  const [state, setState] = useState<MissionState>(fallbackState);
+export function App() {
+  const [state, setState] = useState<MissionState>(initialState);
   const [selectedRunSource, setSelectedRunSource] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [nemoState, setNemoState] = useState<NemoState | null>(null);
   const [selfInsights, setSelfInsights] = useState<SelfModInsights | null>(null);
-  const [settingsDraft, setSettingsDraft] = useState<MissionState["settings"]>(fallbackState.settings);
-  const [repoDraft, setRepoDraft] = useState<string>(fallbackState.repo_path);
+  const [settingsDraft, setSettingsDraft] = useState<MissionState["settings"]>(initialState.settings);
+  const [repoDraft, setRepoDraft] = useState<string>(initialState.repo_path);
   const [cloneDraft, setCloneDraft] = useState({ url: "", destination: "" });
   const [reviewPlan, setReviewPlan] = useState<ReviewPlan | null>(null);
   const [applyHistory, setApplyHistory] = useState<ApplyHistoryItem[]>([]);
   const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null);
+  const [orphanCleanupResult, setOrphanCleanupResult] = useState<OrphanCleanupResult | null>(null);
   const [hunkDecisions, setHunkDecisions] = useState<Record<string, Record<string, boolean>>>({});
   const [status, setStatus] = useState<string>("Connecting to local bridge");
   const [applyResults, setApplyResults] = useState<Record<string, string>>({});
@@ -330,15 +445,40 @@ function App() {
   const [agentDraft, setAgentDraft] = useState<string>("");
   const [homeAgentDraft, setHomeAgentDraft] = useState<string>("");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
-  const [activeActivity, setActiveActivity] = useState<ActivityPanel>("explorer");
-  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>("editor");
+  const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("trusted");
+  const [activeSection, setActiveSection] = useState<AppSection>("home");
+  const [repoBusy, setRepoBusy] = useState<boolean>(false);
+  const [repoError, setRepoError] = useState<string>("");
+  const [terminalDraft, setTerminalDraft] = useState<string>("git status --short");
+  const [terminalRunning, setTerminalRunning] = useState<boolean>(false);
+  const [terminalResult, setTerminalResult] = useState<TerminalRunResult | null>(null);
+  const [browserDraft, setBrowserDraft] = useState<string>("https://github.com");
+  const [browserState, setBrowserState] = useState<BrowserState>({ homepage: "", last_url: "", history: [], search_query: "", search_history: [] });
+  const [browserQueryDraft, setBrowserQueryDraft] = useState<string>("");
+  const [browserSearchState, setBrowserSearchState] = useState<BrowserSearchState>({ query: "", engine: "", results: [] });
+  const [browserSearching, setBrowserSearching] = useState<boolean>(false);
+  const [extensions, setExtensions] = useState<ExtensionItem[]>([]);
+  const [extensionsBusy, setExtensionsBusy] = useState<boolean>(false);
+  const [gitBusy, setGitBusy] = useState<boolean>(false);
+  const [gitStatus, setGitStatus] = useState<GitStatusState>({ repo_path: "", branch: "", ahead: 0, behind: 0, entries: [] });
+  const [gitBranches, setGitBranches] = useState<GitBranchItem[]>([]);
+  const [gitRemotes, setGitRemotes] = useState<GitRemote[]>([]);
+  const [gitSyncRemote, setGitSyncRemote] = useState<string>("");
+  const [gitSyncBranch, setGitSyncBranch] = useState<string>("");
+  const [gitDiffPath, setGitDiffPath] = useState<string>("");
+  const [gitDiffStaged, setGitDiffStaged] = useState<boolean>(false);
+  const [gitDiffText, setGitDiffText] = useState<string>("");
+  const [gitDiffHunks, setGitDiffHunks] = useState<GitDiffHunk[]>([]);
+  const [gitSelectedHunks, setGitSelectedHunks] = useState<Record<string, boolean>>({});
+  const [gitCommitMessage, setGitCommitMessage] = useState<string>("");
+  const [gitBranchDraft, setGitBranchDraft] = useState<string>("");
   const [handoffDraft, setHandoffDraft] = useState({
     objective: "",
     acceptance: "passes validation",
     validation: "python -m unittest",
     validationPolicy: "smoke",
     targetFiles: "",
-    provider: "fake",
+    provider: "subprocess",
     timeoutSeconds: "120",
   });
 
@@ -352,15 +492,33 @@ function App() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }).then(async (response) => {
-    const payload = await response.json() as T | ApiError;
-    if (!response.ok) throw new Error("error" in payload ? payload.error : response.statusText);
+    const rawText = await response.text();
+    let payload: (T | ApiError | null) = null;
+    if (rawText.trim()) {
+      try {
+        payload = JSON.parse(rawText) as T | ApiError;
+      } catch {
+        if (!response.ok) throw new Error(rawText.trim() || response.statusText || "Request failed");
+        throw new Error("Invalid JSON response from server");
+      }
+    }
+    if (!response.ok) {
+      if (payload && typeof payload === "object" && "error" in payload) {
+        throw new Error((payload as ApiError).error);
+      }
+      throw new Error(response.statusText || "Request failed");
+    }
+    if (!payload) throw new Error("Empty response from server");
     return payload as T;
   });
 
   const refreshState = () => {
     setStatus("Refreshing workspace state");
     fetch("/api/state", { cache: "no-store" })
-      .then((response) => response.ok ? response.json() : fetch("/mission-control-state.sample.json", { cache: "no-store" }).then((fallback) => fallback.json()))
+      .then((response) => {
+        if (!response.ok) throw new Error(`State endpoint failed (${response.status})`);
+        return response.json();
+      })
       .then((payload: MissionState) => {
         const nextState = normalizeState(payload);
         setState(nextState);
@@ -371,9 +529,8 @@ function App() {
         setSelectedFile(nextRun?.changed_files[0] ?? "");
         setStatus("Workspace state refreshed");
       })
-      .catch(() => {
-        setState(fallbackState);
-        setStatus("Bridge offline, showing fallback state");
+      .catch((error: Error) => {
+        setStatus(`Bridge offline: ${error.message}`);
       });
   };
 
@@ -470,13 +627,17 @@ function App() {
   };
 
   const autoApplyRun = (run: MissionRun) => {
-    setStatus("Auto-applying trusted run");
-    postJson<ApplyResult>("/api/apply", { source_json: run.source_json, autonomy_profile: "trusted" })
+    if (autonomyMode === "manual") {
+      setStatus("Manual mode requires review + manual apply");
+      return;
+    }
+    setStatus(`Auto-applying run with ${autonomyMode} profile`);
+    postJson<ApplyResult>("/api/apply", { source_json: run.source_json, autonomy_profile: autonomyMode })
       .then((payload) => {
         setApplyResults((current) => ({ ...current, [run.source_json]: payload.apply_json }));
         setState(payload.state);
         refreshApplyHistory();
-        setStatus(`Auto-applied trusted run. Rollback JSON: ${payload.apply_json}`);
+        setStatus(`Auto-applied (${autonomyMode}) run. Rollback JSON: ${payload.apply_json}`);
       })
       .catch((error: Error) => setStatus(error.message));
   };
@@ -588,17 +749,6 @@ function App() {
       .catch((error: Error) => setStatus(error.message));
   };
 
-  const activatePanel = (panel: ActivityPanel) => {
-    setActiveActivity(panel);
-    if (panel === "agent" || panel === "settings") setActiveWorkspaceTab("agent");
-    if (panel === "runs") setActiveWorkspaceTab("review");
-    if (panel === "explorer") setActiveWorkspaceTab("editor");
-    if (panel === "search") {
-      setActiveWorkspaceTab("agent");
-      setStatus("Search from Agent Control with NEMO context");
-    }
-  };
-
   const sendAgentMessage = (contentOverride?: string) => {
     const content = (contentOverride ?? agentDraft).trim();
     if (!content || agentBusy) return;
@@ -630,6 +780,17 @@ function App() {
     sendAgentMessage(content);
   };
 
+  const openMemorySection = () => {
+    setActiveSection("memory");
+    setStatus("Opening NEMO memory panel");
+  };
+
+  const sendGuidedAgentPrompt = (prompt: string) => {
+    if (!prompt.trim() || agentBusy) return;
+    setAgentDraft(prompt);
+    sendAgentMessage(prompt);
+  };
+
   const runAgentAction = (action: AgentAction) => {
     if (action.kind === "apply") {
       if (!window.confirm("Apply the selected reviewed run to the workspace?")) return;
@@ -650,6 +811,36 @@ function App() {
         .then((payload) => {
           setActiveJob(payload.job);
           setStatus(`Self-modification job started: ${payload.job.job_id}`);
+        })
+        .catch((error: Error) => setStatus(error.message));
+      return;
+    }
+    if (action.kind === "review") {
+      const sourceJson = String(action.payload.source_json || selectedRun?.source_json || "");
+      if (!sourceJson) {
+        setStatus("Review action requires a selected run");
+        return;
+      }
+      setStatus("Refreshing merge plan from agent action");
+      postJson<{ plan: ReviewPlan }>("/api/review", { source_json: sourceJson })
+        .then((payload) => {
+          setReviewPlan(payload.plan);
+          setStatus(payload.plan.mergeable ? `Merge plan ready: ${payload.plan.files.length} files` : `Review blocked: ${payload.plan.risk_flags.join(", ")}`);
+        })
+        .catch((error: Error) => setStatus(error.message));
+      return;
+    }
+    if (action.kind === "evaluate") {
+      const sourceJson = String(action.payload.source_json || selectedRun?.source_json || "");
+      if (!sourceJson) {
+        setStatus("Evaluate action requires a selected run");
+        return;
+      }
+      setStatus("Evaluating selected run readiness");
+      postJson<{ grade: string; score: number; spec10_score: number; reasons?: string[] }>("/api/eval", { source_json: sourceJson })
+        .then((payload) => {
+          const reasons = payload.reasons?.length ? ` / ${payload.reasons.join(", ")}` : "";
+          setStatus(`Eval ${payload.grade} score ${payload.score} spec10 ${payload.spec10_score}${reasons}`);
         })
         .catch((error: Error) => setStatus(error.message));
       return;
@@ -679,18 +870,20 @@ function App() {
     const nextSettings = { ...settingsDraft, provider };
     setSettingsDraft(nextSettings);
     setHandoffDraft((current) => ({ ...current, provider }));
-    setStatus(provider === "subprocess" ? "Switching chat to LM Studio" : "Switching chat to fake planner");
+    setStatus("Switching chat to LM Studio");
     postJson<{ settings: MissionState["settings"]; state: MissionState }>("/api/settings", nextSettings)
       .then((payload) => {
         const nextState = normalizeState(payload.state);
         setSettingsDraft(normalizeSettings(payload.settings));
         setState(nextState);
-        setStatus(provider === "subprocess" ? "Real mode enabled: LM Studio" : "Fake planner mode enabled");
+        setStatus("Real mode enabled: LM Studio");
       })
       .catch((error: Error) => setStatus(error.message));
   };
 
   const openRepo = (repoPath = repoDraft) => {
+    setRepoBusy(true);
+    setRepoError("");
     setStatus("Opening repository");
     postJson<{ state: MissionState }>("/api/repo/open", { repo_path: repoPath })
       .then((payload) => {
@@ -698,12 +891,19 @@ function App() {
         setState(nextState);
         setSettingsDraft(nextState.settings);
         setRepoDraft(nextState.repo_path);
+        setActiveSection("runs");
         setStatus(`Opened repo: ${nextState.repo_path}`);
       })
-      .catch((error: Error) => setStatus(error.message));
+      .catch((error: Error) => {
+        setRepoError(error.message);
+        setStatus(error.message);
+      })
+      .finally(() => setRepoBusy(false));
   };
 
   const cloneRepo = () => {
+    setRepoBusy(true);
+    setRepoError("");
     setStatus("Cloning repository");
     postJson<{ state: MissionState }>("/api/repo/clone", cloneDraft)
       .then((payload) => {
@@ -712,9 +912,14 @@ function App() {
         setSettingsDraft(nextState.settings);
         setRepoDraft(nextState.repo_path);
         setCloneDraft({ url: "", destination: "" });
+        setActiveSection("runs");
         setStatus(`Cloned and opened repo: ${nextState.repo_path}`);
       })
-      .catch((error: Error) => setStatus(error.message));
+      .catch((error: Error) => {
+        setRepoError(error.message);
+        setStatus(error.message);
+      })
+      .finally(() => setRepoBusy(false));
   };
 
   const cleanupArtifacts = (dryRun: boolean) => {
@@ -727,10 +932,317 @@ function App() {
       .catch((error: Error) => setStatus(error.message));
   };
 
+  const cleanupOrphanJobs = (dryRun: boolean) => {
+    setStatus(dryRun ? "Buscando jobs huerfanos" : "Limpiando jobs huerfanos");
+    postJson<OrphanCleanupResult>("/api/jobs/orphans", { dry_run: dryRun, max_age_minutes: 30 })
+      .then((payload) => {
+        setOrphanCleanupResult(payload);
+        setStatus(dryRun ? `Detectados ${payload.summary.total} job(s) huerfanos` : `Marcados ${payload.summary.marked_jobs.length} y borrados ${payload.summary.deleted_snapshots.length}`);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const runTerminal = () => {
+    const command = terminalDraft.trim();
+    if (!command || terminalRunning) return;
+    setTerminalRunning(true);
+    setStatus(`Running terminal command: ${command}`);
+    postJson<TerminalRunResult>("/api/terminal/run", { command, timeout_seconds: 45 })
+      .then((payload) => {
+        setTerminalResult(payload);
+        setStatus(payload.ok ? `Terminal command completed (${payload.duration_ms} ms)` : `Terminal command failed (${payload.exit_code ?? "timeout"})`);
+      })
+      .catch((error: Error) => setStatus(error.message))
+      .finally(() => setTerminalRunning(false));
+  };
+
+  const loadBrowserState = () => {
+    fetch("/api/browser", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload: { homepage?: string; last_url?: string; history?: string[]; search_query?: string; search_history?: string[] }) => {
+        setBrowserState({
+          homepage: payload.homepage ?? "",
+          last_url: payload.last_url ?? "",
+          history: payload.history ?? [],
+          search_query: payload.search_query ?? "",
+          search_history: payload.search_history ?? [],
+        });
+        if (payload.last_url) setBrowserDraft(payload.last_url);
+        if (payload.search_query) setBrowserQueryDraft(payload.search_query);
+      })
+      .catch(() => {
+        setBrowserState({ homepage: "", last_url: "", history: [], search_query: "", search_history: [] });
+      });
+  };
+
+  const openBrowserUrl = () => {
+    const url = browserDraft.trim();
+    if (!url) return;
+    setStatus(`Opening browser URL: ${url}`);
+    postJson<{ ok: boolean; url: string; opened: boolean; history: string[] }>("/api/browser/open", { url })
+      .then((payload) => {
+        setBrowserState((current) => ({
+          ...current,
+          last_url: payload.url,
+          history: payload.history,
+        }));
+        setStatus(payload.opened ? `Browser opened: ${payload.url}` : `Browser URL saved: ${payload.url}`);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const searchBrowserWeb = () => {
+    const query = browserQueryDraft.trim();
+    if (!query || browserSearching) return;
+    setBrowserSearching(true);
+    setStatus(`Searching web with embedded Chromium: ${query}`);
+    postJson<{ ok: boolean; query: string; engine: string; search_url: string; results: BrowserSearchItem[]; history?: string[]; search_history?: string[] }>("/api/browser/search", {
+      query,
+      max_results: 6,
+      timeout_seconds: 20,
+    })
+      .then((payload) => {
+        setBrowserSearchState({ query: payload.query, engine: payload.engine, results: payload.results ?? [] });
+        if (payload.search_url) setBrowserDraft(payload.search_url);
+        setBrowserState((current) => ({
+          ...current,
+          last_url: payload.search_url || current.last_url,
+          history: payload.history ?? current.history,
+          search_query: payload.query,
+          search_history: payload.search_history ?? current.search_history,
+        }));
+        setStatus(`Search completed with ${payload.engine}: ${payload.results.length} result(s)`);
+      })
+      .catch((error: Error) => {
+        setBrowserSearchState({ query, engine: "", results: [] });
+        setStatus(error.message);
+      })
+      .finally(() => setBrowserSearching(false));
+  };
+
+  const openBrowserSearchResult = (url: string) => {
+    setBrowserDraft(url);
+    setStatus(`Opening search result: ${url}`);
+    postJson<{ ok: boolean; url: string; opened: boolean; history: string[] }>("/api/browser/open", { url })
+      .then((payload) => {
+        setBrowserState((current) => ({
+          ...current,
+          last_url: payload.url,
+          history: payload.history,
+        }));
+        setStatus(payload.opened ? `Browser opened: ${payload.url}` : `Browser URL saved: ${payload.url}`);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const loadExtensions = () => {
+    setExtensionsBusy(true);
+    fetch("/api/extensions", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload: { extensions?: ExtensionItem[] }) => {
+        setExtensions(payload.extensions ?? []);
+      })
+      .catch(() => setExtensions([]))
+      .finally(() => setExtensionsBusy(false));
+  };
+
+  const toggleExtension = (name: string, enabled: boolean) => {
+    setStatus(`${enabled ? "Enabling" : "Disabling"} extension: ${name}`);
+    postJson<{ extensions: ExtensionItem[] }>("/api/extensions", { action: "toggle", name, enabled })
+      .then((payload) => {
+        setExtensions(payload.extensions ?? []);
+        setStatus(`Extension updated: ${name}`);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const loadGitStatus = () => {
+    setGitBusy(true);
+    fetch("/api/git/status", { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json() as GitStatusState | ApiError;
+        if (!response.ok) throw new Error("error" in payload ? payload.error : "Failed to load git status");
+        return payload as GitStatusState;
+      })
+      .then((payload) => {
+        setGitStatus({
+          repo_path: payload.repo_path,
+          branch: payload.branch,
+          ahead: payload.ahead,
+          behind: payload.behind,
+          entries: payload.entries ?? [],
+        });
+      })
+      .catch((error: Error) => {
+        setStatus(error.message);
+        setGitStatus({ repo_path: state.repo_path, branch: "", ahead: 0, behind: 0, entries: [] });
+      })
+      .finally(() => setGitBusy(false));
+  };
+
+  const loadGitBranches = () => {
+    fetch("/api/git/branches", { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json() as { branches?: GitBranchItem[]; error?: string };
+        if (!response.ok) throw new Error(payload.error || "Failed to load branches");
+        return payload;
+      })
+      .then((payload) => setGitBranches(payload.branches ?? []))
+      .catch(() => setGitBranches([]));
+  };
+
+  const loadGitRemotes = () => {
+    fetch("/api/git/remotes", { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json() as { remotes?: GitRemote[]; default_remote?: string; default_branch?: string; error?: string };
+        if (!response.ok) throw new Error(payload.error || "Failed to load remotes");
+        return payload;
+      })
+      .then((payload) => {
+        const remotes = payload.remotes ?? [];
+        setGitRemotes(remotes);
+        if (payload.default_remote) setGitSyncRemote(payload.default_remote);
+        if (payload.default_branch) setGitSyncBranch(payload.default_branch);
+      })
+      .catch(() => {
+        setGitRemotes([]);
+      });
+  };
+
+  const loadGitDiff = (path = gitDiffPath, staged = gitDiffStaged) => {
+    postJson<{ diff: string; stderr?: string }>("/api/git/diff", { path, staged })
+      .then((payload) => {
+        const text = payload.diff || payload.stderr || "";
+        setGitDiffStaged(staged);
+        setGitDiffText(text);
+        const hunks = parseGitDiffHunks(text);
+        setGitDiffHunks(hunks);
+        setGitSelectedHunks(Object.fromEntries(hunks.map((hunk) => [hunk.id, false])));
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const stageGitPath = (path: string, stage: boolean) => {
+    setStatus(`${stage ? "Staging" : "Unstaging"} ${path}`);
+    postJson<{ ok: boolean }>("/api/git/stage", { path, stage })
+      .then(() => {
+        loadGitStatus();
+        if (gitDiffPath === path) loadGitDiff(path);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const commitGit = () => {
+    const message = gitCommitMessage.trim();
+    if (!message) {
+      setStatus("Commit message is required");
+      return;
+    }
+    setStatus("Creating git commit");
+    postJson<{ ok: boolean; stderr?: string; stdout?: string }>("/api/git/commit", { message })
+      .then((payload) => {
+        if (!payload.ok) throw new Error(payload.stderr || payload.stdout || "Commit failed");
+        setGitCommitMessage("");
+        loadGitStatus();
+        loadGitBranches();
+        setStatus("Commit created");
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const checkoutGitBranch = (branch: string, create: boolean) => {
+    const name = branch.trim();
+    if (!name) {
+      setStatus("Branch name is required");
+      return;
+    }
+    setStatus(`${create ? "Creating" : "Switching to"} branch ${name}`);
+    postJson<{ ok: boolean; stderr?: string; stdout?: string }>("/api/git/checkout", { branch: name, create })
+      .then((payload) => {
+        if (!payload.ok) throw new Error(payload.stderr || payload.stdout || "Checkout failed");
+        if (create) setGitBranchDraft("");
+        loadGitStatus();
+        loadGitBranches();
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const syncGit = (direction: "pull" | "push") => {
+    setStatus(`Running git ${direction}`);
+    postJson<{ ok: boolean; stderr?: string; stdout?: string }>("/api/git/sync", {
+      direction,
+      rebase: direction === "pull",
+      remote: gitSyncRemote,
+      branch: gitSyncBranch,
+    })
+      .then((payload) => {
+        if (!payload.ok) throw new Error(payload.stderr || payload.stdout || `git ${direction} failed`);
+        loadGitStatus();
+        loadGitBranches();
+        setStatus(`git ${direction} completed`);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const stageGitHunk = (path: string, hunkHeader: string, stage: boolean) => {
+    setStatus(`${stage ? "Staging" : "Unstaging"} hunk ${hunkHeader}`);
+    postJson<{ ok: boolean }>("/api/git/stage-hunk", { path, hunk_header: hunkHeader, stage })
+      .then(() => {
+        loadGitStatus();
+        loadGitDiff(path, gitDiffStaged);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const toggleGitHunkSelection = (hunkId: string) => {
+    setGitSelectedHunks((current) => ({ ...current, [hunkId]: !(current[hunkId] ?? false) }));
+  };
+
+  const applySelectedGitHunks = (stage: boolean) => {
+    if (!gitDiffPath.trim()) {
+      setStatus("Select a diff path before applying hunks");
+      return;
+    }
+    const selected = Object.entries(gitSelectedHunks)
+      .filter(([, isSelected]) => isSelected)
+      .map(([hunkId]) => gitDiffHunks.find((hunk) => hunk.id === hunkId)?.header)
+      .filter((header): header is string => Boolean(header));
+    if (selected.length === 0) {
+      setStatus("No hunks selected");
+      return;
+    }
+    setStatus(`${stage ? "Staging" : "Unstaging"} ${selected.length} selected hunks`);
+    const runBatch = async () => {
+      for (const header of selected) {
+        await postJson<{ ok: boolean }>("/api/git/stage-hunk", {
+          path: gitDiffPath,
+          hunk_header: header,
+          stage,
+        });
+      }
+    };
+    runBatch()
+      .then(() => {
+        setStatus(`${stage ? "Staged" : "Unstaged"} ${selected.length} hunks`);
+        loadGitStatus();
+        loadGitDiff(gitDiffPath, gitDiffStaged);
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
   useEffect(() => {
     refreshState();
     refreshApplyHistory();
+    loadBrowserState();
+    loadExtensions();
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "versioning") return;
+    loadGitStatus();
+    loadGitBranches();
+    loadGitRemotes();
+  }, [activeSection]);
 
   useEffect(() => {
     if (selectedRun && activeFile) loadFilePreview(selectedRun, activeFile);
@@ -747,26 +1259,33 @@ function App() {
   return (
     <main className="ide-shell">
       <aside className="activity-bar" aria-label="Activity bar">
-        <button className={`activity ${activeActivity === "explorer" ? "active" : ""}`} onClick={() => activatePanel("explorer")} title="Explorer"><Files size={20} /></button>
-        <button className={`activity ${activeActivity === "search" ? "active" : ""}`} onClick={() => activatePanel("search")} title="Search with agent"><Search size={20} /></button>
-        <button className={`activity ${activeActivity === "runs" ? "active" : ""}`} onClick={() => activatePanel("runs")} title="Review runs"><GitBranch size={20} /></button>
-        <button className={`activity ${activeActivity === "agent" ? "active" : ""}`} onClick={() => activatePanel("agent")} title="Agent"><MessageSquareText size={20} /></button>
-        <button className={`activity ${activeActivity === "settings" ? "active" : ""}`} onClick={() => activatePanel("settings")} title="Settings"><Settings size={20} /></button>
+        <button className={`activity ${activeSection === "home" ? "active" : ""}`} title="Home" onClick={() => setActiveSection("home")}><Home size={20} /></button>
+        <button className={`activity ${activeSection === "runs" ? "active" : ""}`} title="Runs" onClick={() => setActiveSection("runs")}><Files size={20} /></button>
+        <button className={`activity ${activeSection === "versioning" ? "active" : ""}`} title="Versionado" onClick={() => setActiveSection("versioning")}><GitBranch size={20} /></button>
+        <button className={`activity ${activeSection === "terminal" ? "active" : ""}`} title="Terminal" onClick={() => setActiveSection("terminal")}><TerminalSquare size={20} /></button>
+        <button className={`activity ${activeSection === "browser" ? "active" : ""}`} title="Browser" onClick={() => setActiveSection("browser")}><Globe size={20} /></button>
+        <button className={`activity ${activeSection === "extensions" ? "active" : ""}`} title="Extensions" onClick={() => setActiveSection("extensions")}><Puzzle size={20} /></button>
+        <button className={`activity ${activeSection === "memory" ? "active" : ""}`} title="Memoria" onClick={() => setActiveSection("memory")}><Database size={20} /></button>
+        <button className={`activity ${activeSection === "settings" ? "active" : ""}`} title="Ajustes" onClick={() => setActiveSection("settings")}><Settings size={20} /></button>
       </aside>
 
       <aside className="explorer">
         <div className="brand-row">
           <Bot size={20} />
           <div>
-            <h1>NEMO Code</h1>
-            <p>Aider core + NEMO memory</p>
+            <h1>NEMO CODE</h1>
+            <p>NEMO CODE engine + NEMO memory</p>
           </div>
         </div>
 
-        <section className="repo-strip">
-          <div className="section-heading"><ChevronDown size={14} /> Workspace</div>
-          {state.repos.map((repo) => <button className="repo-item" key={repo} onClick={() => openRepo(repo)} title="Open repo"><HardDrive size={14} /> {repo}</button>)}
-        </section>
+        <RepoWorkspaceSwitcher
+          repos={state.repos}
+          repoDraft={repoDraft}
+          onRepoDraftChange={setRepoDraft}
+          onOpenRepo={openRepo}
+          busy={repoBusy}
+          error={repoError}
+        />
 
         <section className="run-tree">
           <div className="section-heading"><ChevronDown size={14} /> Agent Runs</div>
@@ -778,8 +1297,8 @@ function App() {
               </button>
               {selectedRun?.source_json === run.source_json && <div className="file-tree">
                 {run.changed_files.length === 0 ? <span className="tree-empty">No changed files</span> : run.changed_files.map((file) => (
-                  <button className={activeFile === file ? "active" : ""} key={file} onClick={() => selectFile(file)} title={file}>
-                    <FileCode2 size={14} /> <span>{fileName(file)}</span>
+                  <button className={activeFile === file ? "active" : ""} key={file} onClick={() => selectFile(file)}>
+                    <FileCode2 size={14} /> {file}
                   </button>
                 ))}
               </div>}
@@ -792,7 +1311,7 @@ function App() {
         <header className="command-bar">
           <div className="command-title">
             <Code2 size={18} />
-            <span>{selectedRun?.objective ?? "No run selected"}</span>
+            <span>{activeSection === "home" ? "Consola de Mision" : activeSection === "runs" ? (selectedRun?.objective ?? "No run selected") : activeSection === "versioning" ? "Control de Versionado" : activeSection === "terminal" ? "Terminal" : activeSection === "browser" ? "Browser" : activeSection === "extensions" ? "Extensions" : activeSection === "memory" ? "NEMO Memory" : "Ajustes"}</span>
           </div>
           <div className="command-actions">
             <button onClick={refreshState} title="Refresh state"><RefreshCw size={16} /> Refresh</button>
@@ -802,59 +1321,150 @@ function App() {
 
         {composerOpen && <HandoffComposer draft={handoffDraft} onChange={setHandoffDraft} onSubmit={startHandoff} onClose={() => setComposerOpen(false)} running={handoffRunning} />}
 
-        {activeWorkspaceTab === "editor" && (
-          <MissionHome
-            state={state}
-            readyRuns={readyRuns}
-            blockedRuns={blockedRuns}
-            nemoState={nemoState}
-            status={status}
-            draft={homeAgentDraft}
-            provider={settingsDraft.provider}
-            messages={agentMessages}
-            onDraftChange={setHomeAgentDraft}
-            onSubmit={sendHomeAgentMessage}
-            onProviderChange={setProviderMode}
-            onOpenComposer={() => setComposerOpen(true)}
-            running={agentBusy}
-          />
-        )}
+        {activeSection === "home" && <MissionHome
+          state={state}
+          readyRuns={readyRuns}
+          blockedRuns={blockedRuns}
+          nemoState={nemoState}
+          status={status}
+          draft={homeAgentDraft}
+          provider={settingsDraft.provider}
+          messages={agentMessages}
+          onDraftChange={setHomeAgentDraft}
+          onSubmit={sendHomeAgentMessage}
+          onProviderChange={setProviderMode}
+          onOpenComposer={() => setComposerOpen(true)}
+          onOpenMemory={openMemorySection}
+          running={agentBusy}
+        />}
 
-        <div className="tab-row">
-          <button className={`tab ${activeWorkspaceTab === "editor" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("editor")} title={activeFile || "welcome.md"}><FileCode2 size={14} /> <span>{fileName(activeFile)}</span></button>
-          <button className={`tab ${activeWorkspaceTab === "review" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("review")} title="Review"><GitCompare size={14} /> <span>Review</span></button>
-          <button className={`tab ${activeWorkspaceTab === "agent" ? "active" : ""}`} onClick={() => setActiveWorkspaceTab("agent")} title="Agent"><MessageSquareText size={14} /> <span>Agent</span></button>
-        </div>
+        {activeSection === "runs" && <>
+          <div className="tab-row">
+            <span className="tab active"><FileCode2 size={14} /> {activeFile || "welcome.md"}</span>
+            <span className="tab"><GitCompare size={14} /> Review</span>
+            <span className="tab"><MessageSquareText size={14} /> Agent</span>
+          </div>
 
-        <div className={`workspace-main show-${activeWorkspaceTab}`}>
-          <EditorPane
-            run={selectedRun}
-            filePreview={filePreview}
-            activeFile={activeFile}
-            decisions={filePreview ? hunkDecisions[filePreview.file_path] ?? {} : {}}
-            onToggleHunk={toggleHunkDecision}
-            onSetFileDecision={setFileDecision}
-            onApplySelected={applySelectedDiff}
-          />
-          <AgentPane
-            run={selectedRun}
+          <div className="workspace-main">
+            <EditorPane
+              run={selectedRun}
+              filePreview={filePreview}
+              activeFile={activeFile}
+              decisions={filePreview ? hunkDecisions[filePreview.file_path] ?? {} : {}}
+              onToggleHunk={toggleHunkDecision}
+              onSetFileDecision={setFileDecision}
+              onApplySelected={applySelectedDiff}
+            />
+            <AgentPane
+              run={selectedRun}
+              state={state}
+              readyRuns={readyRuns}
+              blockedRuns={blockedRuns}
+              autonomyMode={autonomyMode}
+              onAutonomyModeChange={setAutonomyMode}
+              applyJson={selectedRun ? applyResults[selectedRun.source_json] : undefined}
+              onReview={reviewRun}
+              onApply={applyRun}
+              onAutoApply={autoApplyRun}
+              onRollback={rollbackRun}
+              messages={agentMessages}
+              draft={agentDraft}
+              busy={agentBusy}
+              onDraftChange={setAgentDraft}
+              onSend={sendAgentMessage}
+              onRunAction={runAgentAction}
+              nemoState={nemoState}
+              selfInsights={selfInsights}
+              settingsDraft={settingsDraft}
+              onSettingsChange={setSettingsDraft}
+              onSaveSettings={saveSettings}
+              repoDraft={repoDraft}
+              onRepoDraftChange={setRepoDraft}
+              onOpenRepo={openRepo}
+              cloneDraft={cloneDraft}
+              onCloneDraftChange={setCloneDraft}
+              onCloneRepo={cloneRepo}
+              reviewPlan={reviewPlan}
+              applyHistory={applyHistory}
+              cleanupResult={cleanupResult}
+              onCleanup={cleanupArtifacts}
+              orphanCleanupResult={orphanCleanupResult}
+              onCleanupOrphans={cleanupOrphanJobs}
+              onSendGuidedPrompt={sendGuidedAgentPrompt}
+              showSettingsPanel={false}
+            />
+          </div>
+        </>}
+
+        {activeSection === "versioning" && <VersioningPanel
+          repoPath={state.repo_path}
+          status={gitStatus}
+          branches={gitBranches}
+          remotes={gitRemotes}
+          syncRemote={gitSyncRemote}
+          syncBranch={gitSyncBranch}
+          busy={gitBusy}
+          diffPath={gitDiffPath}
+          diffStaged={gitDiffStaged}
+          diffText={gitDiffText}
+          diffHunks={gitDiffHunks}
+          commitMessage={gitCommitMessage}
+          branchDraft={gitBranchDraft}
+          onRefresh={() => {
+            loadGitStatus();
+            loadGitBranches();
+            loadGitRemotes();
+          }}
+          onSyncRemoteChange={setGitSyncRemote}
+          onSyncBranchChange={setGitSyncBranch}
+          onDiffPathChange={setGitDiffPath}
+          onLoadDiff={loadGitDiff}
+          onStage={stageGitPath}
+          onStageHunk={stageGitHunk}
+          selectedHunks={gitSelectedHunks}
+          onToggleHunkSelection={toggleGitHunkSelection}
+          onApplySelectedHunks={applySelectedGitHunks}
+          onCommitMessageChange={setGitCommitMessage}
+          onCommit={commitGit}
+          onBranchDraftChange={setGitBranchDraft}
+          onCheckout={checkoutGitBranch}
+          onSync={syncGit}
+        />}
+
+        {activeSection === "terminal" && <TerminalPanel
+          command={terminalDraft}
+          running={terminalRunning}
+          result={terminalResult}
+          onCommandChange={setTerminalDraft}
+          onRun={runTerminal}
+        />}
+
+        {activeSection === "browser" && <BrowserPanel
+          draft={browserDraft}
+          state={browserState}
+          queryDraft={browserQueryDraft}
+          searchState={browserSearchState}
+          searching={browserSearching}
+          onDraftChange={setBrowserDraft}
+          onOpen={openBrowserUrl}
+          onQueryDraftChange={setBrowserQueryDraft}
+          onSearch={searchBrowserWeb}
+          onOpenSearchResult={openBrowserSearchResult}
+        />}
+
+        {activeSection === "extensions" && <ExtensionsPanel
+          items={extensions}
+          busy={extensionsBusy}
+          onToggle={toggleExtension}
+          onReload={loadExtensions}
+        />}
+
+        {activeSection === "memory" && <div className="section-surface"><NemoMemoryPanel nemoState={nemoState} /></div>}
+
+        {activeSection === "settings" && <div className="section-surface">
+          <RepoSettingsPanel
             state={state}
-            readyRuns={readyRuns}
-            blockedRuns={blockedRuns}
-            applyJson={selectedRun ? applyResults[selectedRun.source_json] : undefined}
-            onReview={reviewRun}
-            onApply={applyRun}
-            onAutoApply={autoApplyRun}
-            onRollback={rollbackRun}
-            messages={agentMessages}
-            draft={agentDraft}
-            busy={agentBusy}
-            onDraftChange={setAgentDraft}
-            onSend={sendAgentMessage}
-            onRunAction={runAgentAction}
-            nemoState={nemoState}
-            selfInsights={selfInsights}
-            settingsDraft={settingsDraft}
+            settings={settingsDraft}
             onSettingsChange={setSettingsDraft}
             onSaveSettings={saveSettings}
             repoDraft={repoDraft}
@@ -863,12 +1473,12 @@ function App() {
             cloneDraft={cloneDraft}
             onCloneDraftChange={setCloneDraft}
             onCloneRepo={cloneRepo}
-            reviewPlan={reviewPlan}
-            applyHistory={applyHistory}
             cleanupResult={cleanupResult}
             onCleanup={cleanupArtifacts}
+            orphanCleanupResult={orphanCleanupResult}
+            onCleanupOrphans={cleanupOrphanJobs}
           />
-        </div>
+        </div>}
 
         <BottomPanel run={selectedRun} status={status} job={activeJob} onControl={controlJob} />
       </section>
@@ -876,7 +1486,7 @@ function App() {
   );
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, provider, messages, onDraftChange, onSubmit, onProviderChange, onOpenComposer, running }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; status: string; draft: string; provider: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; running: boolean }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, provider, messages, onDraftChange, onSubmit, onProviderChange, onOpenComposer, onOpenMemory, running }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; status: string; draft: string; provider: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean }) {
   const recentRuns = state.runs.slice(0, 4);
   const visibleMessages = messages.slice(-4);
   const atomCount = nemoState?.health.atom_count ?? 0;
@@ -900,21 +1510,20 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, 
           />
           <div className="prompt-actions">
             <button onClick={onOpenComposer} title="Configurar handoff"><Plus size={16} /></button>
-            <label className={`provider-switch ${provider === "subprocess" ? "real" : "fake"}`} title="Cambiar modo del agente">
+            <label className="provider-switch real" title="Modo del agente">
               <Bot size={15} />
               <select value={provider} onChange={(event) => onProviderChange(event.target.value)}>
-                <option value="fake">Fake planner</option>
                 <option value="subprocess">LM Studio real</option>
               </select>
             </label>
-            <button title="Memoria NEMO"><Database size={15} /> Memory</button>
+            <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
             <button className="send-intent" onClick={onSubmit} disabled={running || !draft.trim()} title="Enviar al agente"><ArrowUp size={18} /></button>
           </div>
         </div>
         <div className="home-chat-preview" aria-label="Conversacion con agente">
           {visibleMessages.map((message) => <article className={message.role} key={message.id}>
             <span>{message.role === "assistant" ? "agent" : "you"}</span>
-            <p>{message.content}</p>
+            <MessageRichText content={message.content} animate={false} compact />
           </article>)}
         </div>
         <div className="suggestion-row">
@@ -949,7 +1558,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, 
             </div>
           ))}
         </div>
-        <div className="working-strip"><span>{status}</span><button title="Notificaciones"><Bell size={14} /></button></div>
+        <div className="working-strip"><span>{status}</span><span title="Notificaciones"><Bell size={14} /></span></div>
       </aside>
     </section>
   );
@@ -968,12 +1577,11 @@ function EditorPane({ run, filePreview, activeFile, decisions, onToggleHunk, onS
     return <section className="editor-pane"><EmptyState /></section>;
   }
   const acceptedCount = filePreview?.hunks.filter((hunk) => decisions[hunk.id] ?? true).length ?? 0;
-  const activeFileLabel = fileName(activeFile || filePreview?.file_path || "");
   return (
     <section className="editor-pane">
       <div className="editor-toolbar">
         <div>
-          <strong title={activeFile || undefined}>{activeFile ? activeFileLabel : "No file selected"}</strong>
+          <strong>{activeFile || "No file selected"}</strong>
           <span>{filePreview?.operation ?? "review"} / {acceptedCount} accepted hunk(s)</span>
         </div>
         <span className={`pill ${statusTone(run.review_status)}`}>{statusLabel(run.review_status)}</span>
@@ -982,8 +1590,8 @@ function EditorPane({ run, filePreview, activeFile, decisions, onToggleHunk, onS
       {filePreview ? <div className="review-surface">
         <div className="review-toolbar">
           <div>
-            <strong title={filePreview.file_path}>{fileName(filePreview.file_path)}</strong>
-            <span title={filePreview.target_path}>{filePreview.file_path}</span>
+            <strong>{filePreview.file_path}</strong>
+            <span>{filePreview.target_path}</span>
           </div>
           <div className="review-toolbar-actions">
             <button onClick={() => onSetFileDecision(filePreview, true)}>Accept file</button>
@@ -1061,8 +1669,7 @@ function HandoffComposer({ draft, onChange, onSubmit, onClose, running }: { draf
         <label>
           Provider
           <select value={draft.provider} onChange={(event) => update("provider", event.target.value)} disabled={running}>
-            <option value="fake">Fake smoke runner</option>
-            <option value="subprocess">Aider + LM Studio</option>
+            <option value="subprocess">NEMO CODE + LM Studio</option>
           </select>
         </label>
         <label>
@@ -1103,6 +1710,8 @@ type AgentPaneProps = {
   state: MissionState;
   readyRuns: number;
   blockedRuns: number;
+  autonomyMode: AutonomyMode;
+  onAutonomyModeChange: (mode: AutonomyMode) => void;
   applyJson?: string;
   onReview: (run: MissionRun) => void;
   onApply: (run: MissionRun) => void;
@@ -1129,12 +1738,160 @@ type AgentPaneProps = {
   applyHistory: ApplyHistoryItem[];
   cleanupResult: CleanupResult | null;
   onCleanup: (dryRun: boolean) => void;
+  orphanCleanupResult: OrphanCleanupResult | null;
+  onCleanupOrphans: (dryRun: boolean) => void;
+  onSendGuidedPrompt: (prompt: string) => void;
+  showSettingsPanel?: boolean;
 };
 
-function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, cleanupResult, onCleanup }: AgentPaneProps) {
+type FlowStep = {
+  id: string;
+  title: string;
+  detail: string;
+  status: "done" | "active" | "pending";
+};
+
+function buildAutonomyFlowSteps(run: MissionRun | undefined): FlowStep[] {
+  if (!run) {
+    return [
+      { id: "intent", title: "Intencion", detail: "Esperando objetivo", status: "active" },
+      { id: "plan", title: "Plan", detail: "Aun no hay run seleccionada", status: "pending" },
+      { id: "execute", title: "Ejecucion", detail: "Sin cambios en curso", status: "pending" },
+      { id: "gate", title: "Gate", detail: "Sin evaluacion de riesgo", status: "pending" },
+      { id: "apply", title: "Apply", detail: "Sin salida aplicada", status: "pending" },
+    ];
+  }
+
+  const hasTimeline = run.timeline.length > 0;
+  const hasChanges = run.changed_files.length > 0;
+  const isApplied = run.review_status === "applied";
+  const hasRisk = run.risk_flags.length > 0;
+  const gateReady = run.mergeable && !hasRisk;
+
+  const statuses: Array<FlowStep["status"]> = [
+    hasTimeline ? "done" : "active",
+    hasTimeline ? "done" : "pending",
+    hasChanges ? "done" : "pending",
+    gateReady ? "done" : hasChanges ? "active" : "pending",
+    isApplied ? "done" : gateReady ? "active" : "pending",
+  ];
+
+  const firstActive = statuses.indexOf("active");
+  if (firstActive === -1 && !isApplied) {
+    const firstPending = statuses.indexOf("pending");
+    if (firstPending >= 0) statuses[firstPending] = "active";
+  }
+
+  return [
+    { id: "intent", title: "Intencion", detail: run.objective || "Objetivo no detectado", status: statuses[0] },
+    { id: "plan", title: "Plan", detail: `${run.timeline.length} evento(s) en timeline`, status: statuses[1] },
+    { id: "execute", title: "Ejecucion", detail: `${run.changed_files.length} archivo(s) tocado(s)`, status: statuses[2] },
+    { id: "gate", title: "Gate", detail: hasRisk ? `${run.risk_flags.length} riesgo(s) activo(s)` : "Sin riesgos criticos", status: statuses[3] },
+    { id: "apply", title: "Apply", detail: statusLabel(run.review_status), status: statuses[4] },
+  ];
+}
+
+function autonomyModeLabel(mode: AutonomyMode): string {
+  if (mode === "manual") return "Manual";
+  if (mode === "trusted") return "Supervisado";
+  return "Automatico";
+}
+
+function autonomyModeHelp(mode: AutonomyMode): string {
+  if (mode === "manual") return "El agente propone; tu confirmas cada paso sensible.";
+  if (mode === "trusted") return "El agente ejecuta y te pide confirmacion solo en gates de riesgo.";
+  return "El agente avanza automaticamente y solo se frena en bloqueos criticos.";
+}
+
+function AutopilotFlowPanel({
+  run,
+  mode,
+  onModeChange,
+  busy,
+  onReview,
+  onApply,
+  onAutoApply,
+  onSendGuidedPrompt,
+}: {
+  run: MissionRun | undefined;
+  mode: AutonomyMode;
+  onModeChange: (mode: AutonomyMode) => void;
+  busy: boolean;
+  onReview: (run: MissionRun) => void;
+  onApply: (run: MissionRun) => void;
+  onAutoApply: (run: MissionRun) => void;
+  onSendGuidedPrompt: (prompt: string) => void;
+}) {
+  const steps = buildAutonomyFlowSteps(run);
+  const completedCount = steps.filter((step) => step.status === "done").length;
+  const progressPercent = run ? Math.round((completedCount / steps.length) * 100) : 0;
+  const riskCount = run?.risk_flags.length ?? 0;
+  const confidence: "green" | "yellow" | "red" = !run
+    ? "yellow"
+    : run.mergeable && riskCount === 0
+      ? "green"
+      : run.mergeable
+        ? "yellow"
+        : "red";
+
+  const confidenceLabel = confidence === "green"
+    ? "Listo para aplicar"
+    : confidence === "yellow"
+      ? "Requiere revision rapida"
+      : "Requiere intervencion";
+
+  return (
+    <section className="autopilot-panel">
+      <div className="panel-title"><Bot size={16} /> Piloto Automatico</div>
+      <div className="autonomy-mode-row" role="radiogroup" aria-label="Modo de autonomia">
+        {(["manual", "trusted", "aggressive"] as AutonomyMode[]).map((entry) => (
+          <button
+            key={entry}
+            role="radio"
+            aria-checked={mode === entry}
+            className={mode === entry ? "active" : ""}
+            onClick={() => onModeChange(entry)}
+          >
+            {autonomyModeLabel(entry)}
+          </button>
+        ))}
+      </div>
+      <p className="autonomy-help">{autonomyModeHelp(mode)}</p>
+
+      <div className="flow-progress-track" aria-label="Progreso del flujo">
+        <b style={{ width: `${progressPercent}%` }} />
+      </div>
+      <span className="autonomy-progress-meta">{progressPercent}% completado</span>
+
+      <div className="flow-steps">
+        {steps.map((step) => (
+          <button key={step.id} className={`flow-step ${step.status}`} onClick={() => onSendGuidedPrompt(`Ayudame con la etapa ${step.title.toLowerCase()} para este run.`)}>
+            <i>{step.status === "done" ? <CheckCircle2 size={13} /> : step.status === "active" ? <Play size={13} /> : <Circle size={13} />}</i>
+            <div>
+              <strong>{step.title}</strong>
+              <span>{step.detail}</span>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className={`confidence-gate ${confidence}`}>
+        <strong>{confidenceLabel}</strong>
+        <span>{run ? `${riskCount} riesgo(s) / mergeable ${run.mergeable ? "si" : "no"}` : "Selecciona un run para evaluar confianza"}</span>
+        <div className="review-actions">
+          <button onClick={() => run && onReview(run)} disabled={!run || busy}>Revisar</button>
+          <button onClick={() => run && onApply(run)} disabled={!run || busy || !run.mergeable}>Apply manual</button>
+          <button onClick={() => run && onAutoApply(run)} disabled={!run || busy || confidence === "red" || mode === "manual"}>Apply auto</button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onSendGuidedPrompt, showSettingsPanel = true }: AgentPaneProps) {
   return (
     <aside className="agent-pane">
-      <div className="panel-title"><Bot size={16} /> Agent Control</div>
+      <div className="panel-title"><Bot size={16} /> Control del Agente</div>
       <section className="agent-chat">
         <div className="chat-thread">
           {messages.map((message) => <AgentChatMessage message={message} onRunAction={onRunAction} key={message.id} />)}
@@ -1146,7 +1903,7 @@ function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, on
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) onSend();
             }}
-            placeholder="Ask the agent to continue, revise, inspect, or apply..."
+            placeholder="Pide al agente continuar, corregir o aplicar cambios..."
           />
           <button onClick={onSend} disabled={busy || !draft.trim()} title="Send agent prompt"><Send size={15} /></button>
         </div>
@@ -1158,6 +1915,17 @@ function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, on
         <Metric icon={<Database size={16} />} label="NEMO" value={state.settings.nemo_required ? "on" : "off"} />
       </div>
 
+      <AutopilotFlowPanel
+        run={run}
+        mode={autonomyMode}
+        onModeChange={onAutonomyModeChange}
+        busy={busy}
+        onReview={onReview}
+        onApply={onApply}
+        onAutoApply={onAutoApply}
+        onSendGuidedPrompt={onSendGuidedPrompt}
+      />
+
       {run ? <>
         <div className="agent-card">
           <span>Selected run</span>
@@ -1167,10 +1935,10 @@ function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, on
         <OperationalStatePanel run={run} />
         {run.risk_flags.length > 0 && <div className="risk-box">{run.risk_flags.map((risk) => <span key={risk}>{risk}</span>)}</div>}
         <div className="review-actions">
-          <button onClick={() => onReview(run)}><GitPullRequest size={16} /> Build plan</button>
-          <button disabled={!run.mergeable} onClick={() => onApply(run)}><CheckCircle2 size={16} /> Apply</button>
-          <button disabled={!run.mergeable} onClick={() => onAutoApply(run)} title="Apply without manual review when trusted autonomy rules pass"><ShieldCheck size={16} /> Auto Apply</button>
-          <button onClick={() => onRollback(run)}><RotateCcw size={16} /> Rollback</button>
+          <button onClick={() => onReview(run)}><GitPullRequest size={16} /> Revisar cambios</button>
+          <button disabled={!run.mergeable} onClick={() => onApply(run)}><CheckCircle2 size={16} /> Aplicar</button>
+          <button disabled={!run.mergeable} onClick={() => onAutoApply(run)} title="Aplica directo si pasa controles automaticos"><ShieldCheck size={16} /> Aplicar rapido</button>
+          <button onClick={() => onRollback(run)}><RotateCcw size={16} /> Deshacer</button>
         </div>
         {applyJson && <p className="muted">Last apply JSON: {applyJson}</p>}
       </> : <EmptyState />}
@@ -1180,7 +1948,7 @@ function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, on
 
       <ReviewPlanPanel plan={reviewPlan} />
       <ApplyHistoryPanel applies={applyHistory} />
-      <RepoSettingsPanel
+      {showSettingsPanel && <RepoSettingsPanel
         state={state}
         settings={settingsDraft}
         onSettingsChange={onSettingsChange}
@@ -1193,8 +1961,268 @@ function AgentPane({ run, state, readyRuns, blockedRuns, applyJson, onReview, on
         onCloneRepo={onCloneRepo}
         cleanupResult={cleanupResult}
         onCleanup={onCleanup}
-      />
+        orphanCleanupResult={orphanCleanupResult}
+        onCleanupOrphans={onCleanupOrphans}
+      />}
     </aside>
+  );
+}
+
+function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo, busy, error }: { repos: string[]; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; busy: boolean; error: string }) {
+  return (
+    <section className="repo-strip">
+      <div className="section-heading"><ChevronDown size={14} /> Workspace</div>
+      <div className="repo-open-row">
+        <input value={repoDraft} onChange={(event) => onRepoDraftChange(event.target.value)} placeholder="c:/dev/repo" />
+        <button className="repo-item" onClick={() => onOpenRepo()} disabled={busy} title="Open repo"><HardDrive size={14} /> {busy ? "Abriendo" : "Abrir"}</button>
+      </div>
+      {error && <div className="repo-error">{error}</div>}
+      {repos.map((repo) => <button className="repo-item" key={repo} onClick={() => onOpenRepo(repo)} disabled={busy} title="Open repo"><HardDrive size={14} /> {repo}</button>)}
+    </section>
+  );
+}
+
+function VersioningPanel({
+  repoPath,
+  status,
+  branches,
+  remotes,
+  syncRemote,
+  syncBranch,
+  busy,
+  diffPath,
+  diffStaged,
+  diffText,
+  diffHunks,
+  commitMessage,
+  branchDraft,
+  onRefresh,
+  onSyncRemoteChange,
+  onSyncBranchChange,
+  onDiffPathChange,
+  onLoadDiff,
+  onStage,
+  onStageHunk,
+  selectedHunks,
+  onToggleHunkSelection,
+  onApplySelectedHunks,
+  onCommitMessageChange,
+  onCommit,
+  onBranchDraftChange,
+  onCheckout,
+  onSync,
+}: {
+  repoPath: string;
+  status: GitStatusState;
+  branches: GitBranchItem[];
+  remotes: GitRemote[];
+  syncRemote: string;
+  syncBranch: string;
+  busy: boolean;
+  diffPath: string;
+  diffStaged: boolean;
+  diffText: string;
+  diffHunks: GitDiffHunk[];
+  commitMessage: string;
+  branchDraft: string;
+  onRefresh: () => void;
+  onSyncRemoteChange: (value: string) => void;
+  onSyncBranchChange: (value: string) => void;
+  onDiffPathChange: (value: string) => void;
+  onLoadDiff: (path?: string, staged?: boolean) => void;
+  onStage: (path: string, stage: boolean) => void;
+  onStageHunk: (path: string, hunkHeader: string, stage: boolean) => void;
+  selectedHunks: Record<string, boolean>;
+  onToggleHunkSelection: (hunkHeader: string) => void;
+  onApplySelectedHunks: (stage: boolean) => void;
+  onCommitMessageChange: (value: string) => void;
+  onCommit: () => void;
+  onBranchDraftChange: (value: string) => void;
+  onCheckout: (branch: string, create: boolean) => void;
+  onSync: (direction: "pull" | "push") => void;
+}) {
+  return (
+    <section className="section-surface versioning-panel">
+      <div className="panel-title"><GitBranch size={16} /> Versionado</div>
+      <div className="ops-panel">
+        <div className="review-actions">
+          <button onClick={onRefresh} disabled={busy}><RefreshCw size={14} /> Refresh</button>
+          <button onClick={() => onSync("pull")}>Pull --rebase</button>
+          <button onClick={() => onSync("push")}>Push</button>
+        </div>
+        <div className="repo-open-row">
+          <select value={syncRemote} onChange={(event) => onSyncRemoteChange(event.target.value)}>
+            <option value="">(default remote)</option>
+            {remotes.map((remote) => <option key={remote.name} value={remote.name}>{remote.name}</option>)}
+          </select>
+          <input value={syncBranch} onChange={(event) => onSyncBranchChange(event.target.value)} placeholder="branch opcional" />
+        </div>
+        <div className="mini-list">
+          <span>Repo activo: {repoPath}</span>
+          <span>Branch: {status.branch || "-"} / ahead {status.ahead} / behind {status.behind}</span>
+          <span>Cambios: {status.entries.length}</span>
+        </div>
+      </div>
+
+      <div className="ops-panel">
+        <div className="panel-title"><GitCompare size={16} /> Working tree</div>
+        {status.entries.length === 0 ? <span className="empty-inline">Working tree limpio.</span> : <div className="extension-list">{status.entries.map((entry) => (
+          <div className="extension-row" key={`${entry.xy}-${entry.path}`}>
+            <div>
+              <strong>{entry.path}</strong>
+              <span>{entry.xy}{entry.original_path ? ` / from ${entry.original_path}` : ""}</span>
+            </div>
+            <div className="review-actions">
+              <button onClick={() => {
+                onDiffPathChange(entry.path);
+                onLoadDiff(entry.path, false);
+              }}>Diff</button>
+              <button onClick={() => onStage(entry.path, !entry.staged)}>{entry.staged ? "Unstage" : "Stage"}</button>
+            </div>
+          </div>
+        ))}</div>}
+      </div>
+
+      <div className="ops-panel">
+        <div className="panel-title"><Code2 size={16} /> Diff</div>
+        <div className="review-actions">
+          <button onClick={() => onLoadDiff(diffPath, false)} className={!diffStaged ? "active" : ""}>Unstaged</button>
+          <button onClick={() => onLoadDiff(diffPath, true)} className={diffStaged ? "active" : ""}>Staged</button>
+        </div>
+        <div className="repo-open-row">
+          <input value={diffPath} onChange={(event) => onDiffPathChange(event.target.value)} placeholder="path opcional" />
+          <button className="repo-item" onClick={() => onLoadDiff(diffPath, diffStaged)}>Load diff</button>
+        </div>
+        {diffPath && diffHunks.length > 0 && <div className="mini-list">
+          <div className="review-actions">
+            <button onClick={() => onApplySelectedHunks(!diffStaged)}>{diffStaged ? "Unstage selected" : "Stage selected"}</button>
+          </div>
+          {diffHunks.map((hunk) => (
+            <div className="hunk-row" key={hunk.id}>
+              <label className="hunk-select">
+                <input type="checkbox" checked={selectedHunks[hunk.id] ?? false} onChange={() => onToggleHunkSelection(hunk.id)} />
+                <span>{hunk.header}</span>
+              </label>
+              <button onClick={() => onStageHunk(diffPath, hunk.header, !diffStaged)}>{diffStaged ? "Unstage hunk" : "Stage hunk"}</button>
+            </div>
+          ))}
+        </div>}
+        <pre className="git-diff-output">{diffText || "Selecciona un archivo o carga diff para ver cambios."}</pre>
+      </div>
+
+      <div className="ops-panel">
+        <div className="panel-title"><CheckCircle2 size={16} /> Commit</div>
+        <div className="repo-open-row">
+          <input value={commitMessage} onChange={(event) => onCommitMessageChange(event.target.value)} placeholder="feat: summary" />
+          <button className="repo-item" onClick={onCommit}>Commit</button>
+        </div>
+      </div>
+
+      <div className="ops-panel">
+        <div className="panel-title"><GitBranch size={16} /> Branches</div>
+        <div className="repo-open-row">
+          <input value={branchDraft} onChange={(event) => onBranchDraftChange(event.target.value)} placeholder="feature/my-branch" />
+          <button className="repo-item" onClick={() => onCheckout(branchDraft, true)}>Create</button>
+        </div>
+        {branches.length === 0 ? <span className="empty-inline">No se pudieron cargar ramas.</span> : <div className="mini-list">{branches.map((branch) => (
+          <button className="repo-item" key={branch.name} onClick={() => onCheckout(branch.name, false)}>{branch.current ? "* " : ""}{branch.name}</button>
+        ))}</div>}
+      </div>
+
+      <div className="ops-panel">
+        <div className="panel-title"><GitCompare size={16} /> Proximo incremento</div>
+        <div className="mini-list">
+          <span>Siguiente: staging por hunk y commit message sugerido por IA.</span>
+          <span>Siguiente: pull/push con seleccion de remote y manejo de conflictos.</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TerminalPanel({ command, running, result, onCommandChange, onRun }: { command: string; running: boolean; result: TerminalRunResult | null; onCommandChange: (value: string) => void; onRun: () => void }) {
+  return (
+    <section className="section-surface terminal-panel">
+      <div className="panel-title"><TerminalSquare size={16} /> Terminal</div>
+      <div className="ops-panel">
+        <div className="repo-open-row">
+          <input value={command} onChange={(event) => onCommandChange(event.target.value)} placeholder="git status --short" />
+          <button className="repo-item" onClick={onRun} disabled={running}>{running ? "Running" : "Run"}</button>
+        </div>
+        {result && <div className="mini-list">
+          <span>exit: {result.exit_code ?? "timeout"} / duration: {result.duration_ms} ms</span>
+          <span>cwd: {result.cwd}</span>
+        </div>}
+      </div>
+      <div className="ops-panel terminal-output">
+        <div className="panel-title"><Code2 size={16} /> Output</div>
+        <pre>{result ? `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim() || "(no output)" : "Run a command to view output."}</pre>
+      </div>
+    </section>
+  );
+}
+
+function BrowserPanel({ draft, state, queryDraft, searchState, searching, onDraftChange, onOpen, onQueryDraftChange, onSearch, onOpenSearchResult }: { draft: string; state: BrowserState; queryDraft: string; searchState: BrowserSearchState; searching: boolean; onDraftChange: (value: string) => void; onOpen: () => void; onQueryDraftChange: (value: string) => void; onSearch: () => void; onOpenSearchResult: (url: string) => void }) {
+  return (
+    <section className="section-surface browser-panel">
+      <div className="panel-title"><Globe size={16} /> Browser</div>
+      <div className="ops-panel">
+        <div className="panel-title"><Search size={16} /> Web Search (Playwright Chromium)</div>
+        <div className="repo-open-row">
+          <input value={queryDraft} onChange={(event) => onQueryDraftChange(event.target.value)} placeholder="Search the web..." />
+          <button className="repo-item" onClick={onSearch} disabled={searching}>{searching ? "Searching" : "Search"}</button>
+        </div>
+        <div className="mini-list">
+          <span>query: {searchState.query || state.search_query || "-"}</span>
+          <span>engine: {searchState.engine || "playwright-chromium"}</span>
+        </div>
+        {searchState.results.length === 0 ? <span className="empty-inline">No search results yet.</span> : <div className="mini-list">{searchState.results.map((item) => (
+          <button key={item.url} onClick={() => onOpenSearchResult(item.url)} title={item.url}>
+            <strong>{item.title}</strong>
+            <br />
+            {item.snippet || item.url}
+          </button>
+        ))}</div>}
+      </div>
+      <div className="ops-panel">
+        <div className="repo-open-row">
+          <input value={draft} onChange={(event) => onDraftChange(event.target.value)} placeholder="https://github.com" />
+          <button className="repo-item" onClick={onOpen}>Open</button>
+        </div>
+        <div className="mini-list">
+          <span>last: {state.last_url || "-"}</span>
+          <span>homepage: {state.homepage || "-"}</span>
+        </div>
+      </div>
+      <div className="ops-panel">
+        <div className="panel-title"><Clock3 size={16} /> History</div>
+        {state.history.length === 0 ? <span className="empty-inline">No browser history yet.</span> : <div className="mini-list">{state.history.map((item) => <span key={item}>{item}</span>)}</div>}
+      </div>
+      <div className="ops-panel">
+        <div className="panel-title"><Clock3 size={16} /> Search History</div>
+        {state.search_history.length === 0 ? <span className="empty-inline">No search history yet.</span> : <div className="mini-list">{state.search_history.map((item) => <button key={item} onClick={() => onQueryDraftChange(item)}>{item}</button>)}</div>}
+      </div>
+    </section>
+  );
+}
+
+function ExtensionsPanel({ items, busy, onToggle, onReload }: { items: ExtensionItem[]; busy: boolean; onToggle: (name: string, enabled: boolean) => void; onReload: () => void }) {
+  return (
+    <section className="section-surface extensions-panel">
+      <div className="panel-title"><Puzzle size={16} /> Extensions</div>
+      <div className="ops-panel">
+        <div className="review-actions"><button onClick={onReload} disabled={busy}><RefreshCw size={14} /> Reload</button></div>
+        {items.length === 0 ? <span className="empty-inline">No extensions configured.</span> : <div className="extension-list">{items.map((item) => (
+          <div className="extension-row" key={item.name}>
+            <div>
+              <strong>{item.name}</strong>
+              <span>{item.version}</span>
+            </div>
+            <button className={item.enabled ? "enabled" : "disabled"} onClick={() => onToggle(item.name, !item.enabled)}>{item.enabled ? "Enabled" : "Disabled"}</button>
+          </div>
+        ))}</div>}
+      </div>
+    </section>
   );
 }
 
@@ -1285,24 +2313,24 @@ function ApplyHistoryPanel({ applies }: { applies: ApplyHistoryItem[] }) {
   );
 }
 
-function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, cleanupResult, onCleanup }: { state: MissionState; settings: MissionState["settings"]; onSettingsChange: (settings: MissionState["settings"]) => void; onSaveSettings: () => void; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; cloneDraft: { url: string; destination: string }; onCloneDraftChange: (draft: { url: string; destination: string }) => void; onCloneRepo: () => void; cleanupResult: CleanupResult | null; onCleanup: (dryRun: boolean) => void }) {
+function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans }: { state: MissionState; settings: MissionState["settings"]; onSettingsChange: (settings: MissionState["settings"]) => void; onSaveSettings: () => void; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; cloneDraft: { url: string; destination: string }; onCloneDraftChange: (draft: { url: string; destination: string }) => void; onCloneRepo: () => void; cleanupResult: CleanupResult | null; onCleanup: (dryRun: boolean) => void; orphanCleanupResult: OrphanCleanupResult | null; onCleanupOrphans: (dryRun: boolean) => void }) {
   const update = (key: keyof MissionState["settings"], value: string | number | boolean | string[]) => onSettingsChange({ ...settings, [key]: value });
   return (
     <section className="ops-panel settings-editor">
-      <div className="panel-title"><Settings size={16} /> Settings</div>
-      <label>LM Studio URL<input value={settings.model_base_url} onChange={(event) => update("model_base_url", event.target.value)} /></label>
-      <label>Model<input value={settings.default_model} onChange={(event) => update("default_model", event.target.value)} /></label>
-      <label>Provider<select value={settings.provider} onChange={(event) => update("provider", event.target.value)}><option value="fake">fake</option><option value="subprocess">Aider + LM Studio</option></select></label>
-      <label>NEMO DB<input value={settings.memory_db} onChange={(event) => update("memory_db", event.target.value)} /></label>
-      <label>Runtime path<input value={settings.runtime_path} onChange={(event) => update("runtime_path", event.target.value)} /></label>
-      <label>Validation policy<select value={settings.validation_policy} onChange={(event) => update("validation_policy", event.target.value)}><option value="none">none</option><option value="smoke">smoke</option><option value="targeted">targeted</option><option value="full">full</option></select></label>
+      <div className="panel-title"><Settings size={16} /> Ajustes</div>
+      <label>URL de LM Studio<input value={settings.model_base_url} onChange={(event) => update("model_base_url", event.target.value)} /></label>
+      <label>Modelo<input value={settings.default_model} onChange={(event) => update("default_model", event.target.value)} /></label>
+      <label>Modo del agente<select value={settings.provider} onChange={(event) => update("provider", event.target.value)}><option value="subprocess">Real con LM Studio</option></select></label>
+      <label>Base de memoria NEMO<input value={settings.memory_db} onChange={(event) => update("memory_db", event.target.value)} /></label>
+      <label>Carpeta runtime<input value={settings.runtime_path} onChange={(event) => update("runtime_path", event.target.value)} /></label>
+      <label>Nivel de validacion<select value={settings.validation_policy} onChange={(event) => update("validation_policy", event.target.value)}><option value="none">ninguna</option><option value="smoke">rapida</option><option value="targeted">dirigida</option><option value="full">completa</option></select></label>
       <div className="settings-grid">
-        <label>Timeout<input type="number" value={settings.timeout_seconds} onChange={(event) => update("timeout_seconds", Number(event.target.value))} /></label>
-        <label>Max minutes<input type="number" value={settings.max_runtime_minutes} onChange={(event) => update("max_runtime_minutes", Number(event.target.value))} /></label>
-        <label>Heartbeat<input type="number" value={settings.heartbeat_minutes} onChange={(event) => update("heartbeat_minutes", Number(event.target.value))} /></label>
-        <label>Token budget<input type="number" value={settings.token_budget} onChange={(event) => update("token_budget", Number(event.target.value))} /></label>
+        <label>Timeout (s)<input type="number" value={settings.timeout_seconds} onChange={(event) => update("timeout_seconds", Number(event.target.value))} /></label>
+        <label>Max minutos<input type="number" value={settings.max_runtime_minutes} onChange={(event) => update("max_runtime_minutes", Number(event.target.value))} /></label>
+        <label>Heartbeat (min)<input type="number" value={settings.heartbeat_minutes} onChange={(event) => update("heartbeat_minutes", Number(event.target.value))} /></label>
+        <label>Presupuesto tokens<input type="number" value={settings.token_budget} onChange={(event) => update("token_budget", Number(event.target.value))} /></label>
       </div>
-      <div className="review-actions"><button onClick={onSaveSettings}><CheckCircle2 size={16} /> Save settings</button></div>
+      <div className="review-actions"><button onClick={onSaveSettings}><CheckCircle2 size={16} /> Guardar ajustes</button></div>
       <div className="repo-picker">
         <strong>Repository</strong>
         <input value={repoDraft} onChange={(event) => onRepoDraftChange(event.target.value)} />
@@ -1316,9 +2344,14 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
         <button onClick={onCloneRepo}><GitBranch size={15} /> Clone and open</button>
       </div>
       <div className="repo-picker">
-        <strong>Artifact cleanup</strong>
-        <div className="review-actions"><button onClick={() => onCleanup(true)}>Scan</button><button onClick={() => onCleanup(false)}>Delete scan matches</button></div>
+        <strong>Limpieza de artefactos</strong>
+        <div className="review-actions"><button onClick={() => onCleanup(true)}>Escanear</button><button onClick={() => onCleanup(false)}>Borrar encontrados</button></div>
         {cleanupResult && <span className="muted">{cleanupResult.dry_run ? cleanupResult.candidates.length : cleanupResult.deleted.length} file(s) / {cleanupResult.max_age_days} days</span>}
+      </div>
+      <div className="repo-picker">
+        <strong>Jobs huerfanos</strong>
+        <div className="review-actions"><button onClick={() => onCleanupOrphans(true)}>Detectar</button><button onClick={() => onCleanupOrphans(false)}>Marcar y limpiar</button></div>
+        {orphanCleanupResult && <span className="muted">{orphanCleanupResult.summary.total} huerfano(s) / memoria {orphanCleanupResult.summary.in_memory} / snapshots {orphanCleanupResult.summary.snapshots}</span>}
       </div>
     </section>
   );
@@ -1378,7 +2411,11 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
   return (
     <article className={`chat-message ${message.role}`}>
       <div className="message-role">{message.role}</div>
-      <p>{message.content}</p>
+      <MessageRichText content={message.content} animate={message.role === "assistant"} />
+      <div className="message-meta-row">
+        <span className="message-meta-pill">~{estimateTokens(message.content)} tok</span>
+        {message.tool_calls && message.tool_calls.length > 0 && <span className="message-meta-pill">tools {message.tool_calls.length}</span>}
+      </div>
       {message.tool_calls && message.tool_calls.length > 0 && <div className="tool-call-list">
         {message.tool_calls.map((tool) => (
           <div className="tool-call" key={tool.id}>
@@ -1402,15 +2439,84 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
   );
 }
 
+function MessageRichText({ content, animate, compact = false }: { content: string; animate: boolean; compact?: boolean }) {
+  const lines = content.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let listItems: string[] = [];
+  let codeLines: string[] = [];
+  let inCode = false;
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    blocks.push(<ul key={`l-${blocks.length}`}>{listItems.map((item, index) => <li key={`i-${index}`}>{renderInlineRichText(item)}</li>)}</ul>);
+    listItems = [];
+  };
+
+  const flushCode = () => {
+    if (!codeLines.length) return;
+    blocks.push(<pre key={`c-${blocks.length}`}><code>{codeLines.join("\n")}</code></pre>);
+    codeLines = [];
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      flushList();
+      if (inCode) {
+        flushCode();
+        inCode = false;
+      } else {
+        inCode = true;
+      }
+      return;
+    }
+    if (inCode) {
+      codeLines.push(line);
+      return;
+    }
+    if (/^[-*]\s+/.test(trimmed)) {
+      listItems.push(trimmed.replace(/^[-*]\s+/, ""));
+      return;
+    }
+    flushList();
+    if (!trimmed) {
+      blocks.push(<div className="rich-spacer" key={`s-${blocks.length}`} />);
+      return;
+    }
+    if (/^###\s+/.test(trimmed)) {
+      blocks.push(<h4 key={`h4-${blocks.length}`}>{renderInlineRichText(trimmed.replace(/^###\s+/, ""))}</h4>);
+      return;
+    }
+    if (/^##\s+/.test(trimmed)) {
+      blocks.push(<h3 key={`h3-${blocks.length}`}>{renderInlineRichText(trimmed.replace(/^##\s+/, ""))}</h3>);
+      return;
+    }
+    if (/^#\s+/.test(trimmed)) {
+      blocks.push(<h2 key={`h2-${blocks.length}`}>{renderInlineRichText(trimmed.replace(/^#\s+/, ""))}</h2>);
+      return;
+    }
+    blocks.push(<p key={`p-${blocks.length}`}>{renderInlineRichText(line)}</p>);
+  });
+
+  flushList();
+  if (inCode) flushCode();
+
+  return (
+    <div className={`chat-rich ${animate ? "animate" : ""} ${compact ? "compact" : ""}`}>
+      {blocks.map((block, index) => <div className="rich-block" style={{ animationDelay: `${index * 35}ms` }} key={`b-${index}`}>{block}</div>)}
+    </div>
+  );
+}
+
 function BottomPanel({ run, status, job, onControl }: { run: MissionRun | undefined; status: string; job: HandoffJob | null; onControl: (action: "cancel" | "pause" | "resume") => void }) {
   const running = job ? ["starting", "running"].includes(job.status) : false;
   const paused = job?.status === "paused";
   return (
     <section className="bottom-panel">
       <div className="bottom-tabs">
-        <button className="active"><PanelBottom size={14} /> Timeline</button>
-        <button><TerminalSquare size={14} /> Terminal</button>
-        <button><Clock3 size={14} /> Output</button>
+        <span className="active"><PanelBottom size={14} /> Timeline</span>
+        <span><TerminalSquare size={14} /> Terminal</span>
+        <span><Clock3 size={14} /> Output</span>
       </div>
       <div className="bottom-content">
         <div className="terminal-line"><span>nemo</span> {status}</div>
@@ -1450,4 +2556,7 @@ function EmptyState() {
   return <div className="empty">No live workspace data available.</div>;
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  createRoot(rootElement).render(<App />);
+}

@@ -10,7 +10,8 @@ class HandoffStepKind(StrEnum):
     GENERATE_TESTS = "generate_tests"
     PLAN_IMPLEMENTATION = "plan_implementation"
     CREATE_SANDBOX = "create_sandbox"
-    IMPLEMENT_WITH_AIDER = "implement_with_aider"
+    IMPLEMENT_WITH_ENGINE = "implement_with_engine"
+    IMPLEMENT_WITH_AIDER = IMPLEMENT_WITH_ENGINE
     RUN_VALIDATION = "run_validation"
     REPAIR_FAILURES = "repair_failures"
     CREATE_CHECKPOINT = "create_checkpoint"
@@ -26,6 +27,9 @@ class HandoffRequest:
     validation_commands: tuple[str, ...]
     checkpoint_minutes: int = 15
     repair_budget: int = 3
+    objective_summary: str | None = None
+    linked_prd: str | None = None
+    spec_mode: str = "auto"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +57,7 @@ def build_handoff_plan(request: HandoffRequest) -> HandoffPlan:
         HandoffStep(HandoffStepKind.GENERATE_TESTS, "Create tests or contract checks before code."),
         HandoffStep(HandoffStepKind.PLAN_IMPLEMENTATION, "Plan implementation slices."),
         HandoffStep(HandoffStepKind.CREATE_SANDBOX, "Create isolated worktree/container runtime."),
-        HandoffStep(HandoffStepKind.IMPLEMENT_WITH_AIDER, "Apply code through Aider Quality Core."),
+        HandoffStep(HandoffStepKind.IMPLEMENT_WITH_ENGINE, "Apply code through the NEMO CODE quality engine."),
         HandoffStep(HandoffStepKind.RUN_VALIDATION, "Run configured validation commands."),
         HandoffStep(HandoffStepKind.REPAIR_FAILURES, "Repair validation failures within budget."),
         HandoffStep(HandoffStepKind.CREATE_CHECKPOINT, "Emit checkpoint for unattended run."),
@@ -72,3 +76,5 @@ def validate_handoff_request(request: HandoffRequest) -> None:
         raise ValueError("Full Handoff requires validation commands")
     if request.checkpoint_minutes <= 0:
         raise ValueError("checkpoint cadence must be positive")
+    if request.spec_mode not in {"auto", "sdd"}:
+        raise ValueError("spec_mode must be 'auto' or 'sdd'")

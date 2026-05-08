@@ -11,7 +11,7 @@ class PersistentMemoryStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
             low_id = store.create_atom(MemoryAtom(MemoryAtomType.PROJECT_FACT, "General project note", "project"), topic="other", tags=("project",), importance=3)
-            correction_id = store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "Always use Aider as active base", "project"), topic="handoff", tags=("aider", "handoff"), importance=10)
+            correction_id = store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "Always use NEMO CODE as active base", "project"), topic="handoff", tags=("nemo-code", "handoff"), importance=10)
             decision_id = store.create_atom(MemoryAtom(MemoryAtomType.DECISION, "Long handoff continues as linked run", "project"), topic="handoff", tags=("handoff",), importance=7)
 
             atoms = store.search_atoms(topic="handoff", tags=("handoff",), limit=10)
@@ -19,14 +19,14 @@ class PersistentMemoryStoreTests(unittest.TestCase):
         self.assertEqual([item.id for item in atoms], [correction_id, decision_id])
         self.assertNotIn(low_id, [item.id for item in atoms])
         self.assertEqual(atoms[0].atom.atom_type, MemoryAtomType.CORRECTION)
-        self.assertEqual(atoms[0].tags, ("aider", "handoff"))
+        self.assertEqual(atoms[0].tags, ("nemo-code", "handoff"))
 
     def test_prime_atoms_prefers_corrections_preferences_and_decisions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
             store.create_atom(MemoryAtom(MemoryAtomType.SESSION_SUMMARY, "Routine note", "session"), topic="handoff", importance=1)
             store.create_atom(MemoryAtom(MemoryAtomType.PREFERENCE, "Keep validation focused", "user"), topic="handoff", importance=8)
-            store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "Aider is not just a reference", "project"), topic="handoff", importance=10)
+            store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "NEMO CODE is not just a reference", "project"), topic="handoff", importance=10)
             store.create_atom(MemoryAtom(MemoryAtomType.DECISION, "Resume creates a new linked run", "project"), topic="handoff", importance=7)
 
             atoms = store.prime_atoms(topic="handoff", limit=3)

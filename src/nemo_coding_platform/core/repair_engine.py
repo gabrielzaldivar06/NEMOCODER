@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Callable
 
-from nemo_coding_platform.core.aider_interface import AiderProvider, MutationRequest, MutationResult, apply_mutation_request
+from nemo_coding_platform.core.engine_interface import EngineProvider, MutationRequest, MutationResult, apply_mutation_request
 from nemo_coding_platform.core.mutations import QualityMutationEngine
 from nemo_coding_platform.core.repair import RepairBudget, RepairPlan
 from nemo_coding_platform.core.validation import ValidationSuiteResult, simulate_validation
@@ -17,6 +18,7 @@ class RepairRunResult:
     mutation_results: tuple[MutationResult, ...]
     validation: ValidationSuiteResult
     stop_reason: str = ""
+    tokens_consumed: int = 0
 
 
 def format_validation_evidence(validation: ValidationSuiteResult, attempt: int) -> str:
@@ -46,18 +48,42 @@ def run_repair_loop(
     fail_validation: tuple[str, ...],
     budget: RepairBudget,
     engine: QualityMutationEngine,
-    provider: AiderProvider,
+    provider: EngineProvider,
     base_request: MutationRequest,
     validator: Callable[[], ValidationSuiteResult] | None = None,
     todo_reminder: str = "",
+    time_limit_seconds: float | None = None,
+    on_attempt: Callable[[int, float], None] | None = None,
+    token_budget: int | None = None,
+    attempt_offset: int = 0,
 ) -> RepairRunResult:
     plan = RepairPlan(budget)
     validation = initial_validation
     mutations: list[MutationResult] = []
     stop_reason = ""
     lint_evidence = ""
+    start_time = time.time()
+    _tokens_consumed = 0
+    _CHARS_PER_TOKEN = 4  # standard heuristic
+    _last_token_source = "estimated"
     while not validation.passed and plan.can_record_attempt():
-        attempt_number = len(plan.attempts) + 1
+        attempt_number = attempt_offset + len(plan.attempts) + 1
+        elapsed_seconds = time.time() - start_time
+        if on_attempt:
+            on_attempt(attempt_number, elapsed_seconds)
+
+        if time_limit_seconds is not None and elapsed_seconds >= time_limit_seconds:
+            stop_reason = "repair_time_budget_exhausted"
+            break
+
+        if token_budget is not None and _tokens_consumed >= token_budget:
+            stop_reason = (
+                "token_budget_exhausted_real"
+                if _last_token_source == "real"
+                else "token_budget_exhausted_estimated"
+            )
+            break
+
         failed = ", ".join(result.command.command for result in validation.results if not result.passed) or "validation"
         plan = plan.next_attempt("validation_failed", f"repair failed command(s): {failed}")
         validation_evidence = format_validation_evidence(validation, attempt_number)
@@ -96,6 +122,14 @@ def run_repair_loop(
         
         # --- Context Compaction (inspired by opencode) ---
         repair_context = compact_context(repair_context)
+
+        remaining_timeout_seconds = base_request.timeout_seconds
+        if time_limit_seconds is not None:
+            remaining_budget = time_limit_seconds - (time.time() - start_time)
+            if remaining_budget <= 0:
+                stop_reason = "repair_time_budget_exhausted"
+                break
+            remaining_timeout_seconds = min(base_request.timeout_seconds, max(1.0, remaining_budget))
         
         repair_request = MutationRequest(
             objective=f"Repair validation failure for: {base_request.objective}",
@@ -108,7 +142,7 @@ def run_repair_loop(
             target_files=base_request.target_files,
             model_profile=base_request.model_profile,
             validation_output=validation_evidence,
-            timeout_seconds=base_request.timeout_seconds,
+            timeout_seconds=remaining_timeout_seconds,
             repair_attempt=attempt_number,
             previous_diff=previous_diff,
             skill_prompt=base_request.skill_prompt,
@@ -123,8 +157,16 @@ def run_repair_loop(
         if not mutation.changed_files and not mutation.applied_files:
             stop_reason = "repair_noop"
             break
+        # Prefer provider-reported token usage; fallback to heuristic estimate.
+        if mutation.token_usage and mutation.token_usage.total_tokens > 0:
+            _tokens_consumed += mutation.token_usage.total_tokens
+            _last_token_source = "real"
+        else:
+            last_diff = mutations[-1].diff_artifact if mutations else ""
+            _tokens_consumed += (len(repair_context) + len(last_diff)) // _CHARS_PER_TOKEN
+            _last_token_source = "estimated"
         validation = validator() if validator else simulate_validation(commands, fail_validation)
     if not validation.passed and not stop_reason and not plan.can_record_attempt():
         stop_reason = "repair_budget_exhausted"
-    return RepairRunResult(plan, tuple(mutations), validation, stop_reason)
+    return RepairRunResult(plan, tuple(mutations), validation, stop_reason, tokens_consumed=_tokens_consumed)
 

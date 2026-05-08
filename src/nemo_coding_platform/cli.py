@@ -69,8 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
     headless_run.add_argument("--real-validation", action="store_true")
     headless_run.add_argument("--validation-cwd", default="runtime")
     headless_run.add_argument("--save-json")
-    headless_run.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
-    headless_run.add_argument("--aider-command")
+    headless_run.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    headless_run.add_argument("--engine-command", "--aider-command", dest="engine_command")
     headless_run.add_argument("--target-file", action="append", default=[])
     headless_run.add_argument("--model-profile", default=default_model_profile().model)
     headless_run.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     headless_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     headless_run.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
     headless_run.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
-    headless_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Aider prompt")
+    headless_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the NEMO CODE engine prompt")
     headless_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
     headless_run.add_argument("--permissions-file", help="Path to .nemocode-permissions.json")
     headless_run.add_argument("--image", help="Path to a design reference image (Vision)")
@@ -93,8 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     self_modify.add_argument("--validation", action="append")
     self_modify.add_argument("--validation-policy", choices=("none", "smoke", "targeted", "full"), default="smoke")
     self_modify.add_argument("--repair-budget", type=int, default=2)
-    self_modify.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
-    self_modify.add_argument("--aider-command")
+    self_modify.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    self_modify.add_argument("--engine-command", "--aider-command", dest="engine_command")
     self_modify.add_argument("--model-profile", default=default_model_profile().model)
     self_modify.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
     self_modify.add_argument("--timeout", type=float, default=30.0)
@@ -146,8 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--real-validation", action="store_true")
     long_run.add_argument("--validation-cwd", default="runtime")
     long_run.add_argument("--save-json")
-    long_run.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
-    long_run.add_argument("--aider-command")
+    long_run.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    long_run.add_argument("--engine-command", "--aider-command", dest="engine_command")
     long_run.add_argument("--target-file", action="append", default=[])
     long_run.add_argument("--model-profile", default=default_model_profile().model)
     long_run.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
@@ -157,19 +157,27 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--max-heartbeats", type=int, default=4)
     long_run.add_argument("--token-budget", type=int, default=32000)
     long_run.add_argument("--pause-after-minutes", type=int)
+    long_run.add_argument("--plan-minutes", type=int, default=30)
+    long_run.add_argument("--execute-minutes", type=int, default=60)
+    long_run.add_argument("--review-minutes", type=int, default=30)
+    long_run.add_argument("--repair-time-limit-seconds", type=float)
+    long_run.add_argument("--validation-time-budget-seconds", type=float)
+    long_run.add_argument("--validation-escalation-mode", action="store_true")
     long_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store")
     long_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     long_run.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
     long_run.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
-    long_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Aider prompt")
+    long_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the NEMO CODE engine prompt")
     long_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
     long_run.add_argument("--permissions-file", help="Path to .nemocode-permissions.json")
     long_run.add_argument("--image", help="Path to a design reference image (Vision)")
+    long_run.add_argument("--prd-text", help="Optional full PRD/spec text persisted separately from the objective summary")
+    long_run.add_argument("--spec-mode", choices=("auto", "sdd"), default="auto")
     long_run.add_argument("--json", action="store_true")
 
     watch = subparsers.add_parser("watch", help="Watch for # ai! comments in the repository and trigger handoffs")
     watch.add_argument("--repo", default=".", help="Repository root to watch")
-    watch.add_argument("--provider", default="fake", choices=["fake", "subprocess"])
+    watch.add_argument("--provider", default="subprocess", choices=["fake", "subprocess"])
     watch.add_argument("--model-profile", default="nvidia.agentic.coder-4b")
     watch.add_argument("--lmstudio-base-url", default="http://localhost:1234/v1")
     show_run = subparsers.add_parser("show-run-json", help="Summarize a persisted headless run JSON file")
@@ -232,8 +240,8 @@ def build_parser() -> argparse.ArgumentParser:
     continue_long.add_argument("--real-validation", action="store_true")
     continue_long.add_argument("--validation-cwd", default="runtime")
     continue_long.add_argument("--save-json")
-    continue_long.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
-    continue_long.add_argument("--aider-command")
+    continue_long.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    continue_long.add_argument("--engine-command", "--aider-command", dest="engine_command")
     continue_long.add_argument("--target-file", action="append", default=[])
     continue_long.add_argument("--model-profile", default=default_model_profile().model)
     continue_long.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
@@ -243,6 +251,12 @@ def build_parser() -> argparse.ArgumentParser:
     continue_long.add_argument("--max-heartbeats", type=int, default=1)
     continue_long.add_argument("--token-budget", type=int, default=8000)
     continue_long.add_argument("--pause-after-minutes", type=int)
+    continue_long.add_argument("--plan-minutes", type=int, default=30)
+    continue_long.add_argument("--execute-minutes", type=int, default=60)
+    continue_long.add_argument("--review-minutes", type=int, default=30)
+    continue_long.add_argument("--repair-time-limit-seconds", type=float)
+    continue_long.add_argument("--validation-time-budget-seconds", type=float)
+    continue_long.add_argument("--validation-escalation-mode", action="store_true")
     continue_long.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for this continuation")
     continue_long.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     continue_long.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
@@ -390,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             validation_cwd=args.validation_cwd,
             provider_mode=args.provider,
             model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
-            aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+            engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
             timeout_seconds=args.timeout,
             target_files=tuple(args.target_file),
             validation_python_scripts=tuple(args.validation_python),
@@ -435,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
             task_id=args.task_id,
             run_id=args.run_id,
             model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
-            aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+            engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
         )
         payload = result.to_summary_dict()
         if args.json:
@@ -532,10 +546,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "long-handoff-run":
         request = HandoffRequest(
-            prd=args.objective,
+            prd=args.prd_text or args.objective,
             repo_path=args.repo,
             acceptance_criteria=tuple(args.acceptance or ["passes validation"]),
             validation_commands=validation_commands_for_policy(args.validation_policy, tuple(args.validation or ())),
+            objective_summary=args.objective,
+            linked_prd=args.prd_text or None,
+            spec_mode=args.spec_mode,
         )
         result = execute_long_handoff_supervisor(
             request,
@@ -545,6 +562,9 @@ def main(argv: list[str] | None = None) -> int:
                 max_heartbeats=args.max_heartbeats,
                 token_budget=args.token_budget,
                 pause_after_minutes=args.pause_after_minutes,
+                plan_minutes=args.plan_minutes,
+                execute_minutes=args.execute_minutes,
+                review_minutes=args.review_minutes,
             ),
             task_id=args.task_id,
             run_id=args.run_id,
@@ -552,7 +572,7 @@ def main(argv: list[str] | None = None) -> int:
             validation_cwd=args.validation_cwd,
             provider_mode=args.provider,
             model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
-            aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+            engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
             timeout_seconds=args.timeout,
             target_files=tuple(args.target_file),
             validation_python_scripts=tuple(args.validation_python),
@@ -560,6 +580,9 @@ def main(argv: list[str] | None = None) -> int:
             nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
             permissions_file=args.permissions_file or "",
             image_path=args.image or "",
+            repair_time_limit_seconds=args.repair_time_limit_seconds,
+            validation_time_budget_seconds=args.validation_time_budget_seconds,
+            validation_escalation_mode=args.validation_escalation_mode,
         )
         score = score_headless_result(result)
         if args.save_json:
@@ -754,17 +777,23 @@ def main(argv: list[str] | None = None) -> int:
                     max_heartbeats=args.max_heartbeats,
                     token_budget=args.token_budget,
                     pause_after_minutes=args.pause_after_minutes,
+                    plan_minutes=args.plan_minutes,
+                    execute_minutes=args.execute_minutes,
+                    review_minutes=args.review_minutes,
                 ),
                 real_validation=args.real_validation,
                 validation_cwd=args.validation_cwd,
                 provider_mode=args.provider,
                 model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
-                aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+                engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
                 timeout_seconds=args.timeout,
                 target_files=tuple(args.target_file),
                 validation_python_scripts=tuple(args.validation_python),
                 validation_policy=args.validation_policy,
                 nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
+                repair_time_limit_seconds=args.repair_time_limit_seconds,
+                validation_time_budget_seconds=args.validation_time_budget_seconds,
+                validation_escalation_mode=args.validation_escalation_mode,
             )
         except ValueError as error:
             print(f"error={error}")

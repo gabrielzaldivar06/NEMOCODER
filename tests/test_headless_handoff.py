@@ -24,7 +24,7 @@ class HeadlessHandoffTests(unittest.TestCase):
         self.assertTrue(plan.review_gate_required)
         self.assertIn(HandoffStepKind.GENERATE_SPECS, kinds)
         self.assertIn(HandoffStepKind.GENERATE_TESTS, kinds)
-        self.assertIn(HandoffStepKind.IMPLEMENT_WITH_AIDER, kinds)
+        self.assertIn(HandoffStepKind.IMPLEMENT_WITH_ENGINE, kinds)
         self.assertIn(HandoffStepKind.REPAIR_FAILURES, kinds)
         self.assertIn(HandoffStepKind.CREATE_CHECKPOINT, kinds)
         self.assertIn(HandoffStepKind.CREATE_REVIEW_PACKAGE, kinds)

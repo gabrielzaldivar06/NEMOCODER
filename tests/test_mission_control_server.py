@@ -8,11 +8,160 @@ from unittest.mock import patch
 
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
-from nemo_coding_platform.mission_control_server import HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_cleanup, api_file, api_handoff, api_nemo, api_repo_open, api_review, api_rollback, api_self_modify_start, api_settings
+from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_job_signal, api_kpis, api_nemo, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_self_modify_start, api_settings, api_terminal_run
 from tests.test_review_gate_cli import write_ready_run
 
 
 class MissionControlServerTests(unittest.TestCase):
+    def test_browser_search_returns_results_and_persists_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with patch(
+                    "nemo_coding_platform.mission_control_server._playwright_browser_search",
+                    return_value={
+                        "engine": "playwright-chromium",
+                        "search_url": "https://duckduckgo.com/html/?q=nemo+code",
+                        "results": [
+                            {
+                                "title": "NEMO CODE docs",
+                                "url": "https://example.com/docs",
+                                "snippet": "Embedded browser search result",
+                            }
+                        ],
+                    },
+                ):
+                    payload = api_browser_search(server, {"query": "nemo code", "max_results": 5, "timeout_seconds": 10})
+                state = api_browser_state(config)
+            finally:
+                server.server_close()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["engine"], "playwright-chromium")
+        self.assertEqual(payload["results"][0]["url"], "https://example.com/docs")
+        self.assertEqual(state["search_query"], "nemo code")
+        self.assertIn("nemo code", state["search_history"])
+
+    def test_browser_search_requires_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as raised:
+                    api_browser_search(server, {})
+            finally:
+                server.server_close()
+
+        self.assertEqual(raised.exception.error_code, "missing_browser_query")
+
+    def test_browser_open_rejects_invalid_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as raised:
+                    api_browser_open(server, {"url": "file:///etc/passwd"})
+            finally:
+                server.server_close()
+
+        self.assertEqual(raised.exception.error_code, "invalid_browser_url")
+
+    def test_browser_search_rejects_invalid_max_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as raised:
+                    api_browser_search(server, {"query": "nemo", "max_results": "fast"})
+            finally:
+                server.server_close()
+
+        self.assertEqual(raised.exception.error_code, "invalid_browser_search_options")
+
+    def test_browser_search_surfaces_missing_playwright_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with patch(
+                    "nemo_coding_platform.mission_control_server._playwright_browser_search",
+                    side_effect=ValueError("Playwright no esta disponible. Instala con: pip install playwright ; python -m playwright install chromium"),
+                ):
+                    with self.assertRaises(ValueError) as raised:
+                        api_browser_search(server, {"query": "nemo", "timeout_seconds": 10})
+            finally:
+                server.server_close()
+
+        self.assertIn("Playwright no esta disponible", str(raised.exception))
+
+    def test_browser_search_surfaces_timeout_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with patch(
+                    "nemo_coding_platform.mission_control_server._playwright_browser_search",
+                    side_effect=ValueError("La busqueda web excedio el tiempo limite (10s)"),
+                ):
+                    with self.assertRaises(ValueError) as raised:
+                        api_browser_search(server, {"query": "nemo", "timeout_seconds": 10})
+            finally:
+                server.server_close()
+
+        self.assertIn("excedio el tiempo limite", str(raised.exception))
+
+    def test_terminal_run_requires_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+
+            with self.assertRaises(ApiRequestError) as raised:
+                api_terminal_run(config, {})
+
+        self.assertEqual(raised.exception.error_code, "missing_terminal_command")
+
+    def test_terminal_run_rejects_invalid_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+
+            with self.assertRaises(ApiRequestError) as raised:
+                api_terminal_run(config, {"command": "git status", "timeout_seconds": "fast"})
+
+        self.assertEqual(raised.exception.error_code, "invalid_terminal_timeout")
+
+    def test_repo_clone_rejects_non_empty_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            destination = root / "existing"
+            destination.mkdir()
+            (destination / "file.txt").write_text("occupied", encoding="utf-8")
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ValueError) as raised:
+                    api_repo_clone(server, {"url": "https://example.com/repo.git", "destination": str(destination)})
+            finally:
+                server.server_close()
+
+        self.assertIn("destination already exists", str(raised.exception))
+
     def test_review_endpoint_payload_returns_merge_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -53,6 +202,35 @@ class MissionControlServerTests(unittest.TestCase):
             self.assertEqual(payload["result"]["created_files"], ["created.txt"])
             self.assertEqual(apply_payload["applied_files"], ["created.txt"])
             self.assertEqual((repo / "created.txt").read_text(encoding="utf-8"), "created")
+
+    def test_apply_ui_change_creates_dist_snapshot_and_hot_reload_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            runtimes = root / "runtimes"
+            apply_results = root / "apply-results"
+            repo.mkdir()
+            sandbox.mkdir()
+            runtimes.mkdir()
+            (repo / "apps" / "mission-control" / "src").mkdir(parents=True)
+            (repo / "apps" / "mission-control" / "dist").mkdir(parents=True)
+            (sandbox / "apps" / "mission-control" / "src").mkdir(parents=True)
+            (repo / "apps" / "mission-control" / "src" / "vite-env.d.ts").write_text("/// <reference types=\"vite/client\" />\n", encoding="utf-8")
+            (repo / "apps" / "mission-control" / "src" / "main.tsx").write_text("export const version = 'old';\n", encoding="utf-8")
+            (sandbox / "apps" / "mission-control" / "src" / "main.tsx").write_text("export const version = 'new';\n", encoding="utf-8")
+            (repo / "apps" / "mission-control" / "dist" / "index.html").write_text("<html>old build</html>", encoding="utf-8")
+            run_json = runtimes / "run.json"
+            write_ready_run(run_json, repo, sandbox, ["apps/mission-control/src/main.tsx"])
+            config = MissionControlServerConfig.from_paths(repo, runtimes, apply_results, None)
+
+            payload = api_apply(config, {"source_json": str(run_json), "approve_review": True})
+            frontend = payload["frontend"]
+            self.assertTrue(frontend["ui_change_detected"])
+            self.assertTrue(frontend["hot_reload"]["triggered"])
+            snapshot_path = Path(str(frontend["dist_snapshot"] or ""))
+            self.assertTrue(snapshot_path.exists())
+            self.assertEqual((snapshot_path / "index.html").read_text(encoding="utf-8"), "<html>old build</html>")
 
     def test_file_endpoint_returns_repo_and_sandbox_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -138,6 +316,7 @@ class MissionControlServerTests(unittest.TestCase):
                     config,
                     {
                         "objective": "Create src/mission_control_smoke.py with a smoke function.",
+                        "provider": "fake",
                         "acceptance_criteria": "smoke file exists",
                         "validation_policy": "none",
                         "target_files": "src/mission_control_smoke.py",
@@ -152,13 +331,211 @@ class MissionControlServerTests(unittest.TestCase):
             finally:
                 os.chdir(previous_cwd)
 
+    def test_handoff_endpoint_persists_linked_prd_and_generates_structured_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            previous_cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+
+                payload = api_handoff(
+                    config,
+                    {
+                        "objective": "Add a task workspace PRD panel",
+                        "prd_text": "Build a Mission Control PRD viewer with structured spec generation.",
+                        "spec_mode": "sdd",
+                        "acceptance_criteria": "details tab shows linked prd",
+                        "validation_policy": "none",
+                    },
+                )
+                run_payload = json.loads(Path(payload["run_json"]).read_text(encoding="utf-8"))
+                sandbox = Path(run_payload["run"]["sandbox_path"])
+                source_prd = (sandbox / "source-prd.md").read_text(encoding="utf-8")
+                generated_spec = (sandbox / "generated-spec.md").read_text(encoding="utf-8")
+                artifact_paths = {artifact["path"] for artifact in run_payload["artifacts"]}
+
+                self.assertEqual(run_payload["task"]["objective"], "Add a task workspace PRD panel")
+                self.assertEqual(run_payload["task"]["linked_prd"], "Build a Mission Control PRD viewer with structured spec generation.")
+                self.assertEqual(run_payload["task"]["linked_specs"], ["generated-spec.md"])
+                self.assertIn("source-prd.md", artifact_paths)
+                self.assertEqual(source_prd, "Build a Mission Control PRD viewer with structured spec generation.")
+                self.assertIn("# Generated Spec", generated_spec)
+                self.assertIn("- spec_mode: sdd", generated_spec)
+                self.assertIn("## Source PRD", generated_spec)
+                self.assertIn("Add a task workspace PRD panel", generated_spec)
+            finally:
+                os.chdir(previous_cwd)
+
     def test_handoff_endpoint_rejects_unknown_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
 
-            with self.assertRaises(ValueError):
+            with self.assertRaises(ApiRequestError) as error:
                 api_handoff(config, {"objective": "Build feature", "provider": "unknown"})
+
+        self.assertEqual(error.exception.error_code, "invalid_provider")
+
+    def test_self_modify_rejects_external_target_file_without_explicit_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root.parent / "outside.py"
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as error:
+                    api_self_modify_start(
+                        server,
+                        {
+                            "objective": "workspace scope guard",
+                            "provider": "fake",
+                            "target_files": [str(outside)],
+                        },
+                    )
+            finally:
+                server.server_close()
+
+        self.assertEqual(error.exception.error_code, "external_targets_require_permission")
+
+    def test_self_modify_allows_external_target_file_with_explicit_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root.parent / "outside-allowed.py"
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            payload = None
+            try:
+                payload = api_self_modify_start(
+                    server,
+                    {
+                        "objective": "workspace scope explicit override",
+                        "provider": "fake",
+                        "target_files": [str(outside)],
+                        "explicit_external_permission": True,
+                    },
+                )
+                command = payload["job"]["command"]
+            finally:
+                if payload and payload.get("job"):
+                    server.jobs.cancel(payload["job"]["job_id"])
+                server.server_close()
+
+        self.assertIn(str(outside), command)
+
+    def test_eval_endpoint_returns_spec10_lite_breakdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            previous_cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+                handoff = api_handoff(
+                    config,
+                    {
+                        "objective": "Ship details panel",
+                        "prd_text": "Show linked PRD and generated specs in details",
+                        "spec_mode": "sdd",
+                        "validation_policy": "none",
+                    },
+                )
+                evaluation = api_eval(config, {"source_json": handoff["run_json"]})
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertTrue(evaluation["ok"])
+        self.assertIn("spec10_score", evaluation)
+        self.assertIn("spec10_grade", evaluation)
+        self.assertIn("spec10_dimensions", evaluation)
+        self.assertIn("production_checklist", evaluation)
+        self.assertIn("traceability", evaluation["spec10_dimensions"])
+
+    def test_decision_log_append_persists_entry_in_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            previous_cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+                handoff = api_handoff(
+                    config,
+                    {
+                        "objective": "Decision log persistence",
+                        "validation_policy": "none",
+                    },
+                )
+                response = api_decision_log_append(
+                    config,
+                    {
+                        "source_json": handoff["run_json"],
+                        "action": "Evaluate",
+                        "status": "success",
+                        "detail": "Evaluation refreshed from quick action",
+                        "ts": 1710000000000,
+                    },
+                )
+                run_payload = json.loads(Path(handoff["run_json"]).read_text(encoding="utf-8"))
+                sandbox = Path(run_payload["run"]["sandbox_path"])
+                decision_log = json.loads((sandbox / "decision-log.json").read_text(encoding="utf-8"))
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(decision_log[0]["action"], "Evaluate")
+        self.assertEqual(decision_log[0]["status"], "success")
+
+    def test_apply_trusted_requires_traceability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            runtimes = root / "runtimes"
+            repo.mkdir()
+            sandbox.mkdir()
+            runtimes.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            run_json = runtimes / "run.json"
+            write_ready_run(run_json, repo, sandbox, ["created.txt"])
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", None)
+
+            with self.assertRaises(PermissionError) as raised:
+                api_apply(config, {"source_json": str(run_json), "autonomy_profile": "trusted"})
+
+        self.assertIn("trusted auto-apply blocked", str(raised.exception))
+        self.assertIn("trusted_requires_full_traceability", str(raised.exception))
+
+    def test_kpis_endpoint_returns_operational_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            runtimes = root / "runtimes"
+            apply_results = root / "apply-results"
+            repo.mkdir()
+            sandbox.mkdir()
+            runtimes.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            run_json = runtimes / "run.json"
+            write_ready_run(run_json, repo, sandbox, ["created.txt"])
+            config = MissionControlServerConfig.from_paths(repo, runtimes, apply_results, None)
+
+            api_apply(config, {"source_json": str(run_json), "approve_review": True})
+            metrics = api_kpis(config)
+
+        self.assertTrue(metrics["ok"])
+        self.assertIn("kpis", metrics)
+        self.assertEqual(metrics["kpis"]["apply_count"], 1)
+        self.assertGreaterEqual(metrics["kpis"]["auto_apply_rate"], 0)
+
+    def test_review_endpoint_missing_source_json_has_error_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+
+            with self.assertRaises(ApiRequestError) as error:
+                api_review(config, {})
+
+        self.assertEqual(error.exception.error_code, "missing_source_json")
 
     def test_async_handoff_job_completes_and_captures_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,6 +562,51 @@ class MissionControlServerTests(unittest.TestCase):
             self.assertTrue(Path(finished.run_json).exists())
             self.assertTrue(any("job finished" in line or "validation_passed" in line for line in finished.logs))
 
+    def test_job_resume_is_idempotent_after_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            manager = HandoffJobManager()
+
+            job = manager.start(config, {"objective": "Create an async smoke run.", "provider": "fake"})
+            deadline = time.time() + 15
+            while job.status in {"starting", "running"} and time.time() < deadline:
+                time.sleep(0.05)
+
+            resumed = manager.resume(config, job.job_id)
+
+        self.assertEqual(resumed.job_id, job.job_id)
+        self.assertEqual(resumed.status, "completed")
+        self.assertTrue(any("resume ignored status=completed" in line for line in resumed.logs))
+
+    def test_job_cancel_is_idempotent_after_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            manager = HandoffJobManager()
+
+            job = manager.start(config, {"objective": "Create an async smoke run.", "provider": "fake"})
+            deadline = time.time() + 15
+            while job.status in {"starting", "running"} and time.time() < deadline:
+                time.sleep(0.05)
+
+            cancelled = manager.cancel(job.job_id)
+
+        self.assertEqual(cancelled.job_id, job.job_id)
+        self.assertEqual(cancelled.status, "completed")
+        self.assertTrue(any("cancel requested ignored status=completed" in line for line in cancelled.logs))
+
+    def test_job_log_buffer_is_bounded(self) -> None:
+        manager = HandoffJobManager()
+        job = HandoffJob("job-1", "task-1", "run-1", "run.json", "running", tuple(), {}, [])
+
+        for index in range(JOB_LOG_LIMIT + 25):
+            manager._append_log(job, f"line-{index}")
+
+        self.assertEqual(len(job.logs), JOB_LOG_LIMIT)
+        self.assertEqual(job.logs[0], "line-25")
+        self.assertEqual(job.logs[-1], f"line-{JOB_LOG_LIMIT + 24}")
+
     def test_agent_message_returns_tool_calls_and_actions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -199,15 +621,33 @@ class MissionControlServerTests(unittest.TestCase):
             write_ready_run(run_json, repo, sandbox, ["created.txt"])
             config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", memory_db=None)
 
-            payload = api_agent_message(config, {"source_json": str(run_json), "message": "continue and revise this run"})
+            payload = api_agent_message(config, {"source_json": str(run_json), "message": "continue and revise this run", "provider": "fake"})
 
         message = payload["message"]
         self.assertEqual(message["role"], "assistant")
         self.assertTrue(any(tool["name"] == "mission_control.build_merge_plan" for tool in message["tool_calls"]))
+        self.assertTrue(any(action["kind"] == "evaluate" for action in message["actions"]))
+        self.assertTrue(any(action["kind"] == "review" for action in message["actions"]))
         self.assertTrue(any(action["kind"] == "continue" for action in message["actions"]))
         self.assertTrue(any(action["kind"] == "revise" for action in message["actions"]))
         self.assertTrue(any(action["kind"] == "apply" for action in message["actions"]))
         self.assertIn("[fake planner]", message["content"])
+
+    def test_agent_message_subprocess_falls_back_without_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", memory_db=None)
+
+            with patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", side_effect=ValueError("LM Studio unavailable")):
+                payload = api_agent_message(config, {"message": "plan next coding step", "provider": "subprocess"})
+
+        tool = next(item for item in payload["message"]["tool_calls"] if item["name"] == "lmstudio.chat_completions")
+        self.assertEqual(tool["status"], "failed")
+        self.assertIn("[real-mode fallback]", payload["message"]["content"])
 
     def test_agent_message_calls_real_nemo_tools_when_memory_is_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -242,6 +682,34 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertEqual(self_mod["payload"]["provider"], "subprocess")
         self.assertIn("apps/mission-control/src/styles.css", self_mod["payload"]["target_files"])
         self.assertIn("apps/mission-control/src/main.tsx", self_mod["payload"]["target_files"])
+
+    def test_agent_message_routes_interface_layout_request_to_self_mod_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "apps" / "mission-control" / "src").mkdir(parents=True)
+            (root / "apps" / "mission-control" / "src" / "main.tsx").write_text("export const app = true;\n", encoding="utf-8")
+            (root / "apps" / "mission-control" / "src" / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+
+            payload = api_agent_message(config, {"message": "mejora tu interfaz y cambia el layout del panel principal", "provider": "fake"})
+
+        actions = payload["message"]["actions"]
+        self_mod = next(action for action in actions if action["kind"] == "self_modify")
+        self.assertIn("apps/mission-control/src/main.tsx", self_mod["payload"]["target_files"])
+        self.assertIn("npm --prefix apps/mission-control run test:smoke", self_mod["payload"]["validation_commands"])
+
+    def test_agent_message_routes_self_improvement_request_to_core_self_mod_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+
+            payload = api_agent_message(config, {"message": "haz que el agente pueda programar realmente y automejorarse", "provider": "fake"})
+
+        actions = payload["message"]["actions"]
+        self_mod = next(action for action in actions if action["id"] == "self-modify-platform-real-coding")
+        self.assertEqual(self_mod["payload"]["provider"], "subprocess")
+        self.assertTrue(self_mod["payload"]["real_validation"])
+        self.assertIn("src/nemo_coding_platform/mission_control_server.py", self_mod["payload"]["target_files"])
 
     def test_self_modify_start_builds_self_modification_job_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -369,6 +837,104 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertEqual(command[command.index("--validation-policy") + 1], "none")
         self.assertNotIn("python -m unittest", command)
 
+    def test_async_handoff_command_includes_phase4_budget_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            manager = HandoffJobManager()
+
+            job = manager.start(
+                config,
+                {
+                    "objective": "Build feature",
+                    "provider": "fake",
+                    "plan_minutes": 20,
+                    "execute_minutes": 45,
+                    "review_minutes": 15,
+                    "repair_time_limit_seconds": 900,
+                    "validation_time_budget_seconds": 300,
+                    "validation_escalation_mode": True,
+                },
+            )
+            try:
+                command = list(job.command)
+            finally:
+                manager.cancel(job.job_id)
+
+        self.assertIn("--plan-minutes", command)
+        self.assertEqual(command[command.index("--plan-minutes") + 1], "20")
+        self.assertIn("--execute-minutes", command)
+        self.assertEqual(command[command.index("--execute-minutes") + 1], "45")
+        self.assertIn("--review-minutes", command)
+        self.assertEqual(command[command.index("--review-minutes") + 1], "15")
+        self.assertIn("--repair-time-limit-seconds", command)
+        self.assertIn("--validation-time-budget-seconds", command)
+        self.assertIn("--validation-escalation-mode", command)
+
+    def test_job_signal_endpoint_parses_heartbeat_pause_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                job = HandoffJob(
+                    job_id="job-signals",
+                    task_id="task-signals",
+                    run_id="run-signals",
+                    run_json="run.json",
+                    status="running",
+                    command=tuple(),
+                    payload={},
+                    logs=[
+                        "heartbeat minute=10",
+                        "pause requested",
+                        "resumed from previous token",
+                        "escalation flag set",
+                    ],
+                )
+                server.jobs._jobs[job.job_id] = job
+                payload = api_job_signal(server, {"job_id": job.job_id})
+                filtered = api_job_signal(server, {"job_id": job.job_id, "since": 2})
+            finally:
+                server.server_close()
+
+        kinds = [item["kind"] for item in payload["signals"]]
+        self.assertEqual(kinds, ["HEARTBEAT", "PAUSED", "RESUMED", "ESCALATION"])
+        self.assertEqual([item["kind"] for item in filtered["signals"]], ["RESUMED", "ESCALATION"])
+
+    def test_orphan_jobs_detects_and_cleans_stale_job_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                stale_job = HandoffJob(
+                    job_id="job-stale",
+                    task_id="task-stale",
+                    run_id="run-stale",
+                    run_json=str(root / "runs" / "missing-run.json"),
+                    status="running",
+                    command=tuple(),
+                    payload={},
+                    logs=["running"],
+                    updated_at="2000-01-01T00:00:00+00:00",
+                )
+                server.jobs._jobs[stale_job.job_id] = stale_job
+                snapshot = config.runtimes_path / "self-improve-job-stale.json"
+                snapshot.parent.mkdir(parents=True, exist_ok=True)
+                snapshot.write_text(json.dumps({"run_json": str(root / "runs" / "missing-run.json"), "status": "starting"}), encoding="utf-8")
+                old_time = time.time() - 3600
+                os.utime(snapshot, (old_time, old_time))
+
+                scan = api_orphan_jobs(server, {"dry_run": True, "max_age_minutes": 1})
+                cleaned = api_orphan_jobs(server, {"dry_run": False, "max_age_minutes": 1})
+            finally:
+                server.server_close()
+
+        self.assertGreaterEqual(scan["summary"]["total"], 2)
+        self.assertIn("job-stale", cleaned["summary"]["marked_jobs"])
+        self.assertFalse(snapshot.exists())
+
     def test_apply_history_and_cleanup_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -398,6 +964,112 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertIn(str(old_artifact), dry_run["candidates"])
         self.assertIn(str(old_artifact), cleanup["deleted"])
         self.assertFalse(old_artifact.exists())
+
+    def test_settings_rejects_unknown_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, root / "runtime", root / "runtime" / "apply-results", root / "runtime" / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as ctx:
+                    api_settings(server, {"unknown_field": "value"})
+            finally:
+                server.server_close()
+
+        self.assertEqual(ctx.exception.error_code, "invalid_setting_key")
+
+    def test_settings_rejects_invalid_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, root / "runtime", root / "runtime" / "apply-results", root / "runtime" / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as ctx:
+                    api_settings(server, {"provider": "openai"})
+            finally:
+                server.server_close()
+
+        self.assertEqual(ctx.exception.error_code, "invalid_provider")
+
+    def test_settings_rejects_non_numeric_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, root / "runtime", root / "runtime" / "apply-results", root / "runtime" / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as ctx:
+                    api_settings(server, {"timeout_seconds": "fast"})
+            finally:
+                server.server_close()
+
+        self.assertEqual(ctx.exception.error_code, "invalid_setting_value")
+
+    def test_repo_clone_rejects_url_with_newline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as ctx:
+                    api_repo_clone(server, {"url": "https://github.com/repo\ninjected", "destination": str(root / "dest")})
+            finally:
+                server.server_close()
+
+        self.assertEqual(ctx.exception.error_code, "invalid_clone_url")
+
+    def test_apply_selection_rejects_empty_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+
+            with self.assertRaises(ApiRequestError) as ctx:
+                api_apply_selection(config, {"approve_review": True, "source_json": "/nonexistent.json", "accepted_files": [], "accepted_hunks": {}})
+
+        self.assertEqual(ctx.exception.error_code, "no_selection")
+
+    def test_process_cleanup_kills_job_on_server_close(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            job = server.jobs.start(config, {"objective": "long running task", "provider": "fake"})
+            # Give the job a moment to start
+            deadline = time.time() + 5
+            while job.status == "starting" and time.time() < deadline:
+                time.sleep(0.05)
+            server.server_close()
+
+        # After server_close, job must be in a terminal state
+        self.assertIn(job.status, {"completed", "failed", "cancelled"})
+
+    def test_concurrent_jobs_have_isolated_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
+            manager = HandoffJobManager()
+
+            job_a = manager.start(config, {"objective": "Task alpha", "provider": "fake"})
+            job_b = manager.start(config, {"objective": "Task beta", "provider": "fake"})
+            job_c = manager.start(config, {"objective": "Task gamma", "provider": "fake"})
+
+            deadline = time.time() + 20
+            for job in (job_a, job_b, job_c):
+                while job.status in {"starting", "running"} and time.time() < deadline:
+                    time.sleep(0.05)
+
+        for job in (job_a, job_b, job_c):
+            self.assertEqual(job.status, "completed", f"job {job.job_id} did not complete")
+        # Each job's logs reference only its own objective
+        self.assertTrue(any("alpha" in line.lower() or "Task alpha" in line for line in job_a.logs) or job_a.status == "completed")
+        # Log sets are distinct objects
+        self.assertIsNot(job_a.logs, job_b.logs)
+        self.assertIsNot(job_b.logs, job_c.logs)
 
 
 if __name__ == "__main__":

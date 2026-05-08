@@ -1,30 +1,14 @@
 # Generated Implementation
 
-Objective: hola
+Objective: Build feature
 Spec: generated-spec.md
 
 ## Acceptance Criteria
-- passes validation
+- passes tests
 
 ## NEMO Context
-[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run run-1
-[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run run-1
-[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run run-1
-[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062320-a75c143f
-[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062320-a75c143f
-[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062320-a75c143f
-[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506062944-aae8ca22
-[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506062944-aae8ca22
-[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506062944-aae8ca22
-[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063746-eca07ae1
-[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063746-eca07ae1
-[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063746-eca07ae1
-[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506063822-3ca25316
-[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506063822-3ca25316
-[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506063822-3ca25316
-[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164734-bd477b88
-[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164734-bd477b88
-[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164734-bd477b88
-[artifact_state] Checkpoint writeback prepared: checkpoint-review.md for run mc-run-20260506164735-02549407
-[artifact_state] Checkpoint writeback prepared: checkpoint-execute.md for run mc-run-20260506164735-02549407
-[artifact_state] Checkpoint writeback prepared: checkpoint-plan.md for run mc-run-20260506164735-02549407
+[correction] Aider is the active product base, not just a reference repository.
+[project_fact] Current task: Build feature
+[project_fact] Topic: Headless Handoff
+[preference] Use full NEMO MCP memory/tool plane, not portfolio-only memory.
+[decision] Headless Full Handoff must write only inside isolated runtime/worktree until review.

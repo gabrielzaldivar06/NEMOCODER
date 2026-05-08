@@ -1,0 +1,14 @@
+{
+  "package": "nemocode",
+  "version": "0.1.0",
+  "bundle_version": "prd-packaging-test",
+  "generated_at_utc": "2026-05-07T22:35:09.5228739Z",
+  "artifacts": [
+    "backend/*.whl",
+    "backend/*.tar.gz",
+    "mission-control-web/*",
+    "scripts/start-backend.ps1",
+    "scripts/start-web-preview.ps1"
+  ],
+  "prd_alignment": "Slice 5 packaging (headless/backend + mission-control web). Desktop installer comes in Slice 6."
+}

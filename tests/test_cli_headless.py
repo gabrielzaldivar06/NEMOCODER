@@ -25,12 +25,12 @@ class CliHeadlessTests(unittest.TestCase):
     def test_headless_run_json(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = main(["headless-run", "Build feature", "--json"])
+            code = main(["headless-run", "Build feature", "--provider", "fake", "--json"])
 
         payload = json.loads(output.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(payload["score"], 1.0)
-        self.assertEqual(payload["provider"], "fake-aider")
+        self.assertEqual(payload["provider"], "fake-nemo-code")
         self.assertEqual(payload["model"], "nvidia.agentic.coder-4b")
         self.assertIn("generated-implementation.md", payload["changed_files"])
         self.assertGreaterEqual(payload["events"], 8)
@@ -41,7 +41,7 @@ class CliHeadlessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = f"{tmp}/result.json"
             with contextlib.redirect_stdout(output):
-                code = main(["headless-run", "Build feature", "--json", "--save-json", path])
+                code = main(["headless-run", "Build feature", "--provider", "fake", "--json", "--save-json", path])
             payload = json.loads(output.getvalue())
             with open(path, encoding="utf-8") as saved:
                 saved_payload = json.load(saved)
@@ -54,7 +54,7 @@ class CliHeadlessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = f"{tmp}/result.json"
             with contextlib.redirect_stdout(io.StringIO()):
-                main(["headless-run", "Build feature", "--json", "--save-json", path])
+                main(["headless-run", "Build feature", "--provider", "fake", "--json", "--save-json", path])
 
             show_output = io.StringIO()
             with contextlib.redirect_stdout(show_output):
@@ -76,7 +76,7 @@ class CliHeadlessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = f"{tmp}/result.json"
             with contextlib.redirect_stdout(io.StringIO()):
-                main(["headless-run", "Build feature", "--json", "--save-json", path])
+                main(["headless-run", "Build feature", "--provider", "fake", "--json", "--save-json", path])
 
             replay_output = io.StringIO()
             with contextlib.redirect_stdout(replay_output):
@@ -93,23 +93,23 @@ class CliHeadlessTests(unittest.TestCase):
         command = f"{executable} -c \"from pathlib import Path; Path('cli-subprocess.txt').write_text('ok', encoding='utf-8')\""
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = main(["headless-run", "Build feature", "--provider", "subprocess", "--aider-command", command, "--json"])
+            code = main(["headless-run", "Build feature", "--provider", "subprocess", "--engine-command", command, "--json"])
 
         payload = json.loads(output.getvalue())
 
         self.assertEqual(code, 0)
-        self.assertEqual(payload["provider"], "subprocess-aider")
+        self.assertEqual(payload["provider"], "subprocess-nemo-code")
         self.assertIn("cli-subprocess.txt", payload["changed_files"])
 
     def test_headless_run_accepts_target_file_flag(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = main(["headless-run", "Build feature", "--target-file", "src/demo.py", "--json"])
+            code = main(["headless-run", "Build feature", "--provider", "fake", "--target-file", "src/demo.py", "--json"])
 
         payload = json.loads(output.getvalue())
 
         self.assertEqual(code, 0)
-        self.assertEqual(payload["provider"], "fake-aider")
+        self.assertEqual(payload["provider"], "fake-nemo-code")
 
     def test_headless_run_accepts_validation_python_flag(self) -> None:
         output = io.StringIO()
@@ -117,6 +117,8 @@ class CliHeadlessTests(unittest.TestCase):
             code = main([
                 "headless-run",
                 "Build feature",
+                "--provider",
+                "fake",
                 "--real-validation",
                 "--validation-python",
                 "assert 2 + 2 == 4",
@@ -131,7 +133,7 @@ class CliHeadlessTests(unittest.TestCase):
     def test_headless_run_accepts_bounded_simulation_flag(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = main(["headless-run", "Build feature", "--bounded-simulation", "--json"])
+            code = main(["headless-run", "Build feature", "--provider", "fake", "--bounded-simulation", "--json"])
 
         payload = json.loads(output.getvalue())
 
@@ -144,7 +146,7 @@ class CliHeadlessTests(unittest.TestCase):
             memory_db = Path(tmp) / "nemo-memory.sqlite"
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["headless-run", "Build feature", "--bounded-simulation", "--memory-db", str(memory_db), "--json"])
+                code = main(["headless-run", "Build feature", "--provider", "fake", "--bounded-simulation", "--memory-db", str(memory_db), "--json"])
             payload = json.loads(output.getvalue())
             store = PersistentMemoryStore(memory_db)
             atoms = store.search_atoms(limit=20)
@@ -162,7 +164,7 @@ class CliHeadlessTests(unittest.TestCase):
             memory_db.unlink()
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = main(["headless-run", "Build feature", "--json"])
+            code = main(["headless-run", "Build feature", "--provider", "fake", "--json"])
         payload = json.loads(output.getvalue())
         atoms = PersistentMemoryStore(memory_db).search_atoms(limit=20)
 
@@ -176,7 +178,7 @@ class CliHeadlessTests(unittest.TestCase):
             memory_db = Path(tmp) / "nemo-memory.sqlite"
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["headless-run", "Build feature", "--memory-db", str(memory_db), "--no-memory-db", "--json"])
+                code = main(["headless-run", "Build feature", "--provider", "fake", "--memory-db", str(memory_db), "--no-memory-db", "--json"])
             payload = json.loads(output.getvalue())
 
         self.assertEqual(code, 0)

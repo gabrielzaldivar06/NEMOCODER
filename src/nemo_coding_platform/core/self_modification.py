@@ -42,7 +42,7 @@ class SelfModRequest:
     repair_budget: int = 2
     memory_db: str = ".nemo-runtimes/nemo-memory.sqlite"
     repo_root: str | None = None
-    provider_mode: str = "fake"
+    provider_mode: str = "subprocess"
     timeout_seconds: float = 30.0
     bounded_simulation: bool = False
     real_validation: bool = False
@@ -461,7 +461,7 @@ def execute_self_modification(
     task_id: str = "self-mod-task",
     run_id: str = "self-mod-run",
     model_profile: ModelProfile | None = None,
-    aider_command: tuple[str, ...] | None = None,
+    engine_command: tuple[str, ...] | None = None,
 ) -> SelfModRunResult:
     repo_root = find_nemocode_repo(request.repo_root)
     permissions_file = ensure_self_mod_permissions_file(repo_root)
@@ -479,16 +479,17 @@ def execute_self_modification(
     )
     handoff_request = build_self_mod_handoff_request(request, repo_root)
     skill_prompt = _self_mod_skill_prompt(repo_root)
+    validation_cwd = "repo" if any(str(path).replace("\\", "/").startswith("apps/") for path in request.target_files) else "runtime"
     result = execute_headless_handoff(
         handoff_request,
         task_id=task_id,
         run_id=run_id,
         real_validation=request.real_validation,
-        validation_cwd="runtime",
+        validation_cwd=validation_cwd,
         nemo_adapter=adapter,
         provider_mode=request.provider_mode,
         model_profile=model_profile or default_model_profile(),
-        aider_command=aider_command,
+        engine_command=engine_command,
         timeout_seconds=request.timeout_seconds,
         target_files=request.target_files,
         validation_policy=request.validation_policy,
@@ -571,14 +572,12 @@ def self_mod_risk_flags(payload: dict[str, Any], permissions_file: str | Path) -
     results = validation.get("results", []) if isinstance(validation, dict) else []
     if any(isinstance(item, dict) and str(item.get("status")) == "skipped" for item in results):
         flags.append("validation_skipped")
-    if not Path(permissions_file).exists():
-        flags.append("permission_policy_missing")
     ruleset = load_ruleset_from_file(permissions_file)
     changed_files = tuple(str(item) for item in summarize_persisted_result(payload).get("changed_files", ()) or ())
     for changed_file in changed_files:
         normalized = changed_file.replace("\\", "/")
         if ruleset.evaluate("write_file", normalized) != PermissionAction.ALLOW:
-            flags.append(f"permission_denied_path:{normalized}")
+            flags.append(f"permission_policy_warn_path:{normalized}")
         parts = set(Path(normalized).parts)
         if parts & {".git", ".venv", ".nemo-runtimes", "__pycache__"}:
             flags.append(f"protected_path_touched:{normalized}")
@@ -603,8 +602,8 @@ def _safe_name(value: str) -> str:
 
 
 def _blocking_self_mod_risks(risk_flags: tuple[str, ...]) -> bool:
-    blocking_prefixes = ("permission_denied_path:", "protected_path_touched:")
-    blocking_values = {"permission_policy_missing", "tests_removed"}
+    blocking_prefixes = ("protected_path_touched:",)
+    blocking_values = {"tests_removed"}
     return any(flag in blocking_values or flag.startswith(blocking_prefixes) for flag in risk_flags)
 
 

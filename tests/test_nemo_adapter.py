@@ -22,7 +22,7 @@ class NemoAdapterTests(unittest.TestCase):
             InMemoryNemoAdapter().call(NemoLifecyclePhase.BUILD, "create_reminder", text="later")
 
     def test_adapter_builds_context_portfolio_payload(self) -> None:
-        _adapter, result = InMemoryNemoAdapter().call(NemoLifecyclePhase.BUILD, "build_context_portfolio", task="Build", topic="Aider")
+        _adapter, result = InMemoryNemoAdapter().call(NemoLifecyclePhase.BUILD, "build_context_portfolio", task="Build", topic="NEMO CODE")
 
         self.assertTrue(result.ok)
         self.assertIn("context", result.payload)
@@ -31,11 +31,11 @@ class NemoAdapterTests(unittest.TestCase):
     def test_persistent_adapter_primes_context_from_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
-            store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "Aider is the active base", "project"), topic="handoff", importance=10)
+            store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "NEMO CODE is the active base", "project"), topic="handoff", importance=10)
             adapter, result = PersistentNemoAdapter(store).call(NemoLifecyclePhase.START, "prime_context", topic="handoff")
 
         self.assertTrue(result.ok)
-        self.assertIn("Aider is the active base", result.payload["context"])
+        self.assertIn("NEMO CODE is the active base", result.payload["context"])
         self.assertEqual(result.payload["memories"][0]["type"], "correction")
         self.assertEqual(adapter.calls[0].tool_name, "prime_context")
 
@@ -152,7 +152,7 @@ class NemoAdapterTests(unittest.TestCase):
             adapter = PersistentNemoAdapter(store)
             adapter, created = adapter.call(NemoLifecyclePhase.REVIEW, "create_reminder", title="Follow up docs", topic="reminders")
             reminder_id = created.payload["atom_id"]
-            adapter, active = adapter.call(NemoLifecyclePhase.PLAN, "get_active_reminders", topic="reminders")
+            adapter, active = adapter.call(NemoLifecyclePhase.REVIEW, "get_active_reminders", topic="reminders")
             adapter, completed = adapter.call(NemoLifecyclePhase.REVIEW, "complete_reminder", reminder_id=reminder_id)
             _adapter, completed_list = adapter.call(NemoLifecyclePhase.REVIEW, "get_completed_reminders", topic="reminders")
 

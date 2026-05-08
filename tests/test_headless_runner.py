@@ -3,7 +3,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from nemo_coding_platform.core.aider_interface import FakeAiderProvider
+from nemo_coding_platform.core.engine_interface import FakeEngineProvider
 from nemo_coding_platform.core.evals import score_headless_result
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.headless_runner import execute_headless_handoff
@@ -15,9 +15,14 @@ from nemo_coding_platform.core.worktree_runtime import snapshot_runtime_files
 from nemo_coding_platform.core.task_run import ArtifactType, EventKind
 
 
+def _execute_fake_handoff(request: HandoffRequest, *args, **kwargs):
+    kwargs.setdefault("provider_mode", "fake")
+    return execute_headless_handoff(request, *args, **kwargs)
+
+
 class HeadlessRunnerTests(unittest.TestCase):
     def test_headless_run_produces_replayable_review_gated_result(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",))
         )
 
@@ -29,7 +34,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertEqual(score_headless_result(result).score, 1.0)
 
     def test_headless_run_writes_checkpoint_artifact(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
             task_id="checkpoint-task",
             run_id="checkpoint-run",
@@ -44,7 +49,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertIn("checkpoint.md", result.runtime_files)
 
     def test_bounded_simulation_writes_phase_checkpoints(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
             task_id="bounded-task",
             run_id="bounded-run",
@@ -62,7 +67,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertTrue(any(item.call.tool_name == "store_conversation" and "checkpoint-execute.md" in item.call.arguments.get("summary", "") for item in result.nemo_results))
 
     def test_headless_run_records_validation_failure_in_score(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",), repair_budget=1),
             ("python -m unittest",),
         )
@@ -71,7 +76,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertLess(score_headless_result(result).score, 1.0)
 
     def test_headless_run_accepts_custom_ids_and_summary_dict(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
             task_id="task-custom",
             run_id="run-custom",
@@ -81,7 +86,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertEqual(result.to_summary_dict()["run_id"], "run-custom")
 
     def test_headless_run_records_nemo_calls_and_runtime_files(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
             task_id="runtime-files",
             run_id="run-files",
@@ -95,7 +100,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertIn("memory.md", files)
 
     def test_headless_run_can_use_real_validation(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), (f"{sys.executable} --version",)),
             real_validation=True,
         )
@@ -103,7 +108,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertTrue(result.validation.passed)
 
     def test_headless_run_writes_python_validation_script_inside_runtime(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), (f"{sys.executable} --version",)),
             real_validation=True,
             validation_python_scripts=("assert 1 + 1 == 2\n",),
@@ -118,7 +123,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertIn("returncode=0", validation_text)
 
     def test_headless_run_creates_repair_attempt_on_validation_failure(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",), repair_budget=1),
             ("python -m unittest",),
         )
@@ -127,12 +132,12 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertEqual(len(result.repair_plan.attempts), 1)
 
     def test_headless_run_records_provider_and_portfolio(self) -> None:
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
         )
 
         self.assertIsNotNone(result.mutation_result)
-        self.assertEqual(result.mutation_result.provider, "fake-aider")
+        self.assertEqual(result.mutation_result.provider, "fake-nemo-code")
         self.assertEqual(result.mutation_result.model_profile.model, "nvidia.agentic.coder-4b")
         self.assertIn("generated-implementation.md", result.mutation_result.changed_files)
         self.assertIsNotNone(result.portfolio)
@@ -181,7 +186,7 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertIn("src/repaired.py", result.review_package.to_markdown())
 
     def test_headless_run_passes_target_files_to_provider(self) -> None:
-        class RecordingProvider(FakeAiderProvider):
+        class RecordingProvider(FakeEngineProvider):
             def __init__(self) -> None:
                 self.seen_targets: tuple[str, ...] = ()
 
@@ -190,7 +195,7 @@ class HeadlessRunnerTests(unittest.TestCase):
                 return super().create_plan(request)
 
         provider = RecordingProvider()
-        execute_headless_handoff(
+        _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
             mutation_provider=provider,
             target_files=("src/demo.py", "tests/test_demo.py"),
@@ -208,24 +213,24 @@ class HeadlessRunnerTests(unittest.TestCase):
             result = execute_headless_handoff(
                 HandoffRequest("Build feature", tmp, ("passes tests",), ("python -m unittest",)),
                 provider_mode="subprocess",
-                aider_command=command,
+                engine_command=command,
                 task_id="subprocess-output-task",
                 run_id="subprocess-output-run",
                 bounded_simulation=True,
             )
 
         mutation_events = [event for event in result.timeline.events if event.kind == EventKind.MUTATION_CREATED]
-        self.assertEqual(mutation_events[0].payload_ref, "aider-output.txt")
-        self.assertIn("aider-output.txt", result.runtime_files)
-        self.assertTrue(any(artifact.artifact_type == ArtifactType.AIDER_OUTPUT for artifact in result.artifacts))
-        output = (Path(result.run.sandbox_path) / "aider-output.txt").read_text(encoding="utf-8")
+        self.assertEqual(mutation_events[0].payload_ref, "engine-output.txt")
+        self.assertIn("engine-output.txt", result.runtime_files)
+        self.assertTrue(any(artifact.artifact_type == ArtifactType.ENGINE_OUTPUT for artifact in result.artifacts))
+        output = (Path(result.run.sandbox_path) / "engine-output.txt").read_text(encoding="utf-8")
         self.assertIn("stdout-marker", output)
 
     def test_headless_run_persists_structured_nemo_memory_with_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
             adapter = PersistentNemoAdapter(store)
-            result = execute_headless_handoff(
+            result = _execute_fake_handoff(
                 HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
                 nemo_adapter=adapter,
                 task_id="memory-task",
@@ -246,14 +251,14 @@ class HeadlessRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
             first_adapter = PersistentNemoAdapter(store)
-            execute_headless_handoff(
+            _execute_fake_handoff(
                 HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
                 nemo_adapter=first_adapter,
                 task_id="reuse-task",
                 run_id="reuse-run-1",
             )
             second_adapter = PersistentNemoAdapter(store)
-            second = execute_headless_handoff(
+            second = _execute_fake_handoff(
                 HandoffRequest("Build another feature", ".", ("passes tests",), ("python -m unittest",)),
                 nemo_adapter=second_adapter,
                 task_id="reuse-task-2",

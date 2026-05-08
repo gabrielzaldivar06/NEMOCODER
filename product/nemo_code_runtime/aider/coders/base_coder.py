@@ -2121,9 +2121,39 @@ class Coder:
             total_cost=self.total_cost,
         )
 
+        self._emit_nemo_token_usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        )
+
         self.message_cost = 0.0
         self.message_tokens_sent = 0
         self.message_tokens_received = 0
+
+    def _emit_nemo_token_usage(self, prompt_tokens: int, completion_tokens: int, total_tokens: int):
+        runtime_path = os.environ.get("NEMO_RUNTIME_PATH")
+        if not runtime_path:
+            return
+
+        payload = {
+            "usage": {
+                "prompt_tokens": max(0, int(prompt_tokens)),
+                "completion_tokens": max(0, int(completion_tokens)),
+                "total_tokens": max(0, int(total_tokens)),
+            },
+            "model": getattr(self.main_model, "name", ""),
+            "source": "real",
+        }
+        try:
+            runtime_dir = Path(runtime_path)
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            sidecar = runtime_dir / ".nemo-token-usage.json"
+            sidecar.write_text(json.dumps(payload), encoding="utf-8")
+            # Fallback for wrappers that parse stdout instead of sidecar.
+            print(f"NEMO_TOKEN_USAGE_JSON={json.dumps(payload, separators=(',', ':'))}")
+        except OSError:
+            return
 
     def get_multi_response_content_in_progress(self, final=False):
         cur = self.multi_response_content or ""

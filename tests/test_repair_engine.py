@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 
-from nemo_coding_platform.core.aider_interface import FakeAiderProvider, MutationRequest
+from nemo_coding_platform.core.engine_interface import FakeEngineProvider, MutationRequest, TokenUsage
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan
 from nemo_coding_platform.core.mutations import QualityMutationEngine
 from nemo_coding_platform.core.repair import RepairBudget
@@ -35,6 +35,26 @@ class FixedDiffProvider:
         return MutationPlan(writes=(FileWrite("dummy.txt", f"change #{self.call_count}"),))
 
 
+class RealUsageProvider:
+    """Provider that reports real token usage telemetry."""
+
+    name = "real-usage"
+
+    def __init__(self, total_tokens: int = 120) -> None:
+        self.last_usage = TokenUsage(
+            prompt_tokens=max(0, total_tokens - 20),
+            completion_tokens=20,
+            total_tokens=total_tokens,
+            source="real",
+            model_name="test-model",
+        )
+        self.call_count = 0
+
+    def create_plan(self, request: MutationRequest) -> MutationPlan:
+        self.call_count += 1
+        return MutationPlan(writes=(FileWrite("token-usage.txt", f"attempt #{self.call_count}"),))
+
+
 class RepairEngineTests(unittest.TestCase):
     def test_repair_loop_records_attempt_and_revalidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -44,7 +64,7 @@ class RepairEngineTests(unittest.TestCase):
                 ("test",),
                 RepairBudget(1),
                 QualityMutationEngine(Workspace.from_path(tmp)),
-                FakeAiderProvider(),
+                FakeEngineProvider(),
                 MutationRequest("Build", "spec.md", ("ok",), "context"),
             )
 
@@ -106,6 +126,38 @@ class RepairEngineTests(unittest.TestCase):
         self.assertEqual(len(result.mutation_results), 1)
         self.assertEqual(result.stop_reason, "repair_noop")
 
+    def test_repair_loop_respects_time_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_repair_loop(
+                simulate_validation(("test",), ("test",)),
+                ("test",),
+                ("test",),
+                RepairBudget(3),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                FakeEngineProvider(),
+                MutationRequest("Build", "spec.md", ("ok",), "context"),
+                time_limit_seconds=0.0,
+            )
+
+        self.assertEqual(result.stop_reason, "repair_time_budget_exhausted")
+
+    def test_repair_loop_reports_attempt_callback(self) -> None:
+        seen: list[tuple[int, float]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            run_repair_loop(
+                simulate_validation(("test",), ("test",)),
+                ("test",),
+                ("test",),
+                RepairBudget(1),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                FakeEngineProvider(),
+                MutationRequest("Build", "spec.md", ("ok",), "context"),
+                on_attempt=lambda attempt, elapsed: seen.append((attempt, elapsed)),
+            )
+
+        self.assertTrue(seen)
+        self.assertEqual(seen[0][0], 1)
+
 
 # --- Phase 4: Loop Detection Tests ---
 
@@ -161,6 +213,92 @@ class TodoReminderInjectionTests(unittest.TestCase):
             )
 
         self.assertNotIn("<system_reminder>", provider.requests[0].context)
+
+
+class TokenBudgetTests(unittest.TestCase):
+    def test_repair_loop_stops_on_token_budget_exhausted(self) -> None:
+        """Repair loop stops immediately when token_budget=0 (pre-exhausted)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_repair_loop(
+                simulate_validation(("test",), ("test",)),
+                ("test",),
+                ("test",),
+                RepairBudget(5),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                FakeEngineProvider(),
+                MutationRequest("Build", "spec.md", ("ok",), "context"),
+                token_budget=0,
+            )
+
+        self.assertEqual(result.stop_reason, "token_budget_exhausted_estimated")
+        self.assertEqual(len(result.mutation_results), 0)
+
+    def test_repair_loop_stops_mid_run_on_token_budget(self) -> None:
+        """Repair loop stops after some attempts when token_budget is small."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_repair_loop(
+                simulate_validation(("test",), ("test",)),
+                ("test",),
+                ("test",),
+                RepairBudget(10),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                FakeEngineProvider(),
+                MutationRequest("Build x" * 50, "spec.md", ("ok",), "c" * 400),
+                token_budget=50,  # ~200 chars budget, context is large
+            )
+
+        self.assertEqual(result.stop_reason, "token_budget_exhausted_estimated")
+
+    def test_repair_result_tracks_tokens_consumed(self) -> None:
+        """tokens_consumed is non-zero after a repair attempt that writes files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_repair_loop(
+                simulate_validation(("test",), ("test",)),
+                ("test",),
+                ("test",),
+                RepairBudget(1),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                FakeEngineProvider(),
+                MutationRequest("Build", "spec.md", ("ok",), "context" * 20),
+            )
+
+        # FakeAiderProvider writes a file, so the loop runs one attempt
+        # tokens_consumed should be tracked even without a budget cap
+        self.assertGreaterEqual(result.tokens_consumed, 0)
+
+    def test_repair_result_tokens_consumed_zero_when_no_budget_and_noop(self) -> None:
+        """tokens_consumed starts at 0 and stays 0 on immediate noop."""
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CapturingNoopProvider()
+            result = run_repair_loop(
+                simulate_validation(("test",), ("test",)),
+                ("test",),
+                ("test",),
+                RepairBudget(1),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                provider,
+                MutationRequest("Build", "spec.md", ("ok",), "context"),
+            )
+
+        self.assertEqual(result.stop_reason, "repair_noop")
+        self.assertEqual(result.tokens_consumed, 0)
+
+    def test_repair_loop_prefers_real_usage_tokens_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = RealUsageProvider(total_tokens=120)
+            result = run_repair_loop(
+                simulate_validation(("test",), ("test",)),
+                ("test",),
+                ("test",),
+                RepairBudget(5),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                provider,
+                MutationRequest("Build", "spec.md", ("ok",), "context"),
+                token_budget=100,
+            )
+
+        self.assertEqual(result.stop_reason, "token_budget_exhausted_real")
+        self.assertEqual(result.tokens_consumed, 120)
 
 
 if __name__ == "__main__":

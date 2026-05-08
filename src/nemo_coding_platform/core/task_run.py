@@ -42,7 +42,8 @@ class ArtifactType(StrEnum):
     REVIEW_PACKAGE = "review_package"
     MEMORY_SUMMARY = "memory_summary"
     SUPERVISOR = "supervisor"
-    AIDER_OUTPUT = "aider_output"
+    ENGINE_OUTPUT = "engine_output"
+    AIDER_OUTPUT = ENGINE_OUTPUT
 
 
 @dataclass(frozen=True, slots=True)
