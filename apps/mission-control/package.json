@@ -8,7 +8,8 @@
     "dev:api": "set PYTHONPATH=../../src&& ..\\..\\.venv\\Scripts\\python.exe -m nemo_coding_platform mission-control-server --repo ../.. --runtimes .nemo-runtimes",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test:smoke": "vitest run --reporter=dot"
+    "test:smoke": "vitest run --reporter=dot",
+    "check:controls": "node scripts/check-no-dead-controls.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

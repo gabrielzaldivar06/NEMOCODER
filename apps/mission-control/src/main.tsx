@@ -1126,6 +1126,7 @@ export function App() {
     setStatus(`${stage ? "Staging" : "Unstaging"} ${path}`);
     postJson<{ ok: boolean }>("/api/git/stage", { path, stage })
       .then(() => {
+        setStatus(`${stage ? "Staged" : "Unstaged"} ${path}`);
         loadGitStatus();
         if (gitDiffPath === path) loadGitDiff(path);
       })
@@ -1163,6 +1164,7 @@ export function App() {
         if (create) setGitBranchDraft("");
         loadGitStatus();
         loadGitBranches();
+        setStatus(`${create ? "Created" : "Checked out"} branch ${name}`);
       })
       .catch((error: Error) => setStatus(error.message));
   };
@@ -1188,6 +1190,7 @@ export function App() {
     setStatus(`${stage ? "Staging" : "Unstaging"} hunk ${hunkHeader}`);
     postJson<{ ok: boolean }>("/api/git/stage-hunk", { path, hunk_header: hunkHeader, stage })
       .then(() => {
+        setStatus(`${stage ? "Staged" : "Unstaged"} hunk ${hunkHeader}`);
         loadGitStatus();
         loadGitDiff(path, gitDiffStaged);
       })

@@ -27,6 +27,20 @@ jobs:
           PYTHONPATH: src
         run: python -m unittest discover -s tests
 
+      - name: Run release confidence E2E gate
+        env:
+          PYTHONPATH: src
+        run: |
+          mkdir -p artifacts
+          python -m unittest tests.test_release_confidence_e2e > artifacts/release-confidence.txt
+          cat artifacts/release-confidence.txt
+
+      - name: Upload release confidence evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-confidence-evidence
+          path: artifacts/release-confidence.txt
+
   mission-control:
     name: Mission Control
     runs-on: ubuntu-latest
@@ -44,6 +58,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: apps/mission-control
         run: npm ci
+
+      - name: Validate Mission Control interactive controls
+        working-directory: apps/mission-control
+        run: npm run check:controls
 
       - name: Run Mission Control smoke tests
         working-directory: apps/mission-control

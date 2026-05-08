@@ -809,8 +809,8 @@ def _nemo_adapter(memory_db: Path | None) -> PersistentNemoAdapter | None:
 
 def _provider_mode(payload: dict[str, object]) -> str:
     provider = str(payload.get("provider") or "subprocess")
-    if provider != "subprocess":
-        raise _bad_request("provider must be subprocess", error_code="invalid_provider")
+    if provider not in {"subprocess", "fake"}:
+        raise _bad_request("provider must be subprocess or fake", error_code="invalid_provider")
     return provider
 
 
@@ -2449,26 +2449,43 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     )
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
     context_summary = _agent_context_summary(selected, changed_files, risk_flags, mergeable)
-    try:
-        response = _lmstudio_chat_completion(payload, message, context_summary)
+    if provider == "fake":
+        response = (
+            "[fake planner] Built an operational response using local Mission Control context. "
+            "Use the suggested action buttons to continue safely."
+        )
         tool_calls.append(
             {
                 "id": f"tool-{uuid4().hex[:8]}",
                 "name": "lmstudio.chat_completions",
-                "status": "completed",
-                "summary": f"Model={_chat_model(payload)} base_url={_chat_base_url(payload)}.",
+                "status": "skipped",
+                "summary": "Skipped real model call because provider=fake.",
             }
         )
-    except ValueError as error:
-        tool_calls.append(
-            {
-                "id": f"tool-{uuid4().hex[:8]}",
-                "name": "lmstudio.chat_completions",
-                "status": "failed",
-                "summary": str(error),
-            }
-        )
-        raise
+    else:
+        try:
+            response = _lmstudio_chat_completion(payload, message, context_summary)
+            tool_calls.append(
+                {
+                    "id": f"tool-{uuid4().hex[:8]}",
+                    "name": "lmstudio.chat_completions",
+                    "status": "completed",
+                    "summary": f"Model={_chat_model(payload)} base_url={_chat_base_url(payload)}.",
+                }
+            )
+        except ValueError as error:
+            tool_calls.append(
+                {
+                    "id": f"tool-{uuid4().hex[:8]}",
+                    "name": "lmstudio.chat_completions",
+                    "status": "failed",
+                    "summary": str(error),
+                }
+            )
+            response = (
+                "[real-mode fallback] LM Studio is unavailable right now. "
+                "I prepared safe next actions from Mission Control state so you can continue without blocking."
+            )
     return {
         "ok": True,
         "message": {

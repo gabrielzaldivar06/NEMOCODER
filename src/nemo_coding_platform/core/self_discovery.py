@@ -5,7 +5,12 @@ from pathlib import Path
 
 SELF_MOD_PERMISSION_TEMPLATE = {
     "write_file": {
-        "*": "allow",
+        "*": "deny",
+        "README.md": "allow",
+        "docs/**": "allow",
+        "src/**": "allow",
+        "tests/**": "allow",
+        "apps/mission-control/**": "allow",
         ".git/**": "deny",
         ".venv/**": "deny",
         "venv/**": "deny",

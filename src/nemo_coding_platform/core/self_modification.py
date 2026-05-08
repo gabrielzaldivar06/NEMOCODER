@@ -577,7 +577,7 @@ def self_mod_risk_flags(payload: dict[str, Any], permissions_file: str | Path) -
     for changed_file in changed_files:
         normalized = changed_file.replace("\\", "/")
         if ruleset.evaluate("write_file", normalized) != PermissionAction.ALLOW:
-            flags.append(f"permission_policy_warn_path:{normalized}")
+            flags.append(f"permission_denied_path:{normalized}")
         parts = set(Path(normalized).parts)
         if parts & {".git", ".venv", ".nemo-runtimes", "__pycache__"}:
             flags.append(f"protected_path_touched:{normalized}")
@@ -602,7 +602,7 @@ def _safe_name(value: str) -> str:
 
 
 def _blocking_self_mod_risks(risk_flags: tuple[str, ...]) -> bool:
-    blocking_prefixes = ("protected_path_touched:",)
+    blocking_prefixes = ("protected_path_touched:", "permission_denied_path:")
     blocking_values = {"tests_removed"}
     return any(flag in blocking_values or flag.startswith(blocking_prefixes) for flag in risk_flags)
 

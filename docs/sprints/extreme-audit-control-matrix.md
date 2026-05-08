@@ -17,10 +17,10 @@ Trace each critical UI control to handler, backend contract, and expected operat
 | Jobs | Pause/Resume/Cancel | controlJob | POST /api/job/pause, /api/job/resume, /api/job/cancel | job status transitions + logs | backend job tests |
 | Versioning | Refresh | loadGitStatus/loadGitBranches/loadGitRemotes | GET /api/git/status, /api/git/branches, /api/git/remotes | branch + working tree shown | smoke versioning navigation |
 | Versioning | Stage/Unstage file | stageGitPath | POST /api/git/stage | status refresh + updated staged markers | smoke: stage action call assertion + backend git-stage tests |
-| Versioning | Stage/Unstage hunk | stageGitHunk / applySelectedGitHunks | POST /api/git/stage-hunk | diff/hunk status changes | backend git-stage-hunk tests |
+| Versioning | Stage/Unstage hunk | stageGitHunk / applySelectedGitHunks | POST /api/git/stage-hunk | diff/hunk status changes | smoke: stage-hunk action call assertion + backend git-stage-hunk tests |
 | Versioning | Commit | commitGit | POST /api/git/commit | commit created + status refresh | smoke: commit action call assertion + backend git commit tests |
-| Versioning | Checkout/Create branch | checkoutGitBranch | POST /api/git/checkout | branch switch/create reflected | backend git checkout tests |
-| Versioning | Pull/Push | syncGit | POST /api/git/sync | sync output + status refresh | backend git sync tests |
+| Versioning | Checkout/Create branch | checkoutGitBranch | POST /api/git/checkout | branch switch/create reflected | smoke: checkout/create action assertion + backend git checkout tests |
+| Versioning | Pull/Push | syncGit | POST /api/git/sync | sync output + status refresh | smoke: push action assertion + sync-failure status assertion + backend git sync tests |
 | Terminal | Run command | runTerminal | POST /api/terminal/run | stdout/stderr + exit code + duration | backend terminal tests (error paths added) |
 | Browser | Open URL | openBrowserUrl | POST /api/browser/open | last_url/history updated | backend browser-open tests |
 | Browser | Search web | searchBrowserWeb | POST /api/browser/search | results list + search history + engine label | smoke: performs browser search |
@@ -50,7 +50,11 @@ Trace each critical UI control to handler, backend contract, and expected operat
 1. browser search missing Playwright dependency -> explicit ValueError propagation
 2. browser search timeout in execution runtime -> explicit ValueError propagation
 
+## Operability Gates Added in Iteration 4
+1. Mission Control dead-control gate: fail CI if any button in main shell lacks onClick.
+2. Frontend smoke expanded to cover checkout/create, push sync, stage hunk, and sync failure status.
+
 ## Next Iteration (Recommended)
-1. Extend frontend interaction tests for remaining Versioning actions (checkout/sync/hunk-stage) with status/error assertions.
-2. Add end-to-end click-through script to assert zero broken controls before release.
-3. Add CI gate to fail on any newly introduced dead interactive controls.
+1. Add end-to-end click-through script to assert zero broken controls before release.
+2. Extend backend negative-path coverage for git sync/checkout failure contracts.
+3. Add CI artifact report that exports control matrix evidence per run.

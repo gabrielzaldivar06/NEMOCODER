@@ -62,6 +62,8 @@ let currentStatePayload: any = statePayload;
 let gitStatusPayload: any = { repo_path: "c:/dev/dev4", branch: "main", ahead: 0, behind: 0, entries: [] };
 let gitBranchesPayload: any = { current: "main", branches: [{ name: "main", current: true }] };
 let gitRemotesPayload: any = { remotes: [{ name: "origin", fetch: "x", push: "x" }], default_remote: "origin", default_branch: "main" };
+let gitDiffPayload: any = { diff: "", stderr: "" };
+let gitSyncShouldFail = false;
 
 afterEach(() => {
   cleanup();
@@ -134,6 +136,8 @@ beforeEach(() => {
   gitStatusPayload = { repo_path: "c:/dev/dev4", branch: "main", ahead: 0, behind: 0, entries: [] };
   gitBranchesPayload = { current: "main", branches: [{ name: "main", current: true }] };
   gitRemotesPayload = { remotes: [{ name: "origin", fetch: "x", push: "x" }], default_remote: "origin", default_branch: "main" };
+  gitDiffPayload = { diff: "", stderr: "" };
+  gitSyncShouldFail = false;
   const asResponse = (payload: any, ok = true) => ({
     ok,
     json: async () => payload,
@@ -167,6 +171,21 @@ beforeEach(() => {
     }
     if (url.includes("/api/nemo")) {
       return asResponse(nemoPayload);
+    }
+    if (url.includes("/api/git/diff")) {
+      return asResponse(gitDiffPayload);
+    }
+    if (url.includes("/api/git/sync")) {
+      if (gitSyncShouldFail) {
+        return asResponse({ error: "git push failed" }, false);
+      }
+      return asResponse({ ok: true, stdout: "ok", stderr: "" });
+    }
+    if (url.includes("/api/git/checkout")) {
+      return asResponse({ ok: true, stdout: "ok", stderr: "" });
+    }
+    if (url.includes("/api/git/stage-hunk")) {
+      return asResponse({ ok: true });
     }
     if (url.includes("/api/browser/search")) {
       return asResponse({
@@ -261,5 +280,61 @@ describe("mission-control app", () => {
     const commitCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/api/git/commit"));
     expect(commitCall).toBeTruthy();
     expect((commitCall?.[1] as RequestInit | undefined)?.method).toBe("POST");
+  });
+
+  it("executes checkout create action from versioning panel", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByTitle(/Versionado/i));
+    fireEvent.change(await screen.findByPlaceholderText(/feature\/my-branch/i), { target: { value: "feature/smoke" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Create$/i }));
+
+    const fetchMock = vi.mocked(fetch);
+    const checkoutCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/api/git/checkout"));
+    expect(checkoutCall).toBeTruthy();
+    const body = JSON.parse(String((checkoutCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body.branch).toBe("feature/smoke");
+    expect(body.create).toBe(true);
+  });
+
+  it("executes push sync action from versioning panel", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByTitle(/Versionado/i));
+    fireEvent.click(await screen.findByRole("button", { name: /^Push$/i }));
+
+    const fetchMock = vi.mocked(fetch);
+    const syncCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/api/git/sync"));
+    expect(syncCall).toBeTruthy();
+    const body = JSON.parse(String((syncCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body.direction).toBe("push");
+  });
+
+  it("executes stage hunk action from versioning diff panel", async () => {
+    gitDiffPayload = {
+      diff: "@@ -1,1 +1,1 @@\n-old\n+new\n",
+      stderr: "",
+    };
+
+    render(<App />);
+    fireEvent.click(await screen.findByTitle(/Versionado/i));
+    fireEvent.change(await screen.findByPlaceholderText(/path opcional/i), { target: { value: "src/demo.py" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^Load diff$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Stage hunk$/i }));
+
+    const fetchMock = vi.mocked(fetch);
+    const stageHunkCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/api/git/stage-hunk"));
+    expect(stageHunkCall).toBeTruthy();
+    const body = JSON.parse(String((stageHunkCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body.path).toBe("src/demo.py");
+    expect(body.stage).toBe(true);
+  });
+
+  it("shows sync error status when git sync API fails", async () => {
+    gitSyncShouldFail = true;
+
+    render(<App />);
+    fireEvent.click(await screen.findByTitle(/Versionado/i));
+    fireEvent.click(await screen.findByRole("button", { name: /^Push$/i }));
+
+    expect(await screen.findByText(/git push failed/i)).toBeInTheDocument();
   });
 });
