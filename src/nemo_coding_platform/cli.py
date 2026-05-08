@@ -21,7 +21,7 @@ from nemo_coding_platform.core.mutations import FileWrite, MutationPlan, Quality
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, NemoCallResult, PersistentNemoAdapter, McpNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
 from nemo_coding_platform.core.orchestrator import DEFAULT_WORKFLOW, ReviewDecision, SupervisedWorkflowRunner
-from nemo_coding_platform.core.persistence import build_long_handoff_lineage, build_replay_summary, evaluate_long_handoff_continuation_policy, evaluate_long_handoff_memory_policy, load_headless_result_json, save_headless_result_json, summarize_persisted_result
+from nemo_coding_platform.core.persistence import build_long_handoff_lineage, build_replay_summary, evaluate_long_handoff_continuation_policy, evaluate_long_handoff_memory_policy, export_run_metrics, load_headless_result_json, save_headless_result_json, summarize_persisted_result
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
 from nemo_coding_platform.core.self_modification import SelfModRequest, SelfModTaskType, execute_self_modification, self_mod_apply, self_mod_impact, self_mod_review, self_mod_rollback, self_mod_similar_runs, self_mod_status, self_mod_trajectory
 from nemo_coding_platform.core.skills import find_skill_by_name
@@ -189,6 +189,9 @@ def build_parser() -> argparse.ArgumentParser:
     replay_run = subparsers.add_parser("replay-run-json", help="Build a replay summary for a persisted headless run JSON file")
     replay_run.add_argument("path")
     replay_run.add_argument("--json", action="store_true")
+    metrics_run = subparsers.add_parser("metrics-run-json", help="Export FR10 metrics for a persisted headless run JSON file")
+    metrics_run.add_argument("path")
+    metrics_run.add_argument("--json", action="store_true")
     review_run = subparsers.add_parser("review-run-json", help="Build a safe review-to-main merge plan from a persisted run JSON file")
     review_run.add_argument("path")
     review_run.add_argument("--save-plan", help="Write merge-plan.md to this path")
@@ -632,6 +635,25 @@ def main(argv: list[str] | None = None) -> int:
             for event in replay["events"]:
                 payload_ref = f" payload={event['payload_ref']}" if event.get("payload_ref") else ""
                 print(f"{event['sequence']}. {event['phase']}/{event['kind']}: {event['summary']}{payload_ref}")
+        return 0
+    if args.command == "metrics-run-json":
+        metrics = export_run_metrics(load_headless_result_json(args.path))
+        if args.json:
+            print(json.dumps(metrics, sort_keys=True))
+        else:
+            print(
+                " ".join(
+                    (
+                        f"task={metrics['task_id']}",
+                        f"run={metrics['run_id']}",
+                        f"success_rate={metrics['success_rate']}",
+                        f"validation_pass_rate={metrics['validation_pass_rate']}",
+                        f"override_rate={metrics['override_rate']}",
+                        f"stale_memory_incidents={metrics['stale_memory_incidents']}",
+                        f"tool_failure_rate={metrics['tool_failure_rate']}",
+                    )
+                )
+            )
         return 0
     if args.command == "review-run-json":
         plan = build_merge_plan(load_headless_result_json(args.path))

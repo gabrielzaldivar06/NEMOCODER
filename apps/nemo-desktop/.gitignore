@@ -8,7 +8,6 @@ dist/
 /src-tauri/target
 
 # Tauri
-tauri.conf.json
 tauri-icon.*
 
 # IDE

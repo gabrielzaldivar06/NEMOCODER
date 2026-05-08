@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from nemo_coding_platform.core.evals import score_headless_result
+from nemo_coding_platform.core.evals import build_run_metrics_report, score_headless_result
 
 
 def _json_value(value: Any) -> Any:
@@ -311,3 +311,8 @@ def evaluate_long_handoff_memory_policy(
         "reasons": reasons,
         "memory_links": links,
     }
+
+
+def export_run_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    """Export FR10 metrics for a persisted run payload."""
+    return build_run_metrics_report(payload).to_dict()

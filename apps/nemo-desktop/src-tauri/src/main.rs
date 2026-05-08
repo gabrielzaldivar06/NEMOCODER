@@ -8,6 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::process::{Command, Child};
+use std::path::Path;
 use std::thread;
 use std::time::Duration;
 use tauri::{generate_context, generate_handler};
@@ -75,7 +76,7 @@ async fn start_backend(state: tauri::State<'_, Arc<Mutex<BackendState>>>) -> Res
         .env("PYTHONUNBUFFERED", "1");
 
     // Start the process
-    let mut child = cmd.spawn()
+    let child = cmd.spawn()
         .map_err(|e| format!("Failed to start backend: {}", e))?;
 
     let pid = child.id();
@@ -215,13 +216,17 @@ async fn proxy_backend_request(
     let url = format!("http://localhost:8787{}", path);
 
     let client = reqwest::Client::new();
-    let request = match method.to_uppercase().as_str() {
+    let mut request = match method.to_uppercase().as_str() {
         "GET" => client.get(&url),
         "POST" => client.post(&url),
         "PUT" => client.put(&url),
         "DELETE" => client.delete(&url),
         _ => return Err("Unsupported HTTP method".to_string()),
     };
+
+    if let Some(payload) = body {
+        request = request.body(payload).header("Content-Type", "application/json");
+    }
 
     let response = request
         .send()
@@ -238,40 +243,47 @@ async fn proxy_backend_request(
 
 /// Helper: Find Python executable
 fn find_python_executable() -> Option<String> {
-    // Try to find python in PATH
-    let which_result = if cfg!(windows) {
-        Command::new("where").arg("python").output().ok()
+    // Prefer project-local virtual environments if present.
+    let local_venv_candidates: &[&str] = if cfg!(windows) {
+        &[
+            ".venv\\Scripts\\python.exe",
+            "..\\.venv\\Scripts\\python.exe",
+            "..\\..\\.venv\\Scripts\\python.exe",
+        ]
     } else {
-        Command::new("which").arg("python").output().ok()
+        &[
+            ".venv/bin/python",
+            "../.venv/bin/python",
+            "../../.venv/bin/python",
+        ]
     };
 
-    if let Some(output) = which_result {
-        if output.status.success() {
-            let path = String::from_utf8(output.stdout)
-                .ok()?
-                .trim()
-                .to_string();
-            if !path.is_empty() {
-                return Some(path);
-            }
+    for candidate in local_venv_candidates {
+        let path = Path::new(candidate);
+        if path.exists() {
+            return Some(path.to_string_lossy().to_string());
         }
     }
 
-    // Try python3
-    let which_result = if cfg!(windows) {
-        Command::new("where").arg("python3").output().ok()
-    } else {
-        Command::new("which").arg("python3").output().ok()
-    };
+    find_executable_in_path("python")
+        .or_else(|| find_executable_in_path("python3"))
+}
 
-    if let Some(output) = which_result {
-        if output.status.success() {
-            let path = String::from_utf8(output.stdout)
-                .ok()?
-                .trim()
-                .to_string();
-            if !path.is_empty() {
-                return Some(path);
+fn find_executable_in_path(name: &str) -> Option<String> {
+    let lookup = if cfg!(windows) {
+        Command::new("where").arg(name).output().ok()
+    } else {
+        Command::new("which").arg(name).output().ok()
+    }?;
+
+    if lookup.status.success() {
+        for line in String::from_utf8_lossy(&lookup.stdout).lines() {
+            let candidate = line.trim();
+            if !candidate.is_empty() {
+                let path = Path::new(candidate);
+                if path.exists() {
+                    return Some(path.to_string_lossy().to_string());
+                }
             }
         }
     }

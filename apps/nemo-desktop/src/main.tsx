@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { createRoot } from 'react-dom/client'
 import './index.css'
 import { useBackend, detectSetup, type AppSettings } from './services/backend'
 
@@ -142,3 +143,14 @@ export function App() {
 }
 
 export default App
+
+const rootElement = document.getElementById('root')
+if (!rootElement) {
+  throw new Error('Root element #root not found')
+}
+
+createRoot(rootElement).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+)
