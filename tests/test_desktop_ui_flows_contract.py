@@ -33,6 +33,12 @@ class DesktopUiFlowsContractTests(unittest.TestCase):
                     {
                         "provider": "subprocess",
                         "default_model": "nemo-model",
+                        "model_roles": {
+                            "planner": "nemo-model-plan",
+                            "editor": "nemo-model-edit",
+                            "reviewer": "nemo-model-review",
+                            "summarizer": "nemo-model-summary",
+                        },
                         "timeout_seconds": 45,
                     },
                 )
@@ -42,6 +48,10 @@ class DesktopUiFlowsContractTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["settings"]["provider"], "subprocess")
         self.assertEqual(payload["settings"]["default_model"], "nemo-model")
+        self.assertEqual(payload["settings"]["model_roles"]["planner"], "nemo-model-plan")
+        self.assertEqual(payload["settings"]["model_roles"]["editor"], "nemo-model-edit")
+        self.assertEqual(payload["settings"]["model_roles"]["reviewer"], "nemo-model-review")
+        self.assertEqual(payload["settings"]["model_roles"]["summarizer"], "nemo-model-summary")
         self.assertEqual(payload["settings"]["timeout_seconds"], 45)
 
     def test_connect_nemo_flow_returns_health_and_memory_shape(self) -> None:

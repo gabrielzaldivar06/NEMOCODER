@@ -1,0 +1,213 @@
+{
+  "legend": {
+    "aligned": "implemented with spec, contract tests, and code anchors",
+    "partial": "implemented core path exists, but one or more product-level expectations still need explicit hardening",
+    "missing": "no sufficient coverage yet"
+  },
+  "requirements": [
+    {
+      "id": "FR1",
+      "title": "Desktop App Shell",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/desktop-product-contract.md",
+        "docs/specs/desktop-ui-flows.md"
+      ],
+      "tests": [
+        "tests/test_desktop_product_contract.py",
+        "tests/test_desktop_ui_flows_contract.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/product.py:61",
+        "src/nemo_coding_platform/mission_control_server.py:999"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "FR2",
+      "title": "Local Model Provider",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/desktop-ui-flows.md",
+        "docs/specs/fr2-runtime-execution-contracts.md"
+      ],
+      "tests": [
+        "tests/test_desktop_ui_flows_contract.py",
+        "tests/test_model_config.py",
+        "tests/test_mission_control.py",
+        "tests/test_mission_control_server.py",
+        "tests/test_fr2_runtime_execution.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/model_config.py:10",
+        "src/nemo_coding_platform/core/model_config.py:29",
+        "src/nemo_coding_platform/core/role_execution_profile.py:1",
+        "src/nemo_coding_platform/core/engine_interface.py:69",
+        "src/nemo_coding_platform/mission_control_server.py:1059"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "FR3",
+      "title": "Aider-Quality Editing",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/quality-mutation-pipeline.md"
+      ],
+      "tests": [
+        "tests/test_quality_core_contract.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/mutations.py:24",
+        "src/nemo_coding_platform/core/mutations.py:37"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "FR4",
+      "title": "OpenCode-Style Workflow",
+      "status": "partial",
+      "specs": [
+        "docs/specs/task-run-model.md",
+        "docs/specs/headless-run-mvp.md",
+        "docs/specs/desktop-ui-flows.md"
+      ],
+      "tests": [
+        "tests/test_agent_runtime_contract.py",
+        "tests/test_desktop_ui_flows_contract.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/mission_control_server.py:2068",
+        "src/nemo_coding_platform/mission_control_server.py:1893"
+      ],
+      "gap": "deepen planner/builder/reviewer/subagent contract coverage"
+    },
+    {
+      "id": "FR5",
+      "title": "OpenHands-Style Autonomy",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/autonomy-model.md",
+        "docs/specs/full-handoff-autonomy.md"
+      ],
+      "tests": [
+        "tests/test_autonomy_policy_contract.py",
+        "tests/test_agent_runtime_contract.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/product.py:25",
+        "src/nemo_coding_platform/core/product.py:132"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "FR6",
+      "title": "NEMO Full Tool Integration",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/nemo-full-tooling.md",
+        "docs/specs/nemo-lifecycle.md"
+      ],
+      "tests": [
+        "tests/test_nemo_full_tool_contract.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/memory.py:73",
+        "src/nemo_coding_platform/core/memory.py:382",
+        "src/nemo_coding_platform/mission_control_server.py:1806"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "FR7",
+      "title": "MCP Extension Governance",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/mcp-extension-governance.md"
+      ],
+      "tests": [
+        "tests/test_mcp_server.py",
+        "tests/test_mcp_adapter.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/mcp_server.py:50",
+        "src/nemo_coding_platform/mcp_server.py:90",
+        "src/nemo_coding_platform/mcp_server.py:205"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "FR8",
+      "title": "Artifact Trace",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/task-run-model.md",
+        "docs/specs/desktop-ui-flows.md"
+      ],
+      "tests": [
+        "tests/test_desktop_ui_flows_contract.py",
+        "tests/test_agent_runtime_contract.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/task_run.py:76",
+        "src/nemo_coding_platform/core/review_package.py:82",
+        "src/nemo_coding_platform/core/persistence.py:84"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "FR9",
+      "title": "Autonomous Background Tasks",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/autonomy-model.md",
+        "docs/specs/full-handoff-autonomy.md",
+        "docs/specs/worktree-runtime.md"
+      ],
+      "tests": [
+        "tests/test_agent_runtime_contract.py",
+        "tests/test_desktop_ui_flows_contract.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/mission_control_server.py:2068",
+        "src/nemo_coding_platform/mission_control_server.py:2085",
+        "src/nemo_coding_platform/mission_control_server.py:2089"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "FR10",
+      "title": "Evaluation and Replay",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/agent-evals.md"
+      ],
+      "tests": [
+        "tests/test_agent_evals_contract.py",
+        "tests/test_evals_export.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/evals.py:147",
+        "src/nemo_coding_platform/core/persistence.py:84",
+        "src/nemo_coding_platform/core/persistence.py:316",
+        "src/nemo_coding_platform/cli.py:639"
+      ],
+      "gap": "none"
+    }
+  ],
+  "definition_of_done": {
+    "FR2": [
+      "model roles planner/editor/reviewer/summarizer are configurable and validated",
+      "role-specific connection/error handling is contract-tested"
+    ],
+    "FR4": [
+      "planner/builder/reviewer and specialized subagent permission contracts are executable",
+      "plan mode write prohibition and review gate invariants are covered by tests"
+    ],
+    "FR7": [
+      "risky MCP actions are review-gated in central dispatcher",
+      "denied actions return deterministic policy errors and are audit-traceable",
+      "registry risk metadata is surfaced in MCP tool definitions"
+    ]
+  }
+}

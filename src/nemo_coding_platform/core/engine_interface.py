@@ -11,6 +11,7 @@ from typing import Protocol
 
 from nemo_coding_platform.core.model_config import ModelProfile, default_model_profile
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan, QualityMutationEngine
+from nemo_coding_platform.core.role_execution_profile import default_execution_profile_for_role
 from nemo_coding_platform.core.runtime_diff import diff_snapshots, snapshot_path
 from nemo_coding_platform.core.workspace import mask_host_paths
 
@@ -113,6 +114,7 @@ class MutationRequest:
     previous_diff: str = ""
     skill_prompt: str = ""
     image_path: str = ""
+    role: str = ""  # Optional role (planner, editor, reviewer, summarizer) for role-specific timeout/error handling
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +142,7 @@ class MutationResult:
     diff_artifact: str = ""
     duration_ms: int = 0
     token_usage: TokenUsage | None = None
+    role: str = ""  # Role (planner, editor, reviewer, summarizer) that performed this mutation
 
 
 class EngineProvider(Protocol):
@@ -234,6 +237,12 @@ class SubprocessEngineProvider:
         message_file = write_engine_message(cwd, request)
         command = self.command or build_default_engine_command(profile, message_file)
 
+        # Determine effective timeout: apply role-specific constraints if role is specified
+        effective_timeout = request.timeout_seconds
+        if request.role:
+            role_profile = default_execution_profile_for_role(request.role, "subprocess")
+            effective_timeout = role_profile.effective_timeout_seconds
+
         root = _repo_root()
         embedded_runtime = str(root / "product" / "nemo_code_runtime")
         project_src = str(root / "src")
@@ -251,7 +260,7 @@ class SubprocessEngineProvider:
                 shell=False,
                 capture_output=True,
                 text=True,
-                timeout=request.timeout_seconds,
+                timeout=effective_timeout,
                 check=False,
                 env={
                     **environ,
@@ -271,7 +280,7 @@ class SubprocessEngineProvider:
         except subprocess.TimeoutExpired as error:
             self.last_returncode = None
             self.last_stdout = (error.stdout or "").strip() if isinstance(error.stdout, str) else ""
-            self.last_stderr = f"subprocess timed out after {request.timeout_seconds} seconds"
+            self.last_stderr = f"subprocess timed out after {effective_timeout} seconds (role={request.role or 'none'})"
             return MutationPlan(writes=())
         self.last_returncode = completed.returncode
         self.last_stdout = completed.stdout.strip()
@@ -323,4 +332,5 @@ def apply_mutation_request(engine: QualityMutationEngine, provider: EngineProvid
         runtime_diff.unified_diff,
         elapsed,
         token_usage,
+        request.role,
     )

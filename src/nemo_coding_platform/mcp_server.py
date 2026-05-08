@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
+from datetime import datetime, timezone
 
 from nemo_coding_platform.core.memory import NEMO_TOOL_REGISTRY
 from nemo_coding_platform.core.nemo_lifecycle import lifecycle_contract, NemoLifecyclePhase
@@ -12,6 +15,92 @@ from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool, mcp_get_
 
 
 NEMOCODE_TOOL_PREFIX = "nemocode."
+NEMO_TOOLS_BY_NAME = {tool.name: tool for tool in NEMO_TOOL_REGISTRY}
+
+# Static tools not represented in NEMO_TOOL_REGISTRY still need explicit governance.
+STATIC_TOOL_RISK: dict[str, str] = {
+    "nemocode.run_headless": "memory_write",
+    "nemocode.self_modify": "destructive",
+    "nemocode.self_mod_apply": "destructive",
+    "nemocode.self_mod_rollback": "destructive",
+    "nemocode.record_self_mod_decision": "memory_write",
+    "nemocode.record_self_mod_feedback": "memory_write",
+    "nemocode.learn_from_self_mod_failure": "memory_write",
+    "nemocode.mark_portfolio_effective": "memory_write",
+}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    if isinstance(value, (int, float)):
+        return value != 0
+    return False
+
+
+def _tool_risk(tool_name: str) -> str:
+    if not isinstance(tool_name, str):
+        return "unknown"
+    if tool_name in STATIC_TOOL_RISK:
+        return STATIC_TOOL_RISK[tool_name]
+    if tool_name.startswith(NEMOCODE_TOOL_PREFIX):
+        logical_name = tool_name.removeprefix(NEMOCODE_TOOL_PREFIX)
+        tool = NEMO_TOOLS_BY_NAME.get(logical_name)
+        if tool:
+            return tool.risk.value
+    return "unknown"
+
+
+def _approval_required(risk: str) -> bool:
+    # Scheduling and destructive actions are always review-gated.
+    # Unknown risk is conservative and requires explicit approval.
+    return risk in {"scheduling_write", "destructive", "unknown"}
+
+
+def tool_policy_decision(tool_name: str, tool_args: dict[str, Any] | None = None) -> dict[str, Any]:
+    args = tool_args if isinstance(tool_args, dict) else {}
+    risk = _tool_risk(tool_name)
+    approval_required = _approval_required(risk)
+    approved = _truthy(args.get("approve_review"))
+    allowed = (not approval_required) or approved
+    reason = "allowed"
+    if approval_required and not approved:
+        reason = (
+            f"approval required for risky MCP action: tool={tool_name} risk={risk}. "
+            "Pass approve_review=true to proceed."
+        )
+    return {
+        "tool": tool_name,
+        "risk": risk,
+        "approval_required": approval_required,
+        "approved": approved,
+        "allowed": allowed,
+        "reason": reason,
+    }
+
+
+def _audit_log_path() -> Path:
+    configured = os.environ.get("NEMOCODE_MCP_AUDIT_LOG", ".nemo-runtimes/mcp/tool-audit.jsonl")
+    return Path(configured)
+
+
+def _persist_tool_call_audit(request_id: Any, decision: dict[str, Any], outcome: str) -> None:
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "outcome": outcome,
+        "tool_call_audit": decision,
+    }
+    path = _audit_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+    except OSError:
+        # Audit write failures must not block MCP request handling.
+        return
 
 
 class MCPServerHandler(BaseHTTPRequestHandler):
@@ -108,18 +197,35 @@ class MCPServerHandler(BaseHTTPRequestHandler):
             elif method == "tools/call":
                 tool_name = params.get("name")
                 tool_args = params.get("arguments", {})
-                if tool_name in self.TOOLS:
+                decision = tool_policy_decision(str(tool_name or ""), tool_args if isinstance(tool_args, dict) else {})
+                if not decision["allowed"]:
+                    _persist_tool_call_audit(request_id, decision, "denied")
+                    response = self._json_rpc_error(request_id, -32003, str(decision["reason"]), data={"tool_call_audit": decision})
+                elif tool_name in self.TOOLS:
                     result = self.TOOLS[tool_name](**tool_args)
+                    payload = {
+                        "ok": True,
+                        "tool_call_audit": decision,
+                        "result": result,
+                    }
+                    _persist_tool_call_audit(request_id, decision, "allowed")
                     response = self._json_rpc_success(request_id, {
-                        "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
+                        "content": [{"type": "text", "text": json.dumps(payload, indent=2)}]
                     })
                 elif tool_name in self.NEMO_TOOL_NAMES:
                     nemo_tool_name = tool_name.removeprefix(NEMOCODE_TOOL_PREFIX)
                     result = mcp_call_nemo_tool(nemo_tool_name, **tool_args)
+                    payload = {
+                        "ok": True,
+                        "tool_call_audit": decision,
+                        "result": result,
+                    }
+                    _persist_tool_call_audit(request_id, decision, "allowed")
                     response = self._json_rpc_success(request_id, {
-                        "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
+                        "content": [{"type": "text", "text": json.dumps(payload, indent=2)}]
                     })
                 else:
+                    _persist_tool_call_audit(request_id, decision, "not_found")
                     response = self._json_rpc_error(request_id, -32601, f"Tool not found: {tool_name}")
             else:
                 # Silently ignore notifications or unsupported methods for now
@@ -139,8 +245,11 @@ class MCPServerHandler(BaseHTTPRequestHandler):
     def _json_rpc_success(self, request_id: Any, result: Any) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
-    def _json_rpc_error(self, request_id: Any, code: int, message: str) -> dict[str, Any]:
-        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+    def _json_rpc_error(self, request_id: Any, code: int, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        error: dict[str, Any] = {"code": code, "message": message}
+        if isinstance(data, dict) and data:
+            error["data"] = data
+        return {"jsonrpc": "2.0", "id": request_id, "error": error}
 
 
 def mcp_tool_definitions() -> list[dict[str, Any]]:
@@ -354,14 +463,20 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
 
 def _nemo_tool_definition(tool: Any) -> dict[str, Any]:
     allowed_lifecycle_phases = [phase.value for phase in NemoLifecyclePhase if tool.name in lifecycle_contract(phase).tool_names]
+    risk = tool.risk.value
     return {
         "name": f"{NEMOCODE_TOOL_PREFIX}{tool.name}",
         "description": tool.purpose,
+        "annotations": {
+            "risk": risk,
+            "approval_required": _approval_required(risk),
+        },
         "inputSchema": {
             "type": "object",
             "properties": {
                 "lifecycle_phase": {"type": "string", "enum": allowed_lifecycle_phases},
                 "memory_db": {"type": "string"},
+                "approve_review": {"type": "boolean"},
             },
             "additionalProperties": True,
         },

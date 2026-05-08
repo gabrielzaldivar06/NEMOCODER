@@ -61,6 +61,7 @@ type MissionState = {
     default_model: string;
     provider: string;
     memory_db: string;
+    nemo_mcp_url?: string;
     runtime_path: string;
     timeout_seconds: number;
     max_runtime_minutes: number;
@@ -205,6 +206,17 @@ type NemoState = {
   evidence: NemoEvidence[];
   feedback: NemoFeedback[];
 };
+type NemoMcpWatcherState = {
+  ok: boolean;
+  configured: boolean;
+  active: boolean;
+  status: string;
+  url: string;
+  latency_ms?: number;
+  http_status?: number;
+  error?: string;
+  checked_at?: string;
+};
 type SelfModInsights = {
   ok: boolean;
   trajectory: {
@@ -235,6 +247,9 @@ type SelfModInsights = {
   };
   similar_runs: { query: string; count: number; runs: Array<{ id: string; content: string; tags: string[]; importance: number; evidence_handle: string | null; score: number }> };
 };
+
+type RiskPattern = { id: string; content: string; importance: number; topic: string; tags: string[]; score: number };
+type RiskMapState = { ok: boolean; enabled: boolean; patterns: RiskPattern[]; count: number };
 
 type TerminalRunResult = {
   ok: boolean;
@@ -365,6 +380,7 @@ const initialState: MissionState = {
     default_model: "nvidia.agentic.coder-4b",
     provider: "subprocess",
     memory_db: ".nemo-runtimes/nemo-memory.sqlite",
+    nemo_mcp_url: "http://127.0.0.1:8765/mcp/sse",
     runtime_path: "c:/dev/dev4/.nemo-runtimes",
     timeout_seconds: 120,
     max_runtime_minutes: 120,
@@ -419,7 +435,9 @@ export function App() {
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [filePreview, setFilePreview] = useState<FilePreview | null>(null);
   const [nemoState, setNemoState] = useState<NemoState | null>(null);
+  const [nemoMcpStatus, setNemoMcpStatus] = useState<NemoMcpWatcherState | null>(null);
   const [selfInsights, setSelfInsights] = useState<SelfModInsights | null>(null);
+  const [riskMap, setRiskMap] = useState<RiskMapState | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<MissionState["settings"]>(initialState.settings);
   const [repoDraft, setRepoDraft] = useState<string>(initialState.repo_path);
   const [cloneDraft, setCloneDraft] = useState({ url: "", destination: "" });
@@ -570,6 +588,12 @@ export function App() {
       .catch(() => setNemoState(null));
   };
 
+  const loadNemoMcpStatus = () => {
+    postJson<NemoMcpWatcherState>("/api/nemo/mcp-status", { nemo_mcp_url: settingsDraft.nemo_mcp_url || "" })
+      .then((payload) => setNemoMcpStatus(payload))
+      .catch(() => setNemoMcpStatus(null));
+  };
+
   const loadSelfInsights = (run: MissionRun | undefined) => {
     if (!run) {
       setSelfInsights(null);
@@ -578,6 +602,12 @@ export function App() {
     postJson<SelfModInsights>("/api/self-mod/insights", { source_json: run.source_json })
       .then((payload) => setSelfInsights(payload))
       .catch(() => setSelfInsights(null));
+  };
+
+  const loadRiskMap = () => {
+    postJson<RiskMapState>("/api/nemo/risk-map", { limit: 20 })
+      .then((payload) => setRiskMap(payload))
+      .catch(() => setRiskMap(null));
   };
 
   const selectRun = (run: MissionRun) => {
@@ -891,7 +921,7 @@ export function App() {
         setState(nextState);
         setSettingsDraft(nextState.settings);
         setRepoDraft(nextState.repo_path);
-        setActiveSection("runs");
+        setActiveSection(nextState.runs.length > 0 ? "runs" : "home");
         setStatus(`Opened repo: ${nextState.repo_path}`);
       })
       .catch((error: Error) => {
@@ -912,7 +942,7 @@ export function App() {
         setSettingsDraft(nextState.settings);
         setRepoDraft(nextState.repo_path);
         setCloneDraft({ url: "", destination: "" });
-        setActiveSection("runs");
+        setActiveSection(nextState.runs.length > 0 ? "runs" : "home");
         setStatus(`Cloned and opened repo: ${nextState.repo_path}`);
       })
       .catch((error: Error) => {
@@ -1238,6 +1268,8 @@ export function App() {
     refreshApplyHistory();
     loadBrowserState();
     loadExtensions();
+    loadNemoMcpStatus();
+    loadRiskMap();
   }, []);
 
   useEffect(() => {
@@ -1254,10 +1286,24 @@ export function App() {
   }, [selectedRunSource]);
 
   useEffect(() => {
+    // Avoid landing on an empty runs canvas when the workspace has no runs yet.
+    if (activeSection === "runs" && state.runs.length === 0) {
+      setActiveSection("home");
+    }
+  }, [activeSection, state.runs.length]);
+
+  useEffect(() => {
     if (!activeJob || !["starting", "running"].includes(activeJob.status)) return;
     const timer = window.setInterval(() => pollJob(activeJob), 1500);
     return () => window.clearInterval(timer);
   }, [activeJob?.job_id, activeJob?.status]);
+
+  useEffect(() => {
+    loadNemoMcpStatus();
+    const intervalMs = settingsDraft.nemo_mcp_url?.trim() ? 6000 : 15000;
+    const timer = window.setInterval(() => loadNemoMcpStatus(), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [settingsDraft.nemo_mcp_url]);
 
   return (
     <main className="ide-shell">
@@ -1288,6 +1334,7 @@ export function App() {
           onOpenRepo={openRepo}
           busy={repoBusy}
           error={repoError}
+          activeRepo={state.repo_path}
         />
 
         <section className="run-tree">
@@ -1339,6 +1386,7 @@ export function App() {
           onOpenComposer={() => setComposerOpen(true)}
           onOpenMemory={openMemorySection}
           running={agentBusy}
+          onSelectRun={(run) => { selectRun(run); setActiveSection("runs"); }}
         />}
 
         {activeSection === "runs" && <>
@@ -1377,6 +1425,7 @@ export function App() {
               onSend={sendAgentMessage}
               onRunAction={runAgentAction}
               nemoState={nemoState}
+              mcpWatcher={nemoMcpStatus}
               selfInsights={selfInsights}
               settingsDraft={settingsDraft}
               onSettingsChange={setSettingsDraft}
@@ -1393,6 +1442,7 @@ export function App() {
               onCleanup={cleanupArtifacts}
               orphanCleanupResult={orphanCleanupResult}
               onCleanupOrphans={cleanupOrphanJobs}
+              onRefreshMcpWatcher={loadNemoMcpStatus}
               onSendGuidedPrompt={sendGuidedAgentPrompt}
               showSettingsPanel={false}
             />
@@ -1462,7 +1512,7 @@ export function App() {
           onReload={loadExtensions}
         />}
 
-        {activeSection === "memory" && <div className="section-surface"><NemoMemoryPanel nemoState={nemoState} /></div>}
+        {activeSection === "memory" && <div className="section-surface"><NemoMemoryPanel nemoState={nemoState} mcpWatcher={nemoMcpStatus} /></div>}
 
         {activeSection === "settings" && <div className="section-surface">
           <RepoSettingsPanel
@@ -1480,6 +1530,8 @@ export function App() {
             onCleanup={cleanupArtifacts}
             orphanCleanupResult={orphanCleanupResult}
             onCleanupOrphans={cleanupOrphanJobs}
+            mcpWatcher={nemoMcpStatus}
+            onRefreshMcpWatcher={loadNemoMcpStatus}
           />
         </div>}
 
@@ -1489,7 +1541,7 @@ export function App() {
   );
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, provider, messages, onDraftChange, onSubmit, onProviderChange, onOpenComposer, onOpenMemory, running }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; status: string; draft: string; provider: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, provider, messages, onDraftChange, onSubmit, onProviderChange, onOpenComposer, onOpenMemory, running, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; status: string; draft: string; provider: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; onSelectRun: (run: MissionRun) => void }) {
   const recentRuns = state.runs.slice(0, 4);
   const visibleMessages = messages.slice(-4);
   const atomCount = nemoState?.health.atom_count ?? 0;
@@ -1561,6 +1613,17 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, 
             </div>
           ))}
         </div>
+        {state.approval_queue.length > 0 && (
+          <div className="home-approval-queue">
+            <strong><ChevronDown size={14} /> Approval Queue <span className="queue-count">{state.approval_queue.length}</span></strong>
+            {state.approval_queue.map((run) => (
+              <button key={run.source_json} className={`queue-item tone-${statusTone(run.review_status)}`} onClick={() => onSelectRun(run)} title={run.objective}>
+                <span className="queue-item-objective">{run.objective}</span>
+                <span className={`pill ${statusTone(run.review_status)}`}>{statusLabel(run.review_status)}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="working-strip"><span>{status}</span><span title="Notificaciones"><Bell size={14} /></span></div>
       </aside>
     </section>
@@ -1727,6 +1790,7 @@ type AgentPaneProps = {
   onSend: () => void;
   onRunAction: (action: AgentAction) => void;
   nemoState: NemoState | null;
+  mcpWatcher: NemoMcpWatcherState | null;
   selfInsights: SelfModInsights | null;
   settingsDraft: MissionState["settings"];
   onSettingsChange: (settings: MissionState["settings"]) => void;
@@ -1743,6 +1807,7 @@ type AgentPaneProps = {
   onCleanup: (dryRun: boolean) => void;
   orphanCleanupResult: OrphanCleanupResult | null;
   onCleanupOrphans: (dryRun: boolean) => void;
+  onRefreshMcpWatcher: () => void;
   onSendGuidedPrompt: (prompt: string) => void;
   showSettingsPanel?: boolean;
 };
@@ -1891,7 +1956,7 @@ function AutopilotFlowPanel({
   );
 }
 
-function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onSendGuidedPrompt, showSettingsPanel = true }: AgentPaneProps) {
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, showSettingsPanel = true }: AgentPaneProps) {
   return (
     <aside className="agent-pane">
       <div className="panel-title"><Bot size={16} /> Control del Agente</div>
@@ -1947,7 +2012,8 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
       </> : <EmptyState />}
 
       <SelfImprovementPanel insights={selfInsights} />
-      <NemoMemoryPanel nemoState={nemoState} />
+      <RiskMapPanel riskMap={riskMap} onRefresh={loadRiskMap} />
+      <NemoMemoryPanel nemoState={nemoState} mcpWatcher={mcpWatcher} />
 
       <ReviewPlanPanel plan={reviewPlan} />
       <ApplyHistoryPanel applies={applyHistory} />
@@ -1966,21 +2032,74 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
         onCleanup={onCleanup}
         orphanCleanupResult={orphanCleanupResult}
         onCleanupOrphans={onCleanupOrphans}
+        mcpWatcher={mcpWatcher}
+        onRefreshMcpWatcher={onRefreshMcpWatcher}
       />}
     </aside>
   );
 }
 
-function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo, busy, error }: { repos: string[]; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; busy: boolean; error: string }) {
+function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo, busy, error, activeRepo }: { repos: string[]; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; busy: boolean; error: string; activeRepo?: string }) {
+  const [pendingPath, setPendingPath] = React.useState<string | null>(null);
+
+  const confirmAndOpen = React.useCallback((path: string) => {
+    const folderName = path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? path;
+    const confirmed = window.confirm(
+      `⚠️ Cambiar workspace del agente\n\n` +
+      `Carpeta seleccionada:\n${path}\n\n` +
+      `El agente tendrá acceso completo para MODIFICAR, CREAR y ELIMINAR archivos en esta carpeta.\n\n` +
+      `¿Confirmas que quieres establecer "${folderName}" como workspace activo?`
+    );
+    if (confirmed) {
+      onRepoDraftChange(path);
+      onOpenRepo(path);
+    }
+    setPendingPath(null);
+  }, [onRepoDraftChange, onOpenRepo]);
+
+  const pickFolder = React.useCallback(() => {
+    if (window.parent !== window) {
+      const handler = (event: MessageEvent) => {
+        if (event.data?.type !== 'pick-folder-result') return;
+        window.removeEventListener('message', handler);
+        if (event.data.path) confirmAndOpen(event.data.path);
+      };
+      window.addEventListener('message', handler);
+      window.parent.postMessage({ type: 'pick-folder' }, '*');
+    }
+  }, [confirmAndOpen]);
+
+  const handleOpenCurrent = React.useCallback(() => {
+    if (repoDraft) confirmAndOpen(repoDraft);
+  }, [repoDraft, confirmAndOpen]);
+
+  const activeFolder = activeRepo ? (activeRepo.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? activeRepo) : null;
+
   return (
     <section className="repo-strip">
       <div className="section-heading"><ChevronDown size={14} /> Workspace</div>
+      {activeRepo && (
+        <div className="workspace-active-badge" title={activeRepo}>
+          <HardDrive size={12} />
+          <span className="workspace-active-name">{activeFolder}</span>
+          <span className="workspace-active-access">acceso completo</span>
+        </div>
+      )}
       <div className="repo-open-row">
         <input value={repoDraft} onChange={(event) => onRepoDraftChange(event.target.value)} placeholder="c:/dev/repo" />
-        <button className="repo-item" onClick={() => onOpenRepo()} disabled={busy} title="Open repo"><HardDrive size={14} /> {busy ? "Abriendo" : "Abrir"}</button>
+        {window.parent !== window && (
+          <button className="repo-item repo-item-folder" onClick={pickFolder} disabled={busy} title="Seleccionar carpeta con selector nativo"><HardDrive size={14} /></button>
+        )}
+        <button className="repo-item" onClick={handleOpenCurrent} disabled={busy || !repoDraft} title="Establecer como workspace del agente">{busy ? "Abriendo…" : "Usar"}</button>
       </div>
       {error && <div className="repo-error">{error}</div>}
-      {repos.map((repo) => <button className="repo-item" key={repo} onClick={() => onOpenRepo(repo)} disabled={busy} title="Open repo"><HardDrive size={14} /> {repo}</button>)}
+      {repos.length > 0 && <div className="repo-recents-label">Recientes</div>}
+      {repos.map((repo) => (
+        <button className={`repo-item repo-recent ${repo === activeRepo ? 'repo-active' : ''}`} key={repo} onClick={() => confirmAndOpen(repo)} disabled={busy} title={repo}>
+          <HardDrive size={12} /> {repo.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? repo}
+          {repo === activeRepo && <span className="repo-active-dot" />}
+        </button>
+      ))}
     </section>
   );
 }
@@ -2229,6 +2348,31 @@ function ExtensionsPanel({ items, busy, onToggle, onReload }: { items: Extension
   );
 }
 
+function RiskMapPanel({ riskMap, onRefresh }: { riskMap: RiskMapState | null; onRefresh: () => void }) {
+  const patterns = riskMap?.patterns ?? [];
+  return (
+    <section className="self-improve-panel">
+      <div className="panel-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}><AlertTriangle size={16} /> Risk Map</span>
+        <button onClick={onRefresh} title="Reload risk patterns" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><RefreshCw size={13} /></button>
+      </div>
+      {!riskMap ? (
+        <span className="empty-inline">Loading risk patterns…</span>
+      ) : !riskMap.enabled ? (
+        <span className="empty-inline">NEMO memory not configured.</span>
+      ) : patterns.length === 0 ? (
+        <span className="empty-inline">No risk patterns yet. They accumulate after repair failures.</span>
+      ) : (
+        <NemoSection title={`${riskMap.count} known risk pattern(s)`} empty="">
+          {patterns.map((p) => (
+            <NemoLine key={p.id} tone="correction" value={p.content} meta={`importance ${p.importance}${p.topic ? ` / ${p.topic}` : ""}`} />
+          ))}
+        </NemoSection>
+      )}
+    </section>
+  );
+}
+
 function SelfImprovementPanel({ insights }: { insights: SelfModInsights | null }) {
   const trajectory = insights?.trajectory;
   const impact = insights?.impact;
@@ -2316,8 +2460,10 @@ function ApplyHistoryPanel({ applies }: { applies: ApplyHistoryItem[] }) {
   );
 }
 
-function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans }: { state: MissionState; settings: MissionState["settings"]; onSettingsChange: (settings: MissionState["settings"]) => void; onSaveSettings: () => void; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; cloneDraft: { url: string; destination: string }; onCloneDraftChange: (draft: { url: string; destination: string }) => void; onCloneRepo: () => void; cleanupResult: CleanupResult | null; onCleanup: (dryRun: boolean) => void; orphanCleanupResult: OrphanCleanupResult | null; onCleanupOrphans: (dryRun: boolean) => void }) {
+function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, mcpWatcher, onRefreshMcpWatcher }: { state: MissionState; settings: MissionState["settings"]; onSettingsChange: (settings: MissionState["settings"]) => void; onSaveSettings: () => void; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; cloneDraft: { url: string; destination: string }; onCloneDraftChange: (draft: { url: string; destination: string }) => void; onCloneRepo: () => void; cleanupResult: CleanupResult | null; onCleanup: (dryRun: boolean) => void; orphanCleanupResult: OrphanCleanupResult | null; onCleanupOrphans: (dryRun: boolean) => void; mcpWatcher: NemoMcpWatcherState | null; onRefreshMcpWatcher: () => void }) {
   const update = (key: keyof MissionState["settings"], value: string | number | boolean | string[]) => onSettingsChange({ ...settings, [key]: value });
+  const watcherTone = mcpWatcher?.active ? "ready" : "blocked";
+  const watcherLabel = mcpWatcher?.status ?? "loading";
   return (
     <section className="ops-panel settings-editor">
       <div className="panel-title"><Settings size={16} /> Ajustes</div>
@@ -2325,6 +2471,15 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
       <label>Modelo<input value={settings.default_model} onChange={(event) => update("default_model", event.target.value)} /></label>
       <label>Modo del agente<select value={settings.provider} onChange={(event) => update("provider", event.target.value)}><option value="subprocess">Real con LM Studio</option></select></label>
       <label>Base de memoria NEMO<input value={settings.memory_db} onChange={(event) => update("memory_db", event.target.value)} /></label>
+      <label>URL MCP NEMO (SSE)<input value={settings.nemo_mcp_url || ""} onChange={(event) => update("nemo_mcp_url", event.target.value)} placeholder="http://localhost:8765/mcp/sse" /></label>
+      <div className={`mcp-watcher ${watcherTone}`}>
+        <div>
+          <strong>MCP watcher</strong>
+          <span>{watcherLabel}{mcpWatcher?.latency_ms !== undefined ? ` / ${mcpWatcher.latency_ms} ms` : ""}</span>
+          {mcpWatcher?.error && <small>{mcpWatcher.error}</small>}
+        </div>
+        <button onClick={onRefreshMcpWatcher}><RefreshCw size={14} /> Comprobar</button>
+      </div>
       <label>Carpeta runtime<input value={settings.runtime_path} onChange={(event) => update("runtime_path", event.target.value)} /></label>
       <label>Nivel de validacion<select value={settings.validation_policy} onChange={(event) => update("validation_policy", event.target.value)}><option value="none">ninguna</option><option value="smoke">rapida</option><option value="targeted">dirigida</option><option value="full">completa</option></select></label>
       <div className="settings-grid">
@@ -2360,7 +2515,7 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
   );
 }
 
-function NemoMemoryPanel({ nemoState }: { nemoState: NemoState | null }) {
+function NemoMemoryPanel({ nemoState, mcpWatcher }: { nemoState: NemoState | null; mcpWatcher: NemoMcpWatcherState | null }) {
   const portfolioLines = (nemoState?.context_portfolio?.context ?? "").split("\n").filter(Boolean).slice(0, 8);
   const usedMemories = nemoState?.used_memories.length ? nemoState.used_memories : [];
   const corrections = nemoState?.corrections ?? [];
@@ -2374,6 +2529,11 @@ function NemoMemoryPanel({ nemoState }: { nemoState: NemoState | null }) {
         <strong>{nemoState?.health.atom_count ?? 0}</strong><small>atoms</small>
         <strong>{nemoState?.health.evidence_count ?? 0}</strong><small>evidence</small>
         <strong>{nemoState?.health.feedback_count ?? 0}</strong><small>feedback</small>
+      </div>
+      <div className="nemo-health">
+        <span className={mcpWatcher?.active ? "ready" : "blocked"}>mcp {mcpWatcher?.status ?? "loading"}</span>
+        <strong>{mcpWatcher?.configured ? "configured" : "not set"}</strong><small>remote</small>
+        <strong>{mcpWatcher?.latency_ms ?? 0}</strong><small>ms</small>
       </div>
       <NemoSection title="Context portfolio" empty="No portfolio compiled yet.">
         {portfolioLines.map((line, index) => <NemoLine key={`${line}-${index}`} tone="portfolio" value={line} />)}
@@ -2561,5 +2721,9 @@ function EmptyState() {
 
 const rootElement = document.getElementById("root");
 if (rootElement) {
-  createRoot(rootElement).render(<App />);
+  type MissionControlWindow = Window & { __missionControlRoot?: ReturnType<typeof createRoot> };
+  const missionControlWindow = window as MissionControlWindow;
+  const missionControlRoot = missionControlWindow.__missionControlRoot ?? createRoot(rootElement);
+  missionControlWindow.__missionControlRoot = missionControlRoot;
+  missionControlRoot.render(<App />);
 }

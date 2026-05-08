@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nemo_coding_platform.core.model_config import default_model_role_profile
 from nemo_coding_platform.core.persistence import load_headless_result_json, summarize_persisted_result
 from nemo_coding_platform.core.review_gate import build_merge_plan
 
@@ -220,9 +221,16 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
     runs.sort(key=lambda item: (_source_mtime(item), item.source_json), reverse=True)
     review_queue = [run for run in runs if run.review_status in {"awaiting_review", "blocked"}]
     repos = sorted({run.repo_path for run in runs if run.repo_path} | {str(repo)} | set(recent_repos))
+    role_models = default_model_role_profile("nvidia.agentic.coder-4b")
     state_settings = {
         "model_base_url": "http://localhost:1234/v1",
         "default_model": "nvidia.agentic.coder-4b",
+        "model_roles": {
+            "planner": role_models.planner,
+            "editor": role_models.editor,
+            "reviewer": role_models.reviewer,
+            "summarizer": role_models.summarizer,
+        },
         "provider": "subprocess",
         "memory_db": ".nemo-runtimes/nemo-memory.sqlite",
         "runtime_path": str(runtime_root),

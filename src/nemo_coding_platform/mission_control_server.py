@@ -23,15 +23,16 @@ from uuid import uuid4
 from nemo_coding_platform.core.evals import score_persisted_result, score_spec10_lite
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.long_handoff_supervisor import LongHandoffBudget, execute_long_handoff_supervisor
-from nemo_coding_platform.core.memory import MemoryAtomType
+from nemo_coding_platform.core.memory import MemoryAtomType, NEMO_TOOL_REGISTRY, NemoToolRisk
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.mission_control import build_mission_control_state
+from nemo_coding_platform.core.model_config import MODEL_ROLES, default_model_role_profile
 from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
-from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
+from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase, lifecycle_contract, tool_allowed_in_lifecycle
 from nemo_coding_platform.core.persistence import load_headless_result_json, save_headless_result_json
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
 from nemo_coding_platform.core.rate_limiter import RateLimiter
-from nemo_coding_platform.core.self_modification import self_mod_impact, self_mod_similar_runs, self_mod_trajectory
+from nemo_coding_platform.core.self_modification import get_self_mod_continuity, query_self_mod_risk_patterns, self_mod_impact, self_mod_similar_runs, self_mod_trajectory
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool
 
@@ -40,6 +41,8 @@ DEFAULT_APPLY_RESULTS = ".nemo-runtimes/mission-control/apply-results"
 DEFAULT_RUN_RESULTS = ".nemo-runtimes/mission-control/runs"
 JOB_LOG_LIMIT = 10_000
 DECISION_LOG_LIMIT = 200
+NEMO_TOOL_SCAN_TTL_SECONDS = 30
+_NEMO_TOOL_SCAN_CACHE: dict[str, object] = {"at": 0.0, "verified_read_only": (), "declared_write_or_destructive": ()}
 
 
 @dataclass(slots=True)
@@ -421,12 +424,21 @@ def _settings_path(config: MissionControlServerConfig) -> Path:
 
 
 def _default_settings(config: MissionControlServerConfig) -> dict[str, object]:
+    default_model = "nvidia.agentic.coder-4b"
+    role_models = default_model_role_profile(default_model)
     return {
         "repo_path": str(config.repo_path),
         "model_base_url": "http://localhost:1234/v1",
-        "default_model": "nvidia.agentic.coder-4b",
+        "default_model": default_model,
+        "model_roles": {
+            "planner": role_models.planner,
+            "editor": role_models.editor,
+            "reviewer": role_models.reviewer,
+            "summarizer": role_models.summarizer,
+        },
         "provider": "subprocess",
         "memory_db": str(config.memory_db) if config.memory_db else "",
+        "nemo_mcp_url": os.environ.get("NEMOCODE_NEMO_MCP_URL", "http://127.0.0.1:8765/mcp/sse"),
         "runtime_path": str(config.runtimes_path),
         "timeout_seconds": 120,
         "max_runtime_minutes": 120,
@@ -471,15 +483,58 @@ def _load_settings(config: MissionControlServerConfig) -> dict[str, object]:
     settings["repo_path"] = str(config.repo_path)
     settings["runtime_path"] = str(config.runtimes_path)
     settings["memory_db"] = str(config.memory_db) if config.memory_db else ""
+    raw_mcp_url = settings.get("nemo_mcp_url")
+    settings["nemo_mcp_url"] = str(raw_mcp_url).strip() if isinstance(raw_mcp_url, str) else ""
     recent = settings.get("recent_repos")
     if not isinstance(recent, list):
         recent = []
     settings["recent_repos"] = _recent_repos(tuple(str(item) for item in recent), str(config.repo_path))
-    if settings.get("provider") != "subprocess":
+    provider = str(settings.get("provider") or "subprocess")
+    if provider not in {"subprocess", "fake"}:
         settings["provider"] = "subprocess"
+    model_roles = settings.get("model_roles")
+    if not isinstance(model_roles, dict):
+        model_roles = {}
+    fallback_model = str(settings.get("default_model") or "nvidia.agentic.coder-4b")
+    normalized_roles: dict[str, str] = {}
+    for role in MODEL_ROLES:
+        raw_value = model_roles.get(role)
+        if isinstance(raw_value, str) and raw_value.strip():
+            normalized_roles[role] = raw_value.strip()
+        else:
+            normalized_roles[role] = fallback_model
+    settings["model_roles"] = normalized_roles
     if settings.get("validation_policy") not in {"none", "smoke", "targeted", "full"}:
         settings["validation_policy"] = "smoke"
     return settings
+
+
+def _validate_model_roles_payload(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise _bad_request("model_roles must be an object", error_code="invalid_setting_value")
+    normalized: dict[str, str] = {}
+    for role in MODEL_ROLES:
+        value = raw.get(role)
+        if not isinstance(value, str) or not value.strip():
+            raise _bad_request(f"model_roles.{role} must be a non-empty string", error_code="invalid_setting_value")
+        normalized[role] = value.strip()
+    unknown = [str(key) for key in raw.keys() if str(key) not in MODEL_ROLES]
+    if unknown:
+        raise _bad_request(f"unknown model_roles key(s): {', '.join(sorted(unknown))}", error_code="invalid_setting_value")
+    return normalized
+
+
+def _validate_provider_timeout(provider: str, timeout_seconds: float, *, error_code: str) -> None:
+    limits = {
+        "subprocess": (5.0, 600.0),
+        "fake": (1.0, 120.0),
+    }
+    minimum, maximum = limits.get(provider, (1.0, 600.0))
+    if timeout_seconds < minimum or timeout_seconds > maximum:
+        raise _bad_request(
+            f"timeout_seconds must be between {int(minimum)} and {int(maximum)} for provider={provider}",
+            error_code=error_code,
+        )
 
 
 def _save_settings(config: MissionControlServerConfig, settings: dict[str, object]) -> None:
@@ -626,6 +681,16 @@ def _message(payload: dict[str, object]) -> str:
     if not isinstance(message, str) or not message.strip():
         raise _bad_request("message is required", error_code="missing_message")
     return message.strip()
+
+
+def _require_nemo_mcp_url(payload: dict[str, object]) -> str:
+    value = payload.get("nemo_mcp_url")
+    if not isinstance(value, str) or not value.strip():
+        raise _bad_request(
+            "nemo_mcp_url is required for native NEMO MCP mode in agent chat",
+            error_code="missing_nemo_mcp_url",
+        )
+    return value.strip()
 
 
 def _file_path(payload: dict[str, object]) -> str:
@@ -847,6 +912,8 @@ def _timeout_seconds(payload: dict[str, object]) -> float:
         raise _bad_request("timeout_seconds must be numeric", error_code="invalid_timeout_seconds") from error
     if timeout <= 0:
         raise _bad_request("timeout_seconds must be positive", error_code="invalid_timeout_seconds")
+    provider = _provider_mode(payload)
+    _validate_provider_timeout(provider, timeout, error_code="invalid_timeout_seconds")
     return timeout
 
 
@@ -864,9 +931,16 @@ def _chat_model(payload: dict[str, object]) -> str:
     return value.strip()
 
 
-def _agent_context_summary(selected: dict[str, Any] | None, changed_files: tuple[str, ...], risk_flags: tuple[str, ...], mergeable: bool) -> str:
+def _agent_context_summary(
+    selected: dict[str, Any] | None,
+    changed_files: tuple[str, ...],
+    risk_flags: tuple[str, ...],
+    mergeable: bool,
+    cognitive_preload: str = "",
+) -> str:
     if not selected:
-        return "No run is selected. Answer the user's chat request and propose a safe next action."
+        base = "No run is selected. Answer the user's chat request and propose a safe next action."
+        return (base + "\n\n" + cognitive_preload) if cognitive_preload else base
     task = selected.get("task", {}) if isinstance(selected.get("task"), dict) else {}
     run = selected.get("run", {}) if isinstance(selected.get("run"), dict) else {}
     portfolio = selected.get("portfolio", {}) if isinstance(selected.get("portfolio"), dict) else {}
@@ -879,11 +953,105 @@ def _agent_context_summary(selected: dict[str, Any] | None, changed_files: tuple
             f"Changed files: {', '.join(changed_files) or 'none'}",
             f"Risk flags: {', '.join(risk_flags) or 'none'}",
             f"NEMO context:\n{context}" if context else "",
+            f"Cognitive preload (reflexions + continuity):\n{cognitive_preload}" if cognitive_preload else "",
         ) if line
     )
 
 
+def _verified_nemo_tool_list() -> str:
+    return ", ".join(sorted(contract.name for contract in NEMO_TOOL_REGISTRY))
+
+
+def _probe_arguments_for_tool(tool_name: str) -> dict[str, Any]:
+    probes: dict[str, dict[str, Any]] = {
+        "prime_context": {"topic": "tool-scan", "limit": 1},
+        "context_bootstrap": {"topic": "tool-scan", "task": "tool scan", "limit": 1, "token_budget": 128},
+        "build_context_portfolio": {"task": "tool scan", "topic": "tool-scan", "token_budget": 128},
+        "expand_context_evidence": {"handle": "probe-missing-handle"},
+        "get_context_portfolio_stats": {},
+        "compare_context_strategies": {"task": "tool scan", "topic": "tool-scan", "token_budget": 128},
+        "refresh_context_portfolio": {"task": "tool scan", "topic": "tool-scan", "token_budget": 128},
+        "anticipate": {"task": "tool scan", "limit": 1},
+        "detect_redundancy": {"limit": 5},
+        "memory_chronicle": {"limit": 5},
+        "salience_score": {"content": "tool scan", "task": "tool scan"},
+        "get_recent_context": {"limit": 3},
+        "get_current_time": {},
+        "get_environment_info": {},
+        "get_weather_open_meteo": {},
+        "get_system_health": {},
+        "get_active_reminders": {"limit": 5},
+        "get_completed_reminders": {"limit": 5},
+        "get_recent_appointments": {"limit": 5},
+        "get_upcoming_appointments": {"limit": 5},
+        "search_memories": {"query": "tool", "limit": 1},
+    }
+    return probes.get(tool_name, {})
+
+
+def _first_allowed_phase(tool_name: str) -> NemoLifecyclePhase:
+    for phase in NemoLifecyclePhase:
+        if tool_allowed_in_lifecycle(phase, tool_name):
+            return phase
+    return NemoLifecyclePhase.REVIEW
+
+
+def _runtime_verified_nemo_tools(payload: dict[str, object]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
+    if mcp_url:
+        declared_read_only = tuple(sorted(contract.name for contract in NEMO_TOOL_REGISTRY if contract.risk == NemoToolRisk.READ_ONLY))
+        declared_write_or_destructive = tuple(
+            sorted(
+                contract.name
+                for contract in NEMO_TOOL_REGISTRY
+                if contract.risk in {NemoToolRisk.MEMORY_WRITE, NemoToolRisk.SCHEDULING_WRITE, NemoToolRisk.DESTRUCTIVE}
+            )
+        )
+        return declared_read_only, declared_write_or_destructive
+
+    now = time.time()
+    cache_at = float(_NEMO_TOOL_SCAN_CACHE.get("at", 0.0) or 0.0)
+    if now - cache_at <= NEMO_TOOL_SCAN_TTL_SECONDS:
+        cached_verified = tuple(_NEMO_TOOL_SCAN_CACHE.get("verified_read_only", ()) or ())
+        cached_declared = tuple(_NEMO_TOOL_SCAN_CACHE.get("declared_write_or_destructive", ()) or ())
+        return cached_verified, cached_declared
+
+    memory_db = str(payload.get("memory_db") or ".nemo-runtimes/nemo-memory.sqlite")
+    adapter = PersistentNemoAdapter(PersistentMemoryStore(Path(memory_db)))
+
+    declared_write_or_destructive = sorted(
+        contract.name
+        for contract in NEMO_TOOL_REGISTRY
+        if contract.risk in {NemoToolRisk.MEMORY_WRITE, NemoToolRisk.SCHEDULING_WRITE, NemoToolRisk.DESTRUCTIVE}
+    )
+
+    verified_read_only: list[str] = []
+    for contract in NEMO_TOOL_REGISTRY:
+        if contract.risk != NemoToolRisk.READ_ONLY:
+            continue
+        phase = _first_allowed_phase(contract.name)
+        try:
+            _, result = adapter.call(phase, contract.name, **_probe_arguments_for_tool(contract.name))
+            if result.ok:
+                verified_read_only.append(contract.name)
+        except Exception:
+            continue
+
+    verified_tuple = tuple(sorted(set(verified_read_only)))
+    declared_tuple = tuple(declared_write_or_destructive)
+    _NEMO_TOOL_SCAN_CACHE["at"] = now
+    _NEMO_TOOL_SCAN_CACHE["verified_read_only"] = verified_tuple
+    _NEMO_TOOL_SCAN_CACHE["declared_write_or_destructive"] = declared_tuple
+    return verified_tuple, declared_tuple
+
+
 def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, context_summary: str) -> str:
+    verified_tools = _verified_nemo_tool_list()
+    runtime_read_only, declared_write_or_destructive = _runtime_verified_nemo_tools(payload)
+    native_mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
+    native_mode = "enabled" if native_mcp_url else "disabled"
+    runtime_read_text = ", ".join(runtime_read_only) if runtime_read_only else "none"
+    runtime_write_text = ", ".join(declared_write_or_destructive) if declared_write_or_destructive else "none"
     body = {
         "model": _chat_model(payload),
         "messages": [
@@ -892,9 +1060,15 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                 "content": (
                     "You are the real Mission Control coding agent for the local-first NEMO CODE platform. "
                     "Answer in the user's language. Be concise, specific, and operational. "
-                    "Use the selected run and NEMO context when available. Do not claim you applied code unless an explicit action did it."
+                    "Use the selected run and NEMO context when available. Do not claim you applied code unless an explicit action did it. "
+                    "Never invent MCP/NEMO tool names or capabilities. If asked about available tools, use the full catalog provided below "
+                    "and state explicitly when an operation may require approval."
                 ),
             },
+            {"role": "system", "content": f"Verified NEMO tool names: {verified_tools}"},
+            {"role": "system", "content": f"NEMO MCP native mode: {native_mode}. URL: {native_mcp_url or 'not configured'}"},
+            {"role": "system", "content": f"Runtime-verified local NEMO MCP READ tools (probed now): {runtime_read_text}"},
+            {"role": "system", "content": f"Declared local NEMO MCP WRITE/DESTRUCTIVE tools (not auto-probed): {runtime_write_text}"},
             {"role": "system", "content": context_summary},
             {"role": "user", "content": user_message},
         ],
@@ -1007,8 +1181,10 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
     allowed = {
         "model_base_url",
         "default_model",
+        "model_roles",
         "provider",
         "memory_db",
+        "nemo_mcp_url",
         "runtime_path",
         "timeout_seconds",
         "max_runtime_minutes",
@@ -1051,6 +1227,11 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
                 raise _bad_request(f"{_numeric_key} must be numeric", error_code="invalid_setting_value")
             if _numeric_val <= 0:
                 raise _bad_request(f"{_numeric_key} must be positive", error_code="invalid_setting_value")
+    effective_provider = str(payload.get("provider") or settings.get("provider") or "subprocess")
+    if effective_provider not in {"subprocess", "fake"}:
+        raise _bad_request("provider must be subprocess or fake", error_code="invalid_provider")
+    effective_timeout = float(payload.get("timeout_seconds") or settings.get("timeout_seconds") or 30.0)
+    _validate_provider_timeout(effective_provider, effective_timeout, error_code="invalid_setting_value")
     if "pause_after_minutes" in payload and payload.get("pause_after_minutes") is not None:
         try:
             pause_minutes = float(payload["pause_after_minutes"])
@@ -1060,6 +1241,12 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
             raise _bad_request("pause_after_minutes must be positive", error_code="invalid_setting_value")
     if "validation_escalation_mode" in payload and not isinstance(payload.get("validation_escalation_mode"), bool):
         raise _bad_request("validation_escalation_mode must be boolean", error_code="invalid_setting_value")
+    if "model_roles" in payload:
+        settings["model_roles"] = _validate_model_roles_payload(payload.get("model_roles"))
+    elif "default_model" in payload:
+        default_model = str(payload.get("default_model") or "").strip()
+        if default_model:
+            settings["model_roles"] = {role: default_model for role in MODEL_ROLES}
     for key in allowed:
         if key in payload:
             settings[key] = payload[key]
@@ -1803,6 +1990,89 @@ def api_cleanup(config: MissionControlServerConfig, payload: dict[str, object]) 
     return {"ok": True, "dry_run": dry_run, "deleted": [] if dry_run else candidates, "candidates": candidates, "max_age_days": max_age_days}
 
 
+def _probe_nemo_mcp_sse(mcp_url: str, timeout_seconds: float = 2.5) -> dict[str, object]:
+    target = str(mcp_url or "").strip()
+    if not target:
+        return {
+            "configured": False,
+            "active": False,
+            "status": "not_configured",
+            "url": "",
+        }
+
+    started = time.perf_counter()
+    request = urllib.request.Request(target, headers={"Accept": "text/event-stream"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            latency_ms = round((time.perf_counter() - started) * 1000, 1)
+            content_type = str(response.headers.get("Content-Type") or "")
+            first_line = response.readline(256).decode("utf-8", errors="replace").strip()
+            looks_sse = "text/event-stream" in content_type.lower() or first_line.startswith("event:") or first_line.startswith("data:")
+            return {
+                "configured": True,
+                "active": bool(looks_sse),
+                "status": "active" if looks_sse else "unexpected_response",
+                "url": target,
+                "http_status": int(response.getcode() or 0),
+                "content_type": content_type,
+                "first_line": first_line[:160],
+                "latency_ms": latency_ms,
+            }
+    except urllib.error.HTTPError as error:
+        latency_ms = round((time.perf_counter() - started) * 1000, 1)
+        return {
+            "configured": True,
+            "active": False,
+            "status": "http_error",
+            "url": target,
+            "http_status": int(error.code),
+            "error": str(error),
+            "latency_ms": latency_ms,
+        }
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        latency_ms = round((time.perf_counter() - started) * 1000, 1)
+        return {
+            "configured": True,
+            "active": False,
+            "status": "unreachable",
+            "url": target,
+            "error": str(error),
+            "latency_ms": latency_ms,
+        }
+
+
+def api_nemo_mcp_status(config: MissionControlServerConfig, payload: dict[str, object] | None = None) -> dict[str, object]:
+    settings = _load_settings(config)
+    payload_data = payload if isinstance(payload, dict) else {}
+    payload_url = payload_data.get("nemo_mcp_url")
+    if isinstance(payload_url, str) and payload_url.strip():
+        mcp_url = payload_url.strip()
+    else:
+        mcp_url = str(settings.get("nemo_mcp_url") or "").strip()
+    probe = _probe_nemo_mcp_sse(mcp_url)
+    return {
+        "ok": True,
+        **probe,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def api_nemo_risk_map(config: MissionControlServerConfig, payload: dict[str, object] | None = None) -> dict[str, object]:
+    payload_data = payload if isinstance(payload, dict) else {}
+    file_or_module = str(payload_data.get("file_or_module") or "")
+    risk_category = str(payload_data.get("risk_category") or "")
+    limit = int(payload_data.get("limit") or 20)
+    if config.memory_db is None:
+        return {"ok": True, "patterns": [], "count": 0, "enabled": False}
+    patterns = query_self_mod_risk_patterns(
+        config.memory_db,
+        file_or_module=file_or_module,
+        risk_category=risk_category,
+        limit=limit,
+    )
+    return {"ok": True, "enabled": True, **patterns}
+
+
 def api_nemo(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     selected = _selected_nemo_payload(payload)
     if config.memory_db is None:
@@ -2140,13 +2410,21 @@ def _nemo_chat_tool_call(
     tool_name: str,
     *,
     lifecycle_phase: str | None = None,
+    nemo_mcp_url: str | None = None,
     **arguments: Any,
 ) -> dict[str, Any]:
     display_name = f"nemocode.{tool_name}"
     if config.memory_db is None:
         tool_calls.append({"id": f"tool-{uuid4().hex[:8]}", "name": display_name, "status": "skipped", "summary": "NEMO memory database is disabled for this Mission Control session."})
         return {}
-    result = mcp_call_nemo_tool(tool_name, lifecycle_phase=lifecycle_phase, memory_db=str(config.memory_db), **arguments)
+    result = mcp_call_nemo_tool(
+        tool_name,
+        lifecycle_phase=lifecycle_phase,
+        memory_db=str(config.memory_db),
+        mcp_url=(nemo_mcp_url or ""),
+        approve_review=bool((nemo_mcp_url or "").strip()),
+        **arguments,
+    )
     ok = bool(result.get("ok"))
     payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
     tool_calls.append(
@@ -2168,6 +2446,9 @@ def _nemo_tool_summary(tool_name: str, payload: dict[str, Any]) -> str:
         return f"Built context portfolio tokens={payload.get('estimated_tokens', 0)} evidence={len(payload.get('evidence_handles', []))}."
     if tool_name == "search_memories":
         return f"Searched memory; matches={len(payload.get('memories', []))}."
+    if tool_name == "anticipate":
+        items = payload.get("memories") or payload.get("anticipated") or []
+        return f"Anticipated {len(items)} relevant reflexion(s) and risk pattern(s) for this task."
     if tool_name == "store_conversation":
         return f"Stored conversation memory atom={payload.get('atom_id', 'unknown')}."
     if "error" in payload:
@@ -2314,11 +2595,13 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     payload = {**_load_settings(config), **payload}
     message = _message(payload)
     provider = _provider_mode(payload)
+    nemo_mcp_url = _require_nemo_mcp_url(payload)
     source_json = payload.get("source_json")
     tool_calls: list[dict[str, object]] = []
-    _nemo_chat_tool_call(config, tool_calls, "prime_context", lifecycle_phase="start", topic="Mission Control conversation", limit=8)
-    _nemo_chat_tool_call(config, tool_calls, "build_context_portfolio", lifecycle_phase="plan", task=message, topic="Mission Control conversation", token_budget=900, limit=40)
-    _nemo_chat_tool_call(config, tool_calls, "search_memories", lifecycle_phase="review", query=message, topic="NEMOCODE self-modification", limit=5)
+    _nemo_chat_tool_call(config, tool_calls, "prime_context", lifecycle_phase="start", topic="Mission Control conversation", limit=8, nemo_mcp_url=nemo_mcp_url)
+    _nemo_chat_tool_call(config, tool_calls, "build_context_portfolio", lifecycle_phase="plan", task=message, topic="Mission Control conversation", token_budget=900, limit=40, nemo_mcp_url=nemo_mcp_url)
+    _nemo_chat_tool_call(config, tool_calls, "search_memories", lifecycle_phase="review", query=message, topic="NEMOCODE self-modification", limit=5, nemo_mcp_url=nemo_mcp_url)
+    anticipate_payload = _nemo_chat_tool_call(config, tool_calls, "anticipate", lifecycle_phase="plan", task=message, limit=5, nemo_mcp_url=nemo_mcp_url)
     actions: list[dict[str, object]] = []
     selected: dict[str, Any] | None = None
     mergeable = False
@@ -2440,6 +2723,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         tool_calls,
         "store_conversation",
         lifecycle_phase="review",
+        nemo_mcp_url=nemo_mcp_url,
         summary=f"Mission Control chat user request: {message}",
         topic="Mission Control conversation",
         tags=("mission-control", "agent-chat"),
@@ -2448,7 +2732,31 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         importance=8 if actions else 6,
     )
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
-    context_summary = _agent_context_summary(selected, changed_files, risk_flags, mergeable)
+    # --- Cognitive preload: merge anticipate results + self-mod continuity ---
+    _cognitive_parts: list[str] = []
+    _anticipated = anticipate_payload.get("memories") or anticipate_payload.get("anticipated") or []
+    if _anticipated:
+        _cog_items = "; ".join(
+            str(item.get("content") or item.get("summary") or "")[:120]
+            for item in _anticipated[:3]
+            if isinstance(item, dict)
+        )
+        if _cog_items:
+            _cognitive_parts.append(f"Reflexions/risks retrieved for this task: {_cog_items}")
+    if config.memory_db is not None:
+        try:
+            _continuity = get_self_mod_continuity(config.memory_db, task_objective=message, limit=3)
+            _cont_items = _continuity.get("items") or []
+            if _cont_items:
+                _cont_text = "; ".join(
+                    str(item.get("content") or "")[:100] for item in _cont_items[:2] if isinstance(item, dict)
+                )
+                if _cont_text:
+                    _cognitive_parts.append(f"Continuity from similar past tasks: {_cont_text}")
+        except Exception:  # noqa: BLE001 — best-effort, never block the chat
+            pass
+    cognitive_preload = "\n".join(_cognitive_parts)
+    context_summary = _agent_context_summary(selected, changed_files, risk_flags, mergeable, cognitive_preload=cognitive_preload)
     if provider == "fake":
         response = (
             "[fake planner] Built an operational response using local Mission Control context. "
@@ -2734,6 +3042,8 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/self-modify/start": lambda payload: api_self_modify_start(self.server, payload),
             "/api/agent/message": lambda payload: api_agent_message(self.server.config, payload),
             "/api/nemo": lambda payload: api_nemo(self.server.config, payload),
+            "/api/nemo/mcp-status": lambda payload: api_nemo_mcp_status(self.server.config, payload),
+            "/api/nemo/risk-map": lambda payload: api_nemo_risk_map(self.server.config, payload),
             "/api/self-mod/insights": lambda payload: api_self_mod_insights(self.server.config, payload),
             "/api/eval": lambda payload: api_eval(self.server.config, payload),
             "/api/review": lambda payload: api_review(self.server.config, payload),

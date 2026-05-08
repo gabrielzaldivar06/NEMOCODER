@@ -1,9 +1,14 @@
+import json
+import os
 import tempfile
+import threading
 import unittest
+import urllib.request
 from pathlib import Path
+from http.server import ThreadingHTTPServer
 
 from nemo_coding_platform.core.memory import NEMO_TOOL_REGISTRY
-from nemo_coding_platform.mcp_server import mcp_tool_definitions
+from nemo_coding_platform.mcp_server import MCPServerHandler, mcp_tool_definitions, tool_policy_decision
 from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool, mcp_get_self_mod_continuity, mcp_record_self_mod_decision
 
 
@@ -64,6 +69,105 @@ class MCPServerToolSurfaceTests(unittest.TestCase):
         self.assertTrue(continuity["ok"])
         self.assertEqual(continuity["count"], 1)
         self.assertIn("persist decision atoms", continuity["items"][0]["content"])
+
+    def test_policy_requires_approval_for_destructive_static_tool(self) -> None:
+        decision = tool_policy_decision("nemocode.self_mod_apply", {})
+
+        self.assertEqual(decision["risk"], "destructive")
+        self.assertTrue(decision["approval_required"])
+        self.assertFalse(decision["allowed"])
+
+    def test_policy_requires_approval_for_destructive_nemo_tool(self) -> None:
+        decision = tool_policy_decision("nemocode.delete_reminder", {})
+
+        self.assertEqual(decision["risk"], "destructive")
+        self.assertTrue(decision["approval_required"])
+        self.assertFalse(decision["allowed"])
+
+    def test_policy_allows_when_approval_explicitly_granted(self) -> None:
+        decision = tool_policy_decision("nemocode.delete_reminder", {"approve_review": True})
+
+        self.assertTrue(decision["approval_required"])
+        self.assertTrue(decision["approved"])
+        self.assertTrue(decision["allowed"])
+
+
+class MCPServerJsonRpcPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), MCPServerHandler)
+        cls.port = cls.server.server_port
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def test_tools_call_denied_without_approval_returns_policy_error(self) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": "deny-1",
+            "method": "tools/call",
+            "params": {
+                "name": "nemocode.delete_reminder",
+                "arguments": {},
+            },
+        }
+
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/mcp/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            result = json.loads(response.read().decode("utf-8"))
+
+        self.assertIn("error", result)
+        self.assertEqual(result["error"]["code"], -32003)
+        audit = result["error"]["data"]["tool_call_audit"]
+        self.assertEqual(audit["tool"], "nemocode.delete_reminder")
+        self.assertEqual(audit["risk"], "destructive")
+        self.assertFalse(audit["allowed"])
+
+    def test_denied_risky_tool_call_persists_audit_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_log = Path(tmp) / "mcp-audit.jsonl"
+            original = os.environ.get("NEMOCODE_MCP_AUDIT_LOG")
+            os.environ["NEMOCODE_MCP_AUDIT_LOG"] = str(audit_log)
+            try:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": "deny-2",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "nemocode.self_mod_apply",
+                        "arguments": {"run_json": "fake-run.json"},
+                    },
+                }
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{self.port}/mcp/messages",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(result["error"]["code"], -32003)
+                self.assertTrue(audit_log.exists())
+                lines = [line for line in audit_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+                self.assertEqual(len(lines), 1)
+                entry = json.loads(lines[0])
+                self.assertEqual(entry["request_id"], "deny-2")
+                self.assertEqual(entry["outcome"], "denied")
+                self.assertEqual(entry["tool_call_audit"]["tool"], "nemocode.self_mod_apply")
+                self.assertFalse(entry["tool_call_audit"]["allowed"])
+            finally:
+                if original is None:
+                    os.environ.pop("NEMOCODE_MCP_AUDIT_LOG", None)
+                else:
+                    os.environ["NEMOCODE_MCP_AUDIT_LOG"] = original
 
 
 if __name__ == "__main__":

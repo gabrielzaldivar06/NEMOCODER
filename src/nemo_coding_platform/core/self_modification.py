@@ -20,6 +20,7 @@ from nemo_coding_platform.core.persistence import load_headless_result_json, sav
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
 from nemo_coding_platform.core.self_discovery import ensure_self_mod_permissions_file, find_nemocode_repo
 from nemo_coding_platform.core.skills import find_skill_by_name
+from nemo_coding_platform.core.reflexion import generate_reflexion, persist_reflexion
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 
 
@@ -500,13 +501,18 @@ def execute_self_modification(
     run_json = save_headless_result_json(result, self_mod_run_json_path(Path(repo_root) / request.output_dir, task_id, run_id))
     trajectory_writeback = record_self_mod_trajectory(request.memory_db, run_json)
     memory_writeback = record_self_mod_outcome(adapter, result, request, context, run_json)
-    if not self_mod_status(run_json)["validation_passed"] or self_mod_status(run_json)["risk_flags"]:
+    _status = self_mod_status(run_json)
+    if not _status["validation_passed"] or _status["risk_flags"]:
         learn_from_self_mod_failure(
             request.memory_db,
             run_json,
-            failure_pattern=";".join(self_mod_status(run_json)["risk_flags"] or ["validation_not_ready"]),
+            failure_pattern=";".join(_status["risk_flags"] or ["validation_not_ready"]),
             suggested_correction="Retrieve this trajectory before similar self-modification work and tighten scope or validation.",
         )
+    # --- Reflexion Loop: generate and persist typed post-task reflection ---
+    reflexion = generate_reflexion(result, task_type=request.task_type.value, objective=request.description)
+    adapter, _reflexion_payload = persist_reflexion(adapter, reflexion)
+    context["reflexion"] = _reflexion_payload
     context["decision_writeback"] = decision_writeback
     return SelfModRunResult(request, str(repo_root), str(permissions_file), str(run_json), context, result, memory_writeback, trajectory_writeback)
 

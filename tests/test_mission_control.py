@@ -161,6 +161,17 @@ class MissionControlTests(unittest.TestCase):
 
         self.assertEqual(state["settings"]["validation_policy"], "smoke")
 
+    def test_state_exposes_role_aware_model_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = build_mission_control_state(tmp, Path(tmp) / "missing-runtimes")
+
+        roles = state["settings"]["model_roles"]
+        self.assertEqual(set(roles.keys()), {"planner", "editor", "reviewer", "summarizer"})
+        self.assertEqual(roles["planner"], state["settings"]["default_model"])
+        self.assertEqual(roles["editor"], state["settings"]["default_model"])
+        self.assertEqual(roles["reviewer"], state["settings"]["default_model"])
+        self.assertEqual(roles["summarizer"], state["settings"]["default_model"])
+
 
 if __name__ == "__main__":
     unittest.main()

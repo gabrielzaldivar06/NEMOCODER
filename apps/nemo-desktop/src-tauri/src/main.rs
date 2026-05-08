@@ -9,6 +9,7 @@
 use std::sync::{Arc, Mutex};
 use std::process::{Command, Child};
 use std::path::Path;
+use std::net::{SocketAddr, TcpStream};
 use std::thread;
 use std::time::Duration;
 use tauri::{generate_context, generate_handler};
@@ -69,10 +70,24 @@ async fn start_backend(state: tauri::State<'_, Arc<Mutex<BackendState>>>) -> Res
     let python_exe = find_python_executable()
         .ok_or_else(|| "Python not found in PATH or venv".to_string())?;
 
+    // Resolve repo root and PYTHONPATH so local package imports work in dev/prod.
+    let repo_root = find_repo_root()
+        .ok_or_else(|| "Could not locate repository root (expected pyproject.toml)".to_string())?;
+    let pythonpath = repo_root.join("src");
+    let repo_root_str = repo_root.to_string_lossy().to_string();
+    let pythonpath_str = pythonpath.to_string_lossy().to_string();
+
     // Build command to start Mission Control
     let mut cmd = Command::new(&python_exe);
     cmd.arg("-m")
-        .arg("nemo_coding_platform.mission_control")
+        .arg("nemo_coding_platform")
+        .arg("mission-control-server")
+        .arg("--repo")
+        .arg(&repo_root_str)
+        .arg("--runtimes")
+        .arg(".nemo-runtimes")
+        .current_dir(&repo_root)
+        .env("PYTHONPATH", &pythonpath_str)
         .env("PYTHONUNBUFFERED", "1");
 
     // Start the process
@@ -205,6 +220,19 @@ async fn save_settings(settings: AppSettings) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a native folder-picker dialog and return the selected path
+#[tauri::command]
+async fn pick_folder() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        tauri::api::dialog::blocking::FileDialogBuilder::new()
+            .set_title("Select Repository Folder")
+            .pick_folder()
+            .map(|p| p.to_string_lossy().to_string())
+    })
+    .await
+    .unwrap_or(None)
+}
+
 /// Proxy HTTP request to backend
 /// Forwards all /api/* requests to localhost:8787
 #[tauri::command]
@@ -249,12 +277,14 @@ fn find_python_executable() -> Option<String> {
             ".venv\\Scripts\\python.exe",
             "..\\.venv\\Scripts\\python.exe",
             "..\\..\\.venv\\Scripts\\python.exe",
+            "..\\..\\..\\.venv\\Scripts\\python.exe",
         ]
     } else {
         &[
             ".venv/bin/python",
             "../.venv/bin/python",
             "../../.venv/bin/python",
+            "../../../.venv/bin/python",
         ]
     };
 
@@ -267,6 +297,19 @@ fn find_python_executable() -> Option<String> {
 
     find_executable_in_path("python")
         .or_else(|| find_executable_in_path("python3"))
+}
+
+fn find_repo_root() -> Option<std::path::PathBuf> {
+    let mut current = std::env::current_dir().ok()?;
+    loop {
+        if current.join("pyproject.toml").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
 }
 
 fn find_executable_in_path(name: &str) -> Option<String> {
@@ -309,16 +352,8 @@ fn settings_file_path() -> Result<std::path::PathBuf, String> {
 
 /// Helper: Check if backend is healthy
 fn is_backend_healthy(port: u16) -> bool {
-    let url = format!("http://localhost:{}/api/health", port);
-    
-    match reqwest::blocking::Client::new()
-        .get(&url)
-        .timeout(Duration::from_secs(2))
-        .send()
-    {
-        Ok(response) => response.status().is_success(),
-        Err(_) => false,
-    }
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
 }
 
 fn main() {
@@ -340,6 +375,7 @@ fn main() {
             start_backend,
             stop_backend,
             query_backend_status,
+            pick_folder,
         ])
         .run(generate_context!())
         .expect("error while running tauri application");

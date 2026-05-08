@@ -203,18 +203,12 @@ export async function detectSetup(): Promise<{
   ready: boolean;
 }> {
   try {
-    // Call backend startup diagnostics
-    const response = await fetch("http://localhost:8787/api/startup", {
+    // Route through the Tauri backend proxy to avoid browser CORS restrictions.
+    const payload = await invoke<string>("proxy_backend_request", {
+      path: "/api/startup",
       method: "GET",
-      mode: "cors",
-      headers: { "Accept": "application/json" },
     });
-
-    if (!response.ok) {
-      throw new Error(`Startup check failed: ${response.status}`);
-    }
-
-    const data = await response.json();
+    const data = JSON.parse(payload);
     
     return {
       lmStudioFound: data.checks.lm_studio_reachable,

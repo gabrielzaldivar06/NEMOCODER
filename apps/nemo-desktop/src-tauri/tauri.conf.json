@@ -3,7 +3,7 @@
     "beforeBuildCommand": "npm run build",
     "beforeDevCommand": "npm run dev",
     "distDir": "../dist",
-    "devPath": "http://localhost:5173"
+    "devPath": "http://localhost:5180"
   },
   "package": {
     "productName": "Nemocode",

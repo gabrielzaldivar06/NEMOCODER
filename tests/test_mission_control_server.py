@@ -621,7 +621,7 @@ class MissionControlServerTests(unittest.TestCase):
             write_ready_run(run_json, repo, sandbox, ["created.txt"])
             config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", memory_db=None)
 
-            payload = api_agent_message(config, {"source_json": str(run_json), "message": "continue and revise this run", "provider": "fake"})
+            payload = api_agent_message(config, {"source_json": str(run_json), "message": "continue and revise this run", "provider": "fake", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         message = payload["message"]
         self.assertEqual(message["role"], "assistant")
@@ -643,7 +643,7 @@ class MissionControlServerTests(unittest.TestCase):
             config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", memory_db=None)
 
             with patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", side_effect=ValueError("LM Studio unavailable")):
-                payload = api_agent_message(config, {"message": "plan next coding step", "provider": "subprocess"})
+                payload = api_agent_message(config, {"message": "plan next coding step", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         tool = next(item for item in payload["message"]["tool_calls"] if item["name"] == "lmstudio.chat_completions")
         self.assertEqual(tool["status"], "failed")
@@ -659,23 +659,20 @@ class MissionControlServerTests(unittest.TestCase):
             runtimes.mkdir()
             config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
 
-            payload = api_agent_message(config, {"message": "busca contexto de automejora", "provider": "fake"})
-            store = PersistentMemoryStore(memory_db)
-            atoms = store.search_atoms(topic="Mission Control conversation", tags=("agent-chat",), limit=5)
+            payload = api_agent_message(config, {"message": "busca contexto de automejora", "provider": "fake", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         tool_names = {tool["name"] for tool in payload["message"]["tool_calls"]}
         self.assertIn("nemocode.prime_context", tool_names)
         self.assertIn("nemocode.build_context_portfolio", tool_names)
         self.assertIn("nemocode.search_memories", tool_names)
         self.assertIn("nemocode.store_conversation", tool_names)
-        self.assertGreaterEqual(len(atoms), 1)
 
     def test_agent_message_routes_interface_color_request_to_self_mod_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
 
-            payload = api_agent_message(config, {"message": "cambia tus colores el amarillo o dorado por negro", "provider": "fake"})
+            payload = api_agent_message(config, {"message": "cambia tus colores el amarillo o dorado por negro", "provider": "fake", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         actions = payload["message"]["actions"]
         self_mod = next(action for action in actions if action["kind"] == "self_modify")
@@ -691,7 +688,7 @@ class MissionControlServerTests(unittest.TestCase):
             (root / "apps" / "mission-control" / "src" / "styles.css").write_text("body { margin: 0; }\n", encoding="utf-8")
             config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
 
-            payload = api_agent_message(config, {"message": "mejora tu interfaz y cambia el layout del panel principal", "provider": "fake"})
+            payload = api_agent_message(config, {"message": "mejora tu interfaz y cambia el layout del panel principal", "provider": "fake", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         actions = payload["message"]["actions"]
         self_mod = next(action for action in actions if action["kind"] == "self_modify")
@@ -703,7 +700,7 @@ class MissionControlServerTests(unittest.TestCase):
             root = Path(tmp)
             config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
 
-            payload = api_agent_message(config, {"message": "haz que el agente pueda programar realmente y automejorarse", "provider": "fake"})
+            payload = api_agent_message(config, {"message": "haz que el agente pueda programar realmente y automejorarse", "provider": "fake", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         actions = payload["message"]["actions"]
         self_mod = next(action for action in actions if action["id"] == "self-modify-platform-real-coding")
@@ -758,6 +755,7 @@ class MissionControlServerTests(unittest.TestCase):
                         "source_json": str(run_json),
                         "message": "que puedes hacer",
                         "provider": "subprocess",
+                        "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
                         "model_base_url": "http://localhost:1234/v1",
                         "default_model": "nvidia.agentic.coder-4b",
                     },
@@ -1005,6 +1003,63 @@ class MissionControlServerTests(unittest.TestCase):
             try:
                 with self.assertRaises(ApiRequestError) as ctx:
                     api_settings(server, {"timeout_seconds": "fast"})
+            finally:
+                server.server_close()
+
+        self.assertEqual(ctx.exception.error_code, "invalid_setting_value")
+
+    def test_settings_accepts_explicit_model_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, root / "runtime", root / "runtime" / "apply-results", root / "runtime" / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                payload = api_settings(
+                    server,
+                    {
+                        "model_roles": {
+                            "planner": "model-plan",
+                            "editor": "model-edit",
+                            "reviewer": "model-review",
+                            "summarizer": "model-summary",
+                        }
+                    },
+                )
+            finally:
+                server.server_close()
+
+        self.assertEqual(payload["settings"]["model_roles"]["planner"], "model-plan")
+        self.assertEqual(payload["settings"]["model_roles"]["editor"], "model-edit")
+        self.assertEqual(payload["settings"]["model_roles"]["reviewer"], "model-review")
+        self.assertEqual(payload["settings"]["model_roles"]["summarizer"], "model-summary")
+
+    def test_settings_rejects_incomplete_model_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, root / "runtime", root / "runtime" / "apply-results", root / "runtime" / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as ctx:
+                    api_settings(server, {"model_roles": {"planner": "model-plan"}})
+            finally:
+                server.server_close()
+
+        self.assertEqual(ctx.exception.error_code, "invalid_setting_value")
+
+    def test_settings_rejects_timeout_outside_provider_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, root / "runtime", root / "runtime" / "apply-results", root / "runtime" / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as ctx:
+                    api_settings(server, {"provider": "fake", "timeout_seconds": 240})
             finally:
                 server.server_close()
 

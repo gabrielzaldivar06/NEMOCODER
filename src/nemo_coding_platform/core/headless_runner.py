@@ -452,6 +452,51 @@ def execute_headless_handoff(
         )
         repair_plan = RepairPlan(RepairBudget(request.repair_budget), attempts=merged_attempts)
         validation = repair_result.validation
+        # --- Cognitive Learning: persist repair failure pattern to NEMO ---
+        # Every exhausted repair budget feeds the empirical risk map so future
+        # tasks can avoid the same file/command combinations.
+        if isinstance(adapter, PersistentNemoAdapter) and not validation.passed:
+            _failed_cmds = ", ".join(
+                r.command.command for r in validation.results if not r.passed
+            ) or "unknown"
+            _files_touched = ", ".join(
+                mutation_result.changed_files or mutation_result.applied_files or ()
+            ) or "unknown"
+            _task_desc = (request.objective_summary or request.prd)[:120]
+            adapter, _repair_failure_trace = adapter.call(
+                NemoLifecyclePhase.REVIEW,
+                "create_correction",
+                wrong_assumption=(
+                    f"task '{_task_desc}' would pass validation within "
+                    f"{request.repair_budget} repair attempts"
+                ),
+                correct_answer=(
+                    f"repair exhausted for task '{_task_desc}'; "
+                    f"stop_reason={repair_result.stop_reason}; "
+                    f"failed_commands=[{_failed_cmds}]; files_touched=[{_files_touched}]"
+                ),
+                context=(
+                    f"repair_budget={request.repair_budget} "
+                    f"attempts_used={len(repair_result.mutation_results)} "
+                    f"task={_task_desc}"
+                ),
+                topic="NEMOCODE self-modification",
+                tags=("repair_failure", "self-mod-risk", "nemocode-repair"),
+            )
+            nemo_results.append(_repair_failure_trace)
+            # --- Semantic Continuity Anchor: surface incomplete task in future sessions ---
+            adapter, _anchor_trace = adapter.call(
+                NemoLifecyclePhase.REVIEW,
+                "intent_anchor",
+                trigger_condition=f"starting a task similar to: {_task_desc}",
+                action=(
+                    f"review incomplete run task={task.id} run={run.id}; "
+                    f"repair stopped at {repair_result.stop_reason}; "
+                    f"files_in_progress=[{_files_touched}]"
+                ),
+                importance_level=7,
+            )
+            nemo_results.append(_anchor_trace)
     effective_mutation_result = mutation_result
     if repair_result and not (effective_mutation_result.changed_files or effective_mutation_result.applied_files):
         for repair_mutation in reversed(repair_result.mutation_results):
