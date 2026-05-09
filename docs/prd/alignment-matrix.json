@@ -196,6 +196,91 @@
       "gap": "none"
     }
   ],
+  "non_fr_requirements": [
+    {
+      "id": "NFR11",
+      "title": "Non-Functional Requirements",
+      "prd_section": "11",
+      "status": "partial",
+      "specs": [
+        "docs/specs/quality-mutation-pipeline.md",
+        "docs/specs/worktree-runtime.md",
+        "docs/specs/mcp-extension-governance.md"
+      ],
+      "tests": [
+        "tests/test_quality_core_contract.py",
+        "tests/test_agent_runtime_contract.py",
+        "tests/test_mcp_server.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/mutations.py:24",
+        "src/nemo_coding_platform/core/worktree_runtime.py:47",
+        "src/nemo_coding_platform/mcp_server.py:90"
+      ],
+      "gap": "Performance SLOs and secret-handling policy are not yet represented as explicit contract tests."
+    },
+    {
+      "id": "DM12",
+      "title": "Data Model",
+      "prd_section": "12",
+      "status": "partial",
+      "specs": [
+        "docs/specs/task-run-model.md",
+        "docs/specs/headless-run-mvp.md"
+      ],
+      "tests": [
+        "tests/test_agent_runtime_contract.py",
+        "tests/test_product_contract.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/task_run.py:76",
+        "src/nemo_coding_platform/core/headless_runner.py:132"
+      ],
+      "gap": "Some PRD entities (WorkflowRecipe, ModelProfile linkage, explicit NemoMemoryEvent type) are implicit but not fully normalized as first-class contracts."
+    },
+    {
+      "id": "NEMO13",
+      "title": "NEMO Memory Lifecycle",
+      "prd_section": "13",
+      "status": "aligned",
+      "specs": [
+        "docs/specs/nemo-lifecycle.md",
+        "docs/specs/nemo-full-tooling.md"
+      ],
+      "tests": [
+        "tests/test_nemo_full_tool_contract.py",
+        "tests/test_nemo_lifecycle.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/core/memory.py:382",
+        "src/nemo_coding_platform/core/nemo_lifecycle.py:1",
+        "src/nemo_coding_platform/core/headless_runner.py:677"
+      ],
+      "gap": "none"
+    },
+    {
+      "id": "MVP17",
+      "title": "Global MVP Acceptance",
+      "prd_section": "17",
+      "status": "partial",
+      "specs": [
+        "docs/specs/desktop-product-contract.md",
+        "docs/specs/desktop-ui-flows.md",
+        "docs/specs/agent-evals.md"
+      ],
+      "tests": [
+        "tests/test_desktop_product_contract.py",
+        "tests/test_desktop_ui_flows_contract.py",
+        "tests/test_release_confidence_e2e.py"
+      ],
+      "anchors": [
+        "src/nemo_coding_platform/mission_control_server.py:3338",
+        "src/nemo_coding_platform/core/persistence.py:84",
+        "src/nemo_coding_platform/cli.py:969"
+      ],
+      "gap": "Missing a single executable Global MVP gate test that maps all 12 acceptance bullets one-to-one."
+    }
+  ],
   "definition_of_done": {
     "FR2": [
       "model roles planner/editor/reviewer/summarizer are configurable and validated",

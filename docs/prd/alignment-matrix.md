@@ -23,6 +23,17 @@ Legend:
 | FR9 Autonomous Background Tasks | aligned | docs/specs/autonomy-model.md, docs/specs/full-handoff-autonomy.md, docs/specs/worktree-runtime.md | tests/test_agent_runtime_contract.py, tests/test_desktop_ui_flows_contract.py | src/nemo_coding_platform/mission_control_server.py:2068, src/nemo_coding_platform/mission_control_server.py:2085, src/nemo_coding_platform/mission_control_server.py:2089 | none |
 | FR10 Evaluation and Replay | aligned | docs/specs/agent-evals.md | tests/test_agent_evals_contract.py, tests/test_evals_export.py | src/nemo_coding_platform/core/evals.py:147, src/nemo_coding_platform/core/persistence.py:84, src/nemo_coding_platform/core/persistence.py:316, src/nemo_coding_platform/cli.py:639 | none |
 
+## Non-FR Traceability
+
+This section tracks global PRD alignment outside FR1-FR10: non-functional requirements, data model coverage, lifecycle semantics, and MVP acceptance closure.
+
+| PRD Section | Status | Spec Coverage | Contract Tests | Implementation Anchors | Remaining Gap |
+| --- | --- | --- | --- | --- | --- |
+| Section 11 Non-Functional Requirements | partial | docs/specs/quality-mutation-pipeline.md, docs/specs/worktree-runtime.md, docs/specs/mcp-extension-governance.md | tests/test_quality_core_contract.py, tests/test_agent_runtime_contract.py, tests/test_mcp_server.py | src/nemo_coding_platform/core/mutations.py:24, src/nemo_coding_platform/core/worktree_runtime.py:47, src/nemo_coding_platform/mcp_server.py:90 | Performance SLOs and secret-handling policy are not yet represented as explicit contract tests. |
+| Section 12 Data Model | partial | docs/specs/task-run-model.md, docs/specs/headless-run-mvp.md | tests/test_agent_runtime_contract.py, tests/test_product_contract.py | src/nemo_coding_platform/core/task_run.py:76, src/nemo_coding_platform/core/headless_runner.py:132 | Some PRD entities (WorkflowRecipe, ModelProfile linkage, explicit NemoMemoryEvent type) are implicit but not fully normalized as first-class contracts. |
+| Section 13 NEMO Memory Lifecycle | aligned | docs/specs/nemo-lifecycle.md, docs/specs/nemo-full-tooling.md | tests/test_nemo_full_tool_contract.py, tests/test_nemo_lifecycle.py | src/nemo_coding_platform/core/memory.py:382, src/nemo_coding_platform/core/nemo_lifecycle.py:1, src/nemo_coding_platform/core/headless_runner.py:677 | none |
+| Section 17 Global MVP Acceptance | partial | docs/specs/desktop-product-contract.md, docs/specs/desktop-ui-flows.md, docs/specs/agent-evals.md | tests/test_desktop_product_contract.py, tests/test_desktop_ui_flows_contract.py, tests/test_release_confidence_e2e.py | src/nemo_coding_platform/mission_control_server.py:3338, src/nemo_coding_platform/core/persistence.py:84, src/nemo_coding_platform/cli.py:969 | Missing a single executable Global MVP gate test that maps all 12 acceptance bullets one-to-one. |
+
 ## SDD Critical Artifacts (Delta)
 
 Newly added to close identified roadmap gaps:
