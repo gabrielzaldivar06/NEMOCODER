@@ -827,6 +827,17 @@ def execute_headless_handoff(
         Artifact.from_content("artifact-validation", run.id, ArtifactType.VALIDATION, "validation.txt", "Validation summary", format_validation_report(validation)),
         Artifact.from_content("artifact-memory", run.id, ArtifactType.MEMORY_SUMMARY, "memory.md", "Memory writeback", f"NEMO writeback prepared. runtime_files={','.join(runtime_files)}"),
     ) + checkpoint_artifacts
+    
+    # Determine repair success reason
+    repair_success_reason = ""
+    if repair_plan and len(repair_plan.attempts) > 0:
+        if validation.passed:
+            repair_success_reason = "validation_passed"
+        elif repair_plan.exhausted:
+            repair_success_reason = "repair_budget_exhausted"
+        else:
+            repair_success_reason = "repair_incomplete"
+    
     review = build_review_package(
         task,
         run,
@@ -835,6 +846,8 @@ def execute_headless_handoff(
         memory_traces,
         mutation_result=effective_mutation_result,
         repair_attempts=len(repair_plan.attempts),
+        repair_plan=repair_plan,
+        repair_success_reason=repair_success_reason,
     )
     write_runtime_file(runtime, "validation.txt", format_validation_report(validation))
     write_runtime_file(runtime, "review-package.md", review.to_markdown())
