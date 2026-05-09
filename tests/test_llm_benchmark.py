@@ -58,6 +58,12 @@ class LLMBenchmarkCoreTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["count"], len(default_benchmark_cases()))
         self.assertGreaterEqual(payload["summary"]["success_rate"], 0.0)
         self.assertLessEqual(payload["summary"]["success_rate"], 1.0)
+        
+        # Verify validation_summary field is present in all iterations
+        for iteration in payload["iterations"]:
+            self.assertIn("validation_summary", iteration)
+            # validation_summary should be a dict (empty if no failures)
+            self.assertIsInstance(iteration["validation_summary"], dict)
 
     def test_save_benchmark_report_writes_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

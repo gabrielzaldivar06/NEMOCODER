@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean, median
@@ -12,6 +12,7 @@ from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.headless_runner import execute_headless_handoff
 from nemo_coding_platform.core.model_config import ModelProfile, default_model_profile
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter
+from nemo_coding_platform.core.validation import ValidationSuiteResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,7 @@ class BenchmarkIteration:
     timeline_events: int
     artifacts_count: int
     success: bool
+    validation_summary: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +59,7 @@ class BenchmarkIteration:
             "changed_files_count": self.changed_files_count,
             "output_chars": self.output_chars,
             "validation_passed": self.validation_passed,
+            "validation_summary": self.validation_summary,
             "repair_attempts": self.repair_attempts,
             "portfolio_tokens": self.portfolio_tokens,
             "token_usage_total": self.token_usage_total,
@@ -468,6 +471,35 @@ def summarize_iterations_by_case(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {case_id: summarize_iterations(entries) for case_id, entries in grouped.items()}
 
 
+def _extract_validation_summary(validation: ValidationSuiteResult) -> dict[str, Any]:
+    """Extract failed command details from validation results for diagnostics."""
+    failed_commands = []
+    first_error_returncode = None
+    first_error_output_preview = ""
+
+    # Handle both real ValidationSuiteResult and mock/SimpleNamespace objects
+    results = getattr(validation, "results", ())
+    if not results:
+        return {}
+
+    for result in results:
+        if not result.passed and result.command.required:
+            failed_commands.append(result.command.command)
+            if first_error_returncode is None:
+                first_error_returncode = result.returncode
+                # Capture first 300 chars of output for quick diagnosis
+                first_error_output_preview = (result.output or "")[:300]
+
+    if not failed_commands:
+        return {}
+
+    return {
+        "failed_commands": failed_commands,
+        "first_error_returncode": first_error_returncode,
+        "first_error_output_preview": first_error_output_preview,
+    }
+
+
 def _run_case_once(
     *,
     case: BenchmarkCase,
@@ -535,6 +567,8 @@ def _run_case_once(
     if token_total > 0 and changed_files_count > 0:
         token_efficiency_per_file = round(token_total / changed_files_count, 4)
 
+    validation_summary = _extract_validation_summary(result.validation)
+
     return BenchmarkIteration(
         case_id=case.case_id,
         iteration=iteration,
@@ -556,6 +590,7 @@ def _run_case_once(
         timeline_events=len(result.timeline.events),
         artifacts_count=len(result.artifacts),
         success=changed_files_count > 0,
+        validation_summary=validation_summary,
     )
 
 
