@@ -262,7 +262,7 @@
       "id": "MVP17",
       "title": "Global MVP Acceptance",
       "prd_section": "17",
-      "status": "partial",
+      "status": "aligned",
       "specs": [
         "docs/specs/desktop-product-contract.md",
         "docs/specs/desktop-ui-flows.md",
@@ -271,14 +271,15 @@
       "tests": [
         "tests/test_desktop_product_contract.py",
         "tests/test_desktop_ui_flows_contract.py",
-        "tests/test_release_confidence_e2e.py"
+        "tests/test_release_confidence_e2e.py",
+        "tests/test_global_mvp_gate.py"
       ],
       "anchors": [
         "src/nemo_coding_platform/mission_control_server.py:3338",
         "src/nemo_coding_platform/core/persistence.py:84",
         "src/nemo_coding_platform/cli.py:969"
       ],
-      "gap": "Missing a single executable Global MVP gate test that maps all 12 acceptance bullets one-to-one."
+      "gap": "none"
     }
   ],
   "definition_of_done": {

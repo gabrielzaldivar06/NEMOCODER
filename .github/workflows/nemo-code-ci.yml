@@ -32,7 +32,7 @@ jobs:
           PYTHONPATH: src
         run: |
           mkdir -p artifacts
-          python -m unittest tests.test_release_confidence_e2e > artifacts/release-confidence.txt
+          python -m unittest tests.test_release_confidence_e2e tests.test_global_mvp_gate > artifacts/release-confidence.txt
           cat artifacts/release-confidence.txt
 
       - name: Generate release confidence evidence
@@ -42,7 +42,7 @@ jobs:
           python -m tests.generate_release_confidence_evidence --json-out artifacts/release-confidence.json --md-out artifacts/release-confidence.md
           cat artifacts/release-confidence.md
 
-        - name: Enforce benchmark regression gate evidence
+      - name: Enforce benchmark regression gate evidence
         run: |
           python - <<'PY'
           import json
