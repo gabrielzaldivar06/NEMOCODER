@@ -46,7 +46,7 @@ class RoleExecutionProfile:
 
     PROVIDER_TIMEOUT_BOUNDS = {
         "subprocess": {"min": 5.0, "max": 600.0},
-        "fake": {"min": 1.0, "max": 120.0},
+        "fake": {"min": 1.0, "max": 300.0},
     }
 
     def __init__(

@@ -6,7 +6,13 @@ from nemo_coding_platform.core.mutations import FileWrite, MutationPlan
 from nemo_coding_platform.core.mutations import QualityMutationEngine
 from nemo_coding_platform.core.repair import RepairBudget
 from nemo_coding_platform.core.repair_engine import _diffs_are_identical, run_repair_loop
-from nemo_coding_platform.core.validation import simulate_validation
+from nemo_coding_platform.core.validation import (
+    ValidationCommand,
+    ValidationResult,
+    ValidationStatus,
+    ValidationSuiteResult,
+    simulate_validation,
+)
 from nemo_coding_platform.core.workspace import Workspace
 
 
@@ -179,7 +185,15 @@ class DiffsIdenticalTests(unittest.TestCase):
 
 
 class TodoReminderInjectionTests(unittest.TestCase):
-    def test_todo_reminder_prepended_on_first_attempt(self) -> None:
+    def test_todo_reminder_not_injected_during_repair(self) -> None:
+        """todo_reminder is intentionally skipped during repair cycles.
+
+        Repair prompts already have a focused objective ("Repair validation
+        failure for: ...") plus concrete repair evidence.  Injecting the full
+        pipeline-step checklist causes the model to enter a deep THINKING loop
+        trying to redo infrastructure steps the runner has already completed,
+        which wastes most of the timeout budget.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             provider = CapturingNoopProvider()
             reminder = "<system_reminder>\nDo the thing.\n</system_reminder>"
@@ -195,7 +209,7 @@ class TodoReminderInjectionTests(unittest.TestCase):
             )
 
         self.assertTrue(len(provider.requests) >= 1)
-        self.assertIn("<system_reminder>", provider.requests[0].context)
+        self.assertNotIn("<system_reminder>", provider.requests[0].context)
         self.assertIn("base context", provider.requests[0].context)
 
     def test_no_todo_reminder_when_empty(self) -> None:
@@ -299,6 +313,35 @@ class TokenBudgetTests(unittest.TestCase):
 
         self.assertEqual(result.stop_reason, "token_budget_exhausted_real")
         self.assertEqual(result.tokens_consumed, 120)
+
+    def test_repair_loop_uses_compacted_validation_evidence_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = CapturingNoopProvider()
+            long_output = "failure-log " * 300
+            validation = ValidationSuiteResult(
+                (
+                    ValidationResult(
+                        ValidationCommand("python tests.py"),
+                        ValidationStatus.FAILED,
+                        long_output,
+                        1,
+                    ),
+                )
+            )
+
+            run_repair_loop(
+                validation,
+                ("python tests.py",),
+                ("python tests.py",),
+                RepairBudget(1),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                provider,
+                MutationRequest("Build", "spec.md", ("ok",), "context"),
+                evidence_compactor=lambda _content, _attempt: ("compacted failure summary", "ev-test-1"),
+            )
+
+        self.assertIn("compacted_validation_claim=compacted failure summary", provider.requests[0].validation_output)
+        self.assertIn("evidence_handle=ev-test-1", provider.requests[0].validation_output)
 
 
 if __name__ == "__main__":

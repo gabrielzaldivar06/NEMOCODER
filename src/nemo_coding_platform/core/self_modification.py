@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -133,6 +133,25 @@ def build_self_mod_handoff_request(request: SelfModRequest, repo_root: str | Pat
         validation_commands=validation_commands,
         repair_budget=request.repair_budget,
     )
+
+
+def _adaptive_repair_budget(request: SelfModRequest, context: dict[str, Any]) -> tuple[int, str]:
+    base_budget = max(0, request.repair_budget)
+    continuity = context.get("continuity", {}) if isinstance(context.get("continuity"), dict) else {}
+    risks = context.get("risk_patterns", {}) if isinstance(context.get("risk_patterns"), dict) else {}
+    continuity_count = int(continuity.get("count") or 0)
+    risk_count = int(risks.get("count") or 0)
+
+    if risk_count >= 3:
+        adjusted_budget = max(1, base_budget - 1)
+        reason = f"reduced after {risk_count} risk pattern(s)"
+    elif risk_count == 0 and continuity_count >= 1:
+        adjusted_budget = min(base_budget + 1, 5)
+        reason = f"expanded after {continuity_count} continuity item(s)"
+    else:
+        adjusted_budget = base_budget
+        reason = "left unchanged"
+    return adjusted_budget, reason
 
 
 def build_self_mod_context(adapter: PersistentNemoAdapter | InMemoryNemoAdapter, request: SelfModRequest) -> dict[str, Any]:
@@ -468,6 +487,10 @@ def execute_self_modification(
     permissions_file = ensure_self_mod_permissions_file(repo_root)
     adapter = PersistentNemoAdapter(PersistentMemoryStore(Path(request.memory_db)))
     context = build_self_mod_context(adapter, request)
+    adaptive_repair_budget, adaptive_reason = _adaptive_repair_budget(request, context)
+    request = replace(request, repair_budget=adaptive_repair_budget)
+    context["adaptive_repair_budget"] = adaptive_repair_budget
+    context["adaptive_repair_budget_reason"] = adaptive_reason
     decision_writeback = record_self_mod_decision(
         request.memory_db,
         objective=request.description,

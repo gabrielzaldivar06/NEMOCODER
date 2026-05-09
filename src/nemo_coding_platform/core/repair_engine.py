@@ -8,7 +8,7 @@ from nemo_coding_platform.core.engine_interface import EngineProvider, MutationR
 from nemo_coding_platform.core.mutations import QualityMutationEngine
 from nemo_coding_platform.core.repair import RepairBudget, RepairPlan
 from nemo_coding_platform.core.validation import ValidationSuiteResult, simulate_validation
-from nemo_coding_platform.core.context_compaction import compact_context
+from nemo_coding_platform.core.context_compaction import compact_context, prune_tool_output
 from nemo_coding_platform.core.post_mutation_lint import lint_changed_files, format_lint_evidence
 
 
@@ -56,6 +56,7 @@ def run_repair_loop(
     on_attempt: Callable[[int, float], None] | None = None,
     token_budget: int | None = None,
     attempt_offset: int = 0,
+    evidence_compactor: Callable[[str, int], tuple[str, str | None]] | None = None,
 ) -> RepairRunResult:
     plan = RepairPlan(budget)
     validation = initial_validation
@@ -86,7 +87,19 @@ def run_repair_loop(
 
         failed = ", ".join(result.command.command for result in validation.results if not result.passed) or "validation"
         plan = plan.next_attempt("validation_failed", f"repair failed command(s): {failed}")
-        validation_evidence = format_validation_evidence(validation, attempt_number)
+        raw_validation_evidence = format_validation_evidence(validation, attempt_number)
+        validation_evidence = prune_tool_output(raw_validation_evidence, max_chars=1500)
+        if evidence_compactor and len(raw_validation_evidence) > 1500:
+            compact_claim, evidence_handle = evidence_compactor(raw_validation_evidence, attempt_number)
+            if compact_claim:
+                evidence_lines = [
+                    f"repair_attempt={attempt_number}",
+                    validation.summary(),
+                    f"compacted_validation_claim={compact_claim}",
+                ]
+                if evidence_handle:
+                    evidence_lines.append(f"evidence_handle={evidence_handle}")
+                validation_evidence = "\n".join(evidence_lines)
         previous_diff = mutations[-1].diff_artifact if mutations else base_request.previous_diff
 
         # --- Loop Detection (inspired by deer-flow loop_detection_middleware) ---
@@ -102,20 +115,29 @@ def run_repair_loop(
                 break
 
         # Prepend the todo reminder to the context on the first attempt only.
-        reminder_prefix = (todo_reminder + "\n\n") if todo_reminder and attempt_number == 1 else ""
+        # Skip the reminder for repairs: the repair objective already states what
+        # needs to be fixed; the pipeline-step checklist confuses the model into
+        # thinking it must re-run infrastructure it cannot and should not redo.
+        reminder_prefix = ""
+
+        # Classify the failure to frame the repair objective clearly.
+        noop_attempt = not mutations[-1].changed_files if mutations else False
+
+        repair_evidence_lines = [
+            "# Repair Evidence",
+            validation_evidence,
+        ]
+        if lint_evidence:
+            repair_evidence_lines += ["", lint_evidence]
+        if previous_diff:
+            repair_evidence_lines += ["", "# Previous Diff", previous_diff]
 
         repair_context = "\n".join(
             item
             for item in (
-                reminder_prefix + base_request.context,
+                base_request.context,
                 "",
-                "# Repair Evidence",
-                validation_evidence,
-                "",
-                lint_evidence,
-                "",
-                "# Previous Diff",
-                previous_diff or "No previous diff captured.",
+                *repair_evidence_lines,
             )
             if item is not None
         )
@@ -131,8 +153,15 @@ def run_repair_loop(
                 break
             remaining_timeout_seconds = min(base_request.timeout_seconds, max(1.0, remaining_budget))
         
+        # When the previous attempt wrote nothing, the model just stalled.
+        # Make the directive concrete: "write the file now" instead of "repair failure".
+        if noop_attempt:
+            repair_objective = f"No files were written. Write the required files now for: {base_request.objective}"
+        else:
+            repair_objective = f"Repair validation failure for: {base_request.objective}"
+
         repair_request = MutationRequest(
-            objective=f"Repair validation failure for: {base_request.objective}",
+            objective=repair_objective,
             spec_path=base_request.spec_path,
             acceptance_criteria=base_request.acceptance_criteria,
             context=repair_context,

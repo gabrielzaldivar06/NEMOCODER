@@ -214,19 +214,19 @@ class TestLongHandoffBudgetExtended(unittest.TestCase):
     
     def test_budget_has_per_phase_allocations(self) -> None:
         budget = LongHandoffBudget(
-            max_runtime_minutes=120,
-            heartbeat_minutes=15,
-            max_heartbeats=4,
-            token_budget=32_000,
-            plan_minutes=30,
-            execute_minutes=60,
-            review_minutes=30,
+            max_runtime_minutes=240,
+            heartbeat_minutes=30,
+            max_heartbeats=8,
+            token_budget=64_000,
+            plan_minutes=60,
+            execute_minutes=120,
+            review_minutes=60,
         )
         
-        self.assertEqual(budget.plan_minutes, 30)
-        self.assertEqual(budget.execute_minutes, 60)
-        self.assertEqual(budget.review_minutes, 30)
-        self.assertEqual(budget.plan_minutes + budget.execute_minutes + budget.review_minutes, 120)
+        self.assertEqual(budget.plan_minutes, 60)
+        self.assertEqual(budget.execute_minutes, 120)
+        self.assertEqual(budget.review_minutes, 60)
+        self.assertEqual(budget.plan_minutes + budget.execute_minutes + budget.review_minutes, 240)
 
     def test_budget_validation_checks_per_phase_minutes(self) -> None:
         budget = LongHandoffBudget(
@@ -244,9 +244,9 @@ class TestLongHandoffBudgetExtended(unittest.TestCase):
     def test_budget_default_per_phase_allocation(self) -> None:
         budget = LongHandoffBudget()
         
-        self.assertEqual(budget.plan_minutes, 30)
-        self.assertEqual(budget.execute_minutes, 60)
-        self.assertEqual(budget.review_minutes, 30)
+        self.assertEqual(budget.plan_minutes, 60)
+        self.assertEqual(budget.execute_minutes, 120)
+        self.assertEqual(budget.review_minutes, 60)
 
 
 class TestHeartbeatEmissionTiming(unittest.TestCase):
@@ -302,7 +302,7 @@ class TestHeadlessHandoffSupervised(unittest.TestCase):
         # Collect all signals
         signals = []
         try:
-            generator = execute_headless_handoff_supervised(request, budget=budget)
+            generator = execute_headless_handoff_supervised(request, budget=budget, provider_mode="fake")
             while True:
                 signal = next(generator)
                 signals.append(signal)
@@ -333,7 +333,7 @@ class TestHeadlessHandoffSupervised(unittest.TestCase):
         
         signals = []
         try:
-            generator = execute_headless_handoff_supervised(request, budget=budget)
+            generator = execute_headless_handoff_supervised(request, budget=budget, provider_mode="fake")
             while True:
                 signal = next(generator)
                 signals.append(signal)
@@ -397,7 +397,7 @@ class TestHeadlessHandoffResume(unittest.TestCase):
 
         signals = []
         try:
-            generator = execute_headless_handoff_supervised(request, budget=pause_budget)
+            generator = execute_headless_handoff_supervised(request, budget=pause_budget, provider_mode="fake")
             while True:
                 signals.append(next(generator))
         except StopIteration:
@@ -419,7 +419,7 @@ class TestHeadlessHandoffResume(unittest.TestCase):
 
             resumed_signals = []
             try:
-                resume_generator = resume_headless_handoff_from_checkpoint(request, checkpoint_path)
+                resume_generator = resume_headless_handoff_from_checkpoint(request, checkpoint_path, provider_mode="fake")
                 while True:
                     resumed_signals.append(next(resume_generator))
             except StopIteration as complete:

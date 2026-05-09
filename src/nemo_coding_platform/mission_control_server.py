@@ -21,6 +21,7 @@ from urllib.parse import quote_plus, urlparse
 from uuid import uuid4
 
 from nemo_coding_platform.core.evals import score_persisted_result, score_spec10_lite
+from nemo_coding_platform.core.engine_interface import ENGINE_MESSAGE_FILE
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.long_handoff_supervisor import LongHandoffBudget, execute_long_handoff_supervisor
 from nemo_coding_platform.core.memory import MemoryAtomType, NEMO_TOOL_REGISTRY, NemoToolRisk
@@ -39,9 +40,12 @@ from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool
 
 DEFAULT_APPLY_RESULTS = ".nemo-runtimes/mission-control/apply-results"
 DEFAULT_RUN_RESULTS = ".nemo-runtimes/mission-control/runs"
+DEFAULT_JOB_SNAPSHOTS = ".nemo-runtimes/mission-control/jobs"
 JOB_LOG_LIMIT = 10_000
 DECISION_LOG_LIMIT = 200
 NEMO_TOOL_SCAN_TTL_SECONDS = 30
+JOB_HEARTBEAT_SECONDS = 20.0
+JOB_STALL_HEARTBEATS = 8
 _NEMO_TOOL_SCAN_CACHE: dict[str, object] = {"at": 0.0, "verified_read_only": (), "declared_write_or_destructive": ()}
 
 
@@ -57,9 +61,32 @@ class HandoffJob:
     logs: list[str]
     returncode: int | None = None
     process: subprocess.Popen[str] | None = None
+    heartbeat_stop: threading.Event | None = None
+    heartbeat_thread: threading.Thread | None = None
     error: str | None = None
+    last_runtime_signature: str = ""
+    stagnant_heartbeats: int = 0
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    @classmethod
+    def from_snapshot(cls, payload: dict[str, Any]) -> "HandoffJob":
+        return cls(
+            job_id=str(payload.get("job_id") or ""),
+            task_id=str(payload.get("task_id") or ""),
+            run_id=str(payload.get("run_id") or ""),
+            run_json=str(payload.get("run_json") or ""),
+            status=str(payload.get("status") or "orphaned"),
+            command=tuple(str(item) for item in payload.get("command", []) if isinstance(item, str)),
+            payload=dict(payload.get("payload") or {}),
+            logs=[str(item) for item in payload.get("logs", []) if isinstance(item, str)],
+            returncode=int(payload["returncode"]) if isinstance(payload.get("returncode"), int) else None,
+            error=str(payload.get("error")) if isinstance(payload.get("error"), str) and payload.get("error") else None,
+            last_runtime_signature=str(payload.get("last_runtime_signature") or ""),
+            stagnant_heartbeats=int(payload.get("stagnant_heartbeats") or 0),
+            created_at=str(payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            updated_at=str(payload.get("updated_at") or datetime.now(timezone.utc).isoformat()),
+        )
 
     def to_dict(self, *, include_logs: bool = True) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -71,8 +98,12 @@ class HandoffJob:
             "returncode": self.returncode,
             "error": self.error,
             "command": list(self.command),
+            "objective": self.payload.get("objective"),
+            "timeout_seconds": self.payload.get("timeout_seconds"),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "last_runtime_signature": self.last_runtime_signature,
+            "stagnant_heartbeats": self.stagnant_heartbeats,
         }
         if include_logs:
             payload["logs"] = list(self.logs)
@@ -80,9 +111,18 @@ class HandoffJob:
 
 
 class HandoffJobManager:
-    def __init__(self) -> None:
+    def __init__(self, snapshot_root: Path | None = None) -> None:
         self._jobs: dict[str, HandoffJob] = {}
         self._lock = threading.Lock()
+        self._snapshot_root = snapshot_root
+        if self._snapshot_root is not None:
+            self._snapshot_root.mkdir(parents=True, exist_ok=True)
+            self._restore_snapshots()
+
+    def configure_snapshot_root(self, snapshot_root: Path) -> None:
+        self._snapshot_root = snapshot_root
+        self._snapshot_root.mkdir(parents=True, exist_ok=True)
+        self._restore_snapshots()
 
     def start(self, config: "MissionControlServerConfig", payload: dict[str, object]) -> HandoffJob:
         settings = _load_settings(config)
@@ -101,6 +141,7 @@ class HandoffJobManager:
         job = HandoffJob(job_id, task_id, run_id, str(run_json), "starting", command, dict(merged_payload), ["starting handoff job"])
         with self._lock:
             self._jobs[job_id] = job
+        self._persist_job(job)
         threading.Thread(target=self._run_job, args=(config, job), daemon=True).start()
         return job
 
@@ -120,6 +161,7 @@ class HandoffJobManager:
         job = HandoffJob(job_id, task_id, run_id, str(run_json), "starting", command, dict(merged_payload), ["starting self-modification job"])
         with self._lock:
             self._jobs[job_id] = job
+        self._persist_job(job)
         threading.Thread(target=self._run_job, args=(config, job), daemon=True).start()
         return job
 
@@ -159,6 +201,8 @@ class HandoffJobManager:
             self._append_log(job, f"{log_line} ignored status={job.status}")
             return job
         self._append_log(job, log_line)
+        if job.heartbeat_stop is not None:
+            job.heartbeat_stop.set()
         if job.process and job.process.poll() is None:
             self._set_status(job, stopped_status)
             job.process.terminate()
@@ -169,6 +213,7 @@ class HandoffJobManager:
                 self._append_log(job, "process did not stop after terminate; sent kill")
         elif job.status not in {"completed", "failed", "cancelled"}:
             self._set_status(job, stopped_status)
+        self._join_heartbeat(job)
         return job
 
     def find_orphans(self, *, grace_seconds: int = 120) -> list[dict[str, object]]:
@@ -211,10 +256,148 @@ class HandoffJobManager:
         job.updated_at = datetime.now(timezone.utc).isoformat()
         if len(job.logs) > JOB_LOG_LIMIT:
             del job.logs[:-JOB_LOG_LIMIT]
+        self._persist_job(job)
 
     def _set_status(self, job: HandoffJob, status: str) -> None:
         job.status = status
         job.updated_at = datetime.now(timezone.utc).isoformat()
+        self._persist_job(job)
+
+    def _snapshot_path(self, job_id: str) -> Path | None:
+        if self._snapshot_root is None:
+            return None
+        return self._snapshot_root / f"{_safe_stem(job_id)}.json"
+
+    def _persist_job(self, job: HandoffJob) -> None:
+        target = self._snapshot_path(job.job_id)
+        if target is None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        snapshot = {
+            **job.to_dict(include_logs=True),
+            "payload": dict(job.payload),
+            "schema_version": 1,
+        }
+        temp = target.with_suffix(".tmp")
+        temp.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
+        temp.replace(target)
+
+    def _restore_snapshots(self) -> None:
+        if self._snapshot_root is None or not self._snapshot_root.exists():
+            return
+        with self._lock:
+            if self._jobs:
+                return
+            for snapshot in sorted(self._snapshot_root.glob("*.json")):
+                try:
+                    payload = json.loads(snapshot.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                job = HandoffJob.from_snapshot(payload)
+                if not job.job_id:
+                    continue
+                self._reconcile_restored_job(job)
+                self._jobs[job.job_id] = job
+
+    def _reconcile_restored_job(self, job: HandoffJob) -> None:
+        if job.status not in {"starting", "running"}:
+            return
+        run_path = Path(job.run_json)
+        if run_path.exists():
+            job.status = "completed"
+            if job.returncode is None:
+                job.returncode = 0
+            if not any("restored snapshot detected completed run_json" in line for line in job.logs):
+                job.logs.append("restored snapshot detected completed run_json")
+        else:
+            job.status = "orphaned"
+            if not any("restored snapshot missing run_json" in line for line in job.logs):
+                job.logs.append("restored snapshot missing run_json")
+        job.updated_at = datetime.now(timezone.utc).isoformat()
+
+    def _heartbeat_tick(self, config: "MissionControlServerConfig", job: HandoffJob) -> None:
+        self._append_log(job, self._heartbeat_snapshot(config, job))
+        stalled_reason = self._stall_reason(config, job)
+        if stalled_reason and job.process and job.process.poll() is None:
+            self._append_log(job, stalled_reason)
+            job.error = stalled_reason
+            job.process.kill()
+            self._set_status(job, "failed")
+
+    def _stall_reason(self, config: "MissionControlServerConfig", job: HandoffJob) -> str | None:
+        runtime_path = self._runtime_path(config, job)
+        run_path = Path(job.run_json)
+        if runtime_path is None or not runtime_path.exists() or run_path.exists():
+            job.last_runtime_signature = ""
+            job.stagnant_heartbeats = 0
+            return None
+
+        top_level = [path for path in sorted(runtime_path.iterdir(), key=lambda item: item.name) if path.is_file()]
+        signature = "|".join(f"{path.name}:{path.stat().st_size}" for path in top_level)
+        if signature and signature == job.last_runtime_signature:
+            job.stagnant_heartbeats += 1
+        else:
+            job.last_runtime_signature = signature
+            job.stagnant_heartbeats = 0
+        self._persist_job(job)
+
+        if job.stagnant_heartbeats < JOB_STALL_HEARTBEATS:
+            return None
+        return (
+            "stall detected: runtime artifacts unchanged for "
+            f"{job.stagnant_heartbeats} heartbeats (~{int(job.stagnant_heartbeats * JOB_HEARTBEAT_SECONDS)}s); "
+            "terminating job to fail closed"
+        )
+
+    def _start_heartbeat(self, config: "MissionControlServerConfig", job: HandoffJob) -> None:
+        stop_event = threading.Event()
+        job.heartbeat_stop = stop_event
+
+        def _heartbeat_loop() -> None:
+            while job.process and job.process.poll() is None:
+                if stop_event.wait(JOB_HEARTBEAT_SECONDS):
+                    break
+                if not job.process or job.process.poll() is not None:
+                    break
+                self._heartbeat_tick(config, job)
+
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+        job.heartbeat_thread = heartbeat_thread
+        heartbeat_thread.start()
+
+    def _join_heartbeat(self, job: HandoffJob) -> None:
+        heartbeat_thread = job.heartbeat_thread
+        if heartbeat_thread is not None and heartbeat_thread.is_alive():
+            heartbeat_thread.join(timeout=1)
+        job.heartbeat_thread = None
+        job.heartbeat_stop = None
+
+    def _runtime_path(self, config: "MissionControlServerConfig", job: HandoffJob) -> Path | None:
+        if not job.task_id or not job.run_id:
+            return None
+        return config.runtimes_path / f"{_safe_stem(job.task_id)}-{_safe_stem(job.run_id)}"
+
+    def _heartbeat_snapshot(self, config: "MissionControlServerConfig", job: HandoffJob) -> str:
+        run_path = Path(job.run_json)
+        run_exists = run_path.exists()
+        run_size = run_path.stat().st_size if run_exists else 0
+        runtime_path = self._runtime_path(config, job)
+        if runtime_path is None or not runtime_path.exists():
+            return f"heartbeat process_alive=1 run_json_exists={int(run_exists)} run_json_size={run_size} runtime_exists=0"
+
+        top_level_files = sorted(path.name for path in runtime_path.iterdir() if path.is_file())
+        engine_message = runtime_path / ENGINE_MESSAGE_FILE
+        checkpoint_count = sum(1 for path in runtime_path.glob("checkpoint-*.json") if path.is_file())
+        interesting_files = ",".join(top_level_files[:4]) if top_level_files else "-"
+        return (
+            "heartbeat "
+            f"process_alive=1 run_json_exists={int(run_exists)} run_json_size={run_size} "
+            f"runtime_exists=1 runtime_files={len(top_level_files)} "
+            f"engine_message_exists={int(engine_message.exists())} checkpoints={checkpoint_count} "
+            f"runtime_sample={interesting_files}"
+        )
 
     def _build_command(
         self,
@@ -229,6 +412,7 @@ class HandoffJobManager:
     ) -> tuple[str, ...]:
         command: list[str] = [
             sys.executable,
+            "-u",
             "-m",
             "nemo_coding_platform",
             "long-handoff-run",
@@ -287,6 +471,8 @@ class HandoffJobManager:
             command.extend(("--pause-after-minutes", str(payload.get("pause_after_minutes"))))
         if bool(payload.get("validation_escalation_mode")):
             command.append("--validation-escalation-mode")
+        if bool(payload.get("real_validation", True)):
+            command.append("--real-validation")
         return tuple(command)
 
     def _build_self_modify_command(
@@ -301,6 +487,7 @@ class HandoffJobManager:
     ) -> tuple[str, ...]:
         command: list[str] = [
             sys.executable,
+            "-u",
             "-m",
             "nemo_coding_platform",
             "self-modify",
@@ -338,7 +525,7 @@ class HandoffJobManager:
         source_root = Path(__file__).resolve().parents[1]
         existing_pythonpath = os.environ.get("PYTHONPATH", "")
         pythonpath = str(source_root) if not existing_pythonpath else f"{source_root};{existing_pythonpath}"
-        env = {**os.environ, "PYTHONPATH": pythonpath}
+        env = {**os.environ, "PYTHONPATH": pythonpath, "PYTHONUNBUFFERED": "1"}
         try:
             job.process = subprocess.Popen(
                 job.command,
@@ -349,6 +536,9 @@ class HandoffJobManager:
                 env=env,
             )
             self._set_status(job, "running")
+            self._append_log(job, f"process started pid={job.process.pid}")
+            self._append_log(job, f"tracking run_json={job.run_json}")
+            self._start_heartbeat(config, job)
             if job.process.stdout:
                 try:
                     for line in job.process.stdout:
@@ -356,12 +546,18 @@ class HandoffJobManager:
                 finally:
                     job.process.stdout.close()
             job.returncode = job.process.wait()
+            if job.heartbeat_stop is not None:
+                job.heartbeat_stop.set()
+            self._join_heartbeat(job)
             if job.status in {"cancelled", "paused"}:
                 self._append_log(job, f"job {job.status}")
                 return
             self._set_status(job, "completed" if job.returncode == 0 else "failed")
             self._append_log(job, f"job finished returncode={job.returncode}")
         except OSError as error:
+            if job.heartbeat_stop is not None:
+                job.heartbeat_stop.set()
+            self._join_heartbeat(job)
             self._set_status(job, "failed")
             job.error = str(error)
             self._append_log(job, str(error))
@@ -385,6 +581,10 @@ class MissionControlServerConfig:
     apply_results_path: Path
     run_results_path: Path
     memory_db: Path | None
+
+    @property
+    def job_snapshots_path(self) -> Path:
+        return _resolve_under_repo(self.repo_path, DEFAULT_JOB_SNAPSHOTS)
 
     @classmethod
     def from_paths(
@@ -440,18 +640,19 @@ def _default_settings(config: MissionControlServerConfig) -> dict[str, object]:
         "memory_db": str(config.memory_db) if config.memory_db else "",
         "nemo_mcp_url": os.environ.get("NEMOCODE_NEMO_MCP_URL", "http://127.0.0.1:8765/mcp/sse"),
         "runtime_path": str(config.runtimes_path),
-        "timeout_seconds": 120,
-        "max_runtime_minutes": 120,
-        "heartbeat_minutes": 15,
-        "max_heartbeats": 4,
-        "token_budget": 32000,
+        "timeout_seconds": 300,
+        "max_runtime_minutes": 240,
+        "heartbeat_minutes": 30,
+        "max_heartbeats": 8,
+        "token_budget": 64000,
         "pause_after_minutes": None,
-        "plan_minutes": 30,
-        "execute_minutes": 60,
-        "review_minutes": 30,
-        "repair_time_limit_seconds": 3600,
-        "validation_time_budget_seconds": 1800,
+        "plan_minutes": 60,
+        "execute_minutes": 120,
+        "review_minutes": 60,
+        "repair_time_limit_seconds": 7200,
+        "validation_time_budget_seconds": 3600,
         "validation_escalation_mode": False,
+        "real_validation": True,
         "validation_policy": "smoke",
         "nemo_required": config.memory_db is not None,
         "quality_core": "product/nemo_code_runtime",
@@ -526,8 +727,8 @@ def _validate_model_roles_payload(raw: object) -> dict[str, str]:
 
 def _validate_provider_timeout(provider: str, timeout_seconds: float, *, error_code: str) -> None:
     limits = {
-        "subprocess": (5.0, 600.0),
-        "fake": (1.0, 120.0),
+        "subprocess": (5.0, 1800.0),
+        "fake": (1.0, 300.0),
     }
     minimum, maximum = limits.get(provider, (1.0, 600.0))
     if timeout_seconds < minimum or timeout_seconds > maximum:
@@ -1082,7 +1283,7 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {os.environ.get('LMSTUDIO_API_KEY', 'lm-studio')}"},
         method="POST",
     )
-    timeout = min(max(_timeout_seconds(payload), 1.0), 120.0)
+    timeout = min(max(_timeout_seconds(payload), 1.0), 300.0)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response_payload = json.loads(response.read().decode("utf-8"))
@@ -1170,10 +1371,12 @@ def _selected_nemo_payload(payload: dict[str, object]) -> dict[str, Any] | None:
     }
 
 
-def api_state(config: MissionControlServerConfig) -> dict[str, object]:
+def api_state(config: MissionControlServerConfig, jobs: HandoffJobManager | None = None) -> dict[str, object]:
     settings = _load_settings(config)
     recent = tuple(str(item) for item in settings.get("recent_repos", []) if isinstance(item, str))
-    return build_mission_control_state(config.repo_path, config.runtimes_path, settings=settings, recent_repos=recent)
+    state = build_mission_control_state(config.repo_path, config.runtimes_path, settings=settings, recent_repos=recent)
+    state["jobs"] = jobs.list() if jobs is not None else []
+    return state
 
 
 def api_settings(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
@@ -1198,6 +1401,7 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
         "repair_time_limit_seconds",
         "validation_time_budget_seconds",
         "validation_escalation_mode",
+        "real_validation",
         "validation_policy",
         "quality_core",
     }
@@ -1230,7 +1434,7 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
     effective_provider = str(payload.get("provider") or settings.get("provider") or "subprocess")
     if effective_provider not in {"subprocess", "fake"}:
         raise _bad_request("provider must be subprocess or fake", error_code="invalid_provider")
-    effective_timeout = float(payload.get("timeout_seconds") or settings.get("timeout_seconds") or 30.0)
+    effective_timeout = float(payload.get("timeout_seconds") or settings.get("timeout_seconds") or 300.0)
     _validate_provider_timeout(effective_provider, effective_timeout, error_code="invalid_setting_value")
     if "pause_after_minutes" in payload and payload.get("pause_after_minutes") is not None:
         try:
@@ -1241,6 +1445,8 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
             raise _bad_request("pause_after_minutes must be positive", error_code="invalid_setting_value")
     if "validation_escalation_mode" in payload and not isinstance(payload.get("validation_escalation_mode"), bool):
         raise _bad_request("validation_escalation_mode must be boolean", error_code="invalid_setting_value")
+    if "real_validation" in payload and not isinstance(payload.get("real_validation"), bool):
+        raise _bad_request("real_validation must be boolean", error_code="invalid_setting_value")
     if "model_roles" in payload:
         settings["model_roles"] = _validate_model_roles_payload(payload.get("model_roles"))
     elif "default_model" in payload:
@@ -1258,7 +1464,7 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
     settings["memory_db"] = str(next_config.memory_db) if next_config.memory_db else ""
     _save_settings(next_config, settings)
     server.config = next_config
-    return {"ok": True, "settings": settings, "state": api_state(server.config)}
+    return {"ok": True, "settings": settings, "state": api_state(server.config, server.jobs)}
 
 
 def api_repo_open(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
@@ -1275,7 +1481,7 @@ def api_repo_open(server: "MissionControlHttpServer", payload: dict[str, object]
     next_config = server.config.with_runtime_settings({**settings, "repo_path": str(repo)})
     _save_settings(next_config, {**settings, "repo_path": str(repo), "runtime_path": str(next_config.runtimes_path), "memory_db": str(next_config.memory_db) if next_config.memory_db else ""})
     server.config = next_config
-    return {"ok": True, "repo": {"path": str(repo), "is_git_repo": True}, "state": api_state(server.config)}
+    return {"ok": True, "repo": {"path": str(repo), "is_git_repo": True}, "state": api_state(server.config, server.jobs)}
 
 
 def api_repo_clone(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
@@ -2073,6 +2279,76 @@ def api_nemo_risk_map(config: MissionControlServerConfig, payload: dict[str, obj
     return {"ok": True, "enabled": True, **patterns}
 
 
+def api_nemo_cognitive_stats(config: MissionControlServerConfig, payload: dict[str, object] | None = None) -> dict[str, object]:
+    payload_data = payload if isinstance(payload, dict) else {}
+    selected = _selected_nemo_payload(payload_data)
+    run_kpis = api_kpis(config).get("kpis", {})
+    if config.memory_db is None:
+        return {
+            "ok": True,
+            "enabled": False,
+            "selected_run": selected,
+            "context_portfolio": selected.get("portfolio") if selected else None,
+            "health": {"enabled": False, "status": "disabled", "db_path": None},
+            "run_kpis": run_kpis,
+            "memory_kpis": {
+                "atom_count": 0,
+                "correction_count": 0,
+                "evidence_count": 0,
+                "feedback_count": 0,
+                "useful_feedback_count": 0,
+                "not_useful_feedback_count": 0,
+                "useful_feedback_rate": None,
+                "portfolio_tokens": None,
+                "portfolio_budget": None,
+                "portfolio_utilization": None,
+            },
+        }
+
+    store = PersistentMemoryStore(config.memory_db)
+    stats = store.stats()
+    corrections = store.search_atoms(atom_types=(MemoryAtomType.CORRECTION,), limit=250)
+    feedback = store.list_feedback(limit=50)
+    useful_feedback_count = sum(1 for item in feedback if bool(item.get("was_useful")))
+    not_useful_feedback_count = sum(1 for item in feedback if item.get("was_useful") is False)
+    useful_feedback_rate = round(useful_feedback_count / len(feedback), 3) if feedback else None
+
+    portfolio = selected.get("portfolio") if selected else None
+    portfolio_tokens = None
+    portfolio_budget = None
+    portfolio_utilization = None
+    if isinstance(portfolio, dict):
+        token_value = portfolio.get("estimated_tokens")
+        budget_value = portfolio.get("token_budget")
+        if isinstance(token_value, (int, float)):
+            portfolio_tokens = int(token_value)
+        if isinstance(budget_value, (int, float)) and int(budget_value) > 0:
+            portfolio_budget = int(budget_value)
+        if portfolio_tokens is not None and portfolio_budget is not None and portfolio_budget > 0:
+            portfolio_utilization = round(portfolio_tokens / portfolio_budget, 3)
+
+    return {
+        "ok": True,
+        "enabled": True,
+        "selected_run": selected,
+        "context_portfolio": portfolio,
+        "health": {"enabled": True, "status": "ok", "db_path": str(config.memory_db), **stats},
+        "run_kpis": run_kpis,
+        "memory_kpis": {
+            "atom_count": stats["atom_count"],
+            "correction_count": len(corrections),
+            "evidence_count": stats["evidence_count"],
+            "feedback_count": stats["feedback_count"],
+            "useful_feedback_count": useful_feedback_count,
+            "not_useful_feedback_count": not_useful_feedback_count,
+            "useful_feedback_rate": useful_feedback_rate,
+            "portfolio_tokens": portfolio_tokens,
+            "portfolio_budget": portfolio_budget,
+            "portfolio_utilization": portfolio_utilization,
+        },
+    }
+
+
 def api_nemo(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     selected = _selected_nemo_payload(payload)
     if config.memory_db is None:
@@ -2308,14 +2584,14 @@ def api_handoff(config: MissionControlServerConfig, payload: dict[str, object]) 
     result = execute_long_handoff_supervisor(
         request,
         budget=LongHandoffBudget(
-            max_runtime_minutes=int(payload.get("max_runtime_minutes") or 30),
-            heartbeat_minutes=int(payload.get("heartbeat_minutes") or 10),
-            max_heartbeats=int(payload.get("max_heartbeats") or 1),
-            token_budget=int(payload.get("token_budget") or 8000),
+            max_runtime_minutes=int(payload.get("max_runtime_minutes") or 240),
+            heartbeat_minutes=int(payload.get("heartbeat_minutes") or 30),
+            max_heartbeats=int(payload.get("max_heartbeats") or 8),
+            token_budget=int(payload.get("token_budget") or 64000),
             pause_after_minutes=int(payload.get("pause_after_minutes")) if payload.get("pause_after_minutes") is not None else None,
-            plan_minutes=int(payload.get("plan_minutes") or 30),
-            execute_minutes=int(payload.get("execute_minutes") or 60),
-            review_minutes=int(payload.get("review_minutes") or 30),
+            plan_minutes=int(payload.get("plan_minutes") or 60),
+            execute_minutes=int(payload.get("execute_minutes") or 120),
+            review_minutes=int(payload.get("review_minutes") or 60),
         ),
         task_id=task_id,
         run_id=run_id,
@@ -2324,6 +2600,7 @@ def api_handoff(config: MissionControlServerConfig, payload: dict[str, object]) 
         timeout_seconds=_timeout_seconds(payload),
         target_files=target_files,
         validation_policy=str(payload.get("validation_policy") or "smoke"),
+        real_validation=bool(payload.get("real_validation", True)),
         nemo_adapter=_nemo_adapter(config.memory_db),
         repair_time_limit_seconds=float(payload.get("repair_time_limit_seconds")) if payload.get("repair_time_limit_seconds") is not None else None,
         validation_time_budget_seconds=float(payload.get("validation_time_budget_seconds")) if payload.get("validation_time_budget_seconds") is not None else None,
@@ -2345,7 +2622,7 @@ def api_jobs(server: "MissionControlHttpServer") -> dict[str, object]:
 
 
 def api_job(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
-    return {"ok": True, "job": server.jobs.get(_job_id(payload)).to_dict(), "state": api_state(server.config)}
+    return {"ok": True, "job": server.jobs.get(_job_id(payload)).to_dict(), "state": api_state(server.config, server.jobs)}
 
 
 def api_job_cancel(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
@@ -2555,7 +2832,7 @@ def _self_interface_action(message: str, payload: dict[str, object]) -> dict[str
             "validation_policy": "targeted",
             "validation_commands": ["npm --prefix apps/mission-control run build", "npm --prefix apps/mission-control run test:smoke"],
             "provider": "subprocess",
-            "timeout_seconds": payload.get("timeout_seconds") or "180",
+            "timeout_seconds": payload.get("timeout_seconds") or "300",
             "model": payload.get("default_model") or payload.get("model") or "nvidia.agentic.coder-4b",
             "base_url": payload.get("model_base_url") or payload.get("base_url") or "http://localhost:1234/v1",
         },
@@ -2584,7 +2861,7 @@ def _self_platform_action(message: str, payload: dict[str, object]) -> dict[str,
             ],
             "provider": "subprocess",
             "real_validation": True,
-            "timeout_seconds": payload.get("timeout_seconds") or "240",
+            "timeout_seconds": payload.get("timeout_seconds") or "300",
             "model": payload.get("default_model") or payload.get("model") or "nvidia.agentic.coder-4b",
             "base_url": payload.get("model_base_url") or payload.get("base_url") or "http://localhost:1234/v1",
         },
@@ -2680,7 +2957,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                     "validation_commands": "python -m unittest",
                     "target_files": "\n".join(changed_files),
                     "provider": payload.get("provider") or "subprocess",
-                    "timeout_seconds": payload.get("timeout_seconds") or "120",
+                    "timeout_seconds": payload.get("timeout_seconds") or "300",
                 },
             }
         )
@@ -2697,7 +2974,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                     "validation_commands": "python -m unittest",
                     "target_files": "\n".join(changed_files),
                     "provider": payload.get("provider") or "subprocess",
-                    "timeout_seconds": payload.get("timeout_seconds") or "120",
+                    "timeout_seconds": payload.get("timeout_seconds") or "300",
                 },
             }
         )
@@ -2714,7 +2991,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                     "validation_commands": "python -m unittest",
                     "target_files": "\n".join(changed_files),
                     "provider": payload.get("provider") or "subprocess",
-                    "timeout_seconds": payload.get("timeout_seconds") or "120",
+                    "timeout_seconds": payload.get("timeout_seconds") or "300",
                 },
             }
         )
@@ -2961,6 +3238,17 @@ def api_startup(config: MissionControlServerConfig) -> dict[str, object]:
 
 class MissionControlRequestHandler(BaseHTTPRequestHandler):
     server: "MissionControlHttpServer"
+    _RATE_LIMIT_EXEMPT_PATHS = frozenset({
+        "/api/refresh",
+        "/api/state",
+        "/api/jobs",
+        "/api/job",
+        "/api/job/signal",
+        "/api/nemo/mcp-status",
+        "/api/self-mod/insights",
+        "/api/nemo/risk-map",
+        "/api/nemo/cognitive-stats",
+    })
 
     def do_OPTIONS(self) -> None:
         _json_response(self, 204, {})
@@ -3009,13 +3297,13 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
             return
-        self._handle(lambda _: api_state(self.server.config), {})
+        self._handle(lambda _: api_state(self.server.config, self.server.jobs), {})
 
     def do_POST(self) -> None:
         if not self._check_rate_limit():
             return
         handlers = {
-            "/api/refresh": lambda payload: api_state(self.server.config),
+            "/api/refresh": lambda payload: api_state(self.server.config, self.server.jobs),
             "/api/settings": lambda payload: api_settings(self.server, payload),
             "/api/repo/open": lambda payload: api_repo_open(self.server, payload),
             "/api/repo/clone": lambda payload: api_repo_clone(self.server, payload),
@@ -3043,6 +3331,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/agent/message": lambda payload: api_agent_message(self.server.config, payload),
             "/api/nemo": lambda payload: api_nemo(self.server.config, payload),
             "/api/nemo/mcp-status": lambda payload: api_nemo_mcp_status(self.server.config, payload),
+            "/api/nemo/cognitive-stats": lambda payload: api_nemo_cognitive_stats(self.server.config, payload),
             "/api/nemo/risk-map": lambda payload: api_nemo_risk_map(self.server.config, payload),
             "/api/self-mod/insights": lambda payload: api_self_mod_insights(self.server.config, payload),
             "/api/eval": lambda payload: api_eval(self.server.config, payload),
@@ -3083,6 +3372,9 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             _json_response(self, 500, {"error": str(error), "error_code": "internal_error"})
 
     def _check_rate_limit(self) -> bool:
+        route = urlparse(self.path).path
+        if route in self._RATE_LIMIT_EXEMPT_PATHS:
+            return True
         client_ip = self.client_address[0]
         status = self.server.rate_limiter.check(client_ip)
         if status == "reject":
@@ -3098,13 +3390,17 @@ class MissionControlHttpServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], config: MissionControlServerConfig) -> None:
         super().__init__(server_address, MissionControlRequestHandler)
         self.config = config
-        self.jobs = HandoffJobManager()
+        self.jobs = HandoffJobManager(config.job_snapshots_path)
         self.rate_limiter = RateLimiter()
 
     def server_close(self) -> None:
         for job in list(self.jobs._jobs.values()):
+            if job.heartbeat_stop is not None:
+                job.heartbeat_stop.set()
             if job.status not in {"completed", "failed", "cancelled"}:
                 self.jobs.cancel(job.job_id)
+            else:
+                self.jobs._join_heartbeat(job)
         super().server_close()
 
 

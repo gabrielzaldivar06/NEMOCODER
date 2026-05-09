@@ -54,6 +54,7 @@ type MissionState = {
   repo_path: string;
   runtimes_path: string;
   repos: string[];
+  jobs: HandoffJob[];
   runs: MissionRun[];
   approval_queue: MissionRun[];
   settings: {
@@ -251,6 +252,37 @@ type SelfModInsights = {
 type RiskPattern = { id: string; content: string; importance: number; topic: string; tags: string[]; score: number };
 type RiskMapState = { ok: boolean; enabled: boolean; patterns: RiskPattern[]; count: number };
 
+type CognitiveStatsState = {
+  ok: boolean;
+  enabled: boolean;
+  error?: string;
+  selected_run?: { source_json: string; task_id: string | null; run_id: string | null; objective: string | null } | null;
+  context_portfolio?: { estimated_tokens?: number; token_budget?: number; [key: string]: unknown } | null;
+  health: { enabled: boolean; status: string; db_path: string | null; atom_count?: number; evidence_count?: number; feedback_count?: number };
+  run_kpis: {
+    total_runs: number;
+    ready_runs: number;
+    blocked_runs: number;
+    apply_count: number;
+    apply_success_rate: number;
+    blocked_rate: number;
+    auto_apply_rate: number;
+    avg_run_to_apply_minutes: number | null;
+  };
+  memory_kpis: {
+    atom_count: number;
+    correction_count: number;
+    evidence_count: number;
+    feedback_count: number;
+    useful_feedback_count: number;
+    not_useful_feedback_count: number;
+    useful_feedback_rate: number | null;
+    portfolio_tokens: number | null;
+    portfolio_budget: number | null;
+    portfolio_utilization: number | null;
+  };
+};
+
 type TerminalRunResult = {
   ok: boolean;
   command: string;
@@ -351,7 +383,7 @@ function normalizeRun(run: MissionRun): MissionRun {
 }
 
 function normalizeState(payload: MissionState): MissionState {
-  return { ...payload, runs: (payload.runs ?? []).map(normalizeRun), approval_queue: (payload.approval_queue ?? []).map(normalizeRun), settings: normalizeSettings(payload.settings) };
+  return { ...payload, jobs: payload.jobs ?? [], runs: (payload.runs ?? []).map(normalizeRun), approval_queue: (payload.approval_queue ?? []).map(normalizeRun), settings: normalizeSettings(payload.settings) };
 }
 
 function estimateTokens(text: string): number {
@@ -367,12 +399,18 @@ function renderInlineRichText(value: string): React.ReactNode[] {
   });
 }
 
+function extractIterationLines(logs: string[]): string[] {
+  const iterationPattern = /(iteration|iteracion|iter\s*#|iter\s*\d+|step\s*\d+|paso\s*\d+)/i;
+  return logs.filter((line) => iterationPattern.test(line));
+}
+
 const initialState: MissionState = {
   schema_version: 1,
   product: "NEMO CODE Mission Control",
   repo_path: "c:/dev/dev4",
   runtimes_path: "c:/dev/dev4/.nemo-runtimes",
   repos: ["c:/dev/dev4"],
+  jobs: [],
   runs: [],
   approval_queue: [],
   settings: {
@@ -438,6 +476,7 @@ export function App() {
   const [nemoMcpStatus, setNemoMcpStatus] = useState<NemoMcpWatcherState | null>(null);
   const [selfInsights, setSelfInsights] = useState<SelfModInsights | null>(null);
   const [riskMap, setRiskMap] = useState<RiskMapState | null>(null);
+  const [cognitiveStats, setCognitiveStats] = useState<CognitiveStatsState | null>(null);
   const [settingsDraft, setSettingsDraft] = useState<MissionState["settings"]>(initialState.settings);
   const [repoDraft, setRepoDraft] = useState<string>(initialState.repo_path);
   const [cloneDraft, setCloneDraft] = useState({ url: "", destination: "" });
@@ -608,6 +647,39 @@ export function App() {
     postJson<RiskMapState>("/api/nemo/risk-map", { limit: 20 })
       .then((payload) => setRiskMap(payload))
       .catch(() => setRiskMap(null));
+  };
+
+  const loadCognitiveStats = (run?: MissionRun) => {
+    postJson<CognitiveStatsState>("/api/nemo/cognitive-stats", { source_json: run?.source_json ?? "" })
+      .then((payload) => setCognitiveStats(payload))
+      .catch(() => setCognitiveStats({
+        ok: false,
+        enabled: false,
+        error: "unavailable",
+        health: { enabled: false, status: "error", db_path: null },
+        run_kpis: {
+          total_runs: 0,
+          ready_runs: 0,
+          blocked_runs: 0,
+          apply_count: 0,
+          apply_success_rate: 0,
+          blocked_rate: 0,
+          auto_apply_rate: 0,
+          avg_run_to_apply_minutes: null,
+        },
+        memory_kpis: {
+          atom_count: 0,
+          correction_count: 0,
+          evidence_count: 0,
+          feedback_count: 0,
+          useful_feedback_count: 0,
+          not_useful_feedback_count: 0,
+          useful_feedback_rate: null,
+          portfolio_tokens: null,
+          portfolio_budget: null,
+          portfolio_utilization: null,
+        },
+      }));
   };
 
   const selectRun = (run: MissionRun) => {
@@ -1283,6 +1355,7 @@ export function App() {
     if (selectedRun && activeFile) loadFilePreview(selectedRun, activeFile);
     loadNemoState(selectedRun);
     loadSelfInsights(selectedRun);
+    loadCognitiveStats(selectedRun);
   }, [selectedRunSource]);
 
   useEffect(() => {
@@ -1294,7 +1367,7 @@ export function App() {
 
   useEffect(() => {
     if (!activeJob || !["starting", "running"].includes(activeJob.status)) return;
-    const timer = window.setInterval(() => pollJob(activeJob), 1500);
+    const timer = window.setInterval(() => pollJob(activeJob), 2000);
     return () => window.clearInterval(timer);
   }, [activeJob?.job_id, activeJob?.status]);
 
@@ -1376,6 +1449,8 @@ export function App() {
           readyRuns={readyRuns}
           blockedRuns={blockedRuns}
           nemoState={nemoState}
+          cognitiveStats={cognitiveStats}
+          onRefreshCognitiveStats={() => loadCognitiveStats(selectedRun)}
           status={status}
           draft={homeAgentDraft}
           provider={settingsDraft.provider}
@@ -1438,6 +1513,8 @@ export function App() {
               onCloneRepo={cloneRepo}
               reviewPlan={reviewPlan}
               applyHistory={applyHistory}
+              riskMap={riskMap}
+              onRefreshRiskMap={loadRiskMap}
               cleanupResult={cleanupResult}
               onCleanup={cleanupArtifacts}
               orphanCleanupResult={orphanCleanupResult}
@@ -1541,13 +1618,17 @@ export function App() {
   );
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, provider, messages, onDraftChange, onSubmit, onProviderChange, onOpenComposer, onOpenMemory, running, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; status: string; draft: string; provider: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; onSelectRun: (run: MissionRun) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, status, draft, provider, messages, onDraftChange, onSubmit, onProviderChange, onOpenComposer, onOpenMemory, running, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; status: string; draft: string; provider: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; onSelectRun: (run: MissionRun) => void }) {
   const recentRuns = state.runs.slice(0, 4);
   const visibleMessages = messages.slice(-4);
   const atomCount = nemoState?.health.atom_count ?? 0;
   const evidenceCount = nemoState?.health.evidence_count ?? 0;
   const feedbackCount = nemoState?.health.feedback_count ?? 0;
   const contextLabel = nemoState?.context_portfolio?.estimated_tokens ? `${nemoState.context_portfolio.estimated_tokens}t` : "ready";
+  const totalRuns = state.runs.length;
+  const queueCount = state.approval_queue.length;
+  const runKpis = cognitiveStats?.run_kpis;
+  const memoryKpis = cognitiveStats?.memory_kpis;
   return (
     <section className="mission-home">
       <div className="home-main">
@@ -1598,20 +1679,54 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, status, draft, 
         <StatusGauge label="Contexto" value={contextLabel} percent={Math.min(100, Math.max(18, atomCount * 2))} tone="blue" />
         <StatusGauge label="Memoria" value={`${atomCount} atoms`} percent={Math.min(100, Math.max(20, atomCount * 3))} tone="green" />
         <StatusGauge label="Feedback" value={`${feedbackCount} eventos`} percent={Math.min(100, Math.max(18, feedbackCount * 12))} tone="violet" />
+
+        <InsightSection title="Resumen inteligente" summary={`${totalRuns} runs / ${queueCount} en cola / ${blockedRuns} bloqueados`} open>
+          <div className="metric-grid">
+            <Metric icon={<TerminalSquare size={16} />} label="Runs" value={totalRuns} />
+            <Metric icon={<ShieldCheck size={16} />} label="Ready" value={readyRuns} />
+            <Metric icon={<AlertTriangle size={16} />} label="Blocked" value={blockedRuns} />
+            <Metric icon={<GitPullRequest size={16} />} label="Queue" value={queueCount} />
+          </div>
+          <div className="mini-list">
+            <span>Estado: {blockedRuns > 0 ? "requiere atencion" : "estable"}</span>
+            <span>Mensaje: {status}</span>
+          </div>
+        </InsightSection>
+
+        <InsightSection title="Memoria y contexto" summary={`${atomCount} atoms / ${evidenceCount} evidence / ${feedbackCount} feedback`} open={false}>
+          <CognitiveStatsPanel cognitiveStats={cognitiveStats} onRefresh={onRefreshCognitiveStats} />
+          <div className="mini-list">
+            <span>Portfolio: {nemoState?.context_portfolio?.estimated_tokens ?? "-"} token(s)</span>
+            <span>Atoms: {memoryKpis?.atom_count ?? atomCount} / Corrections: {memoryKpis?.correction_count ?? 0}</span>
+            <span>Apply success: {runKpis ? `${Math.round(runKpis.apply_success_rate * 100)}%` : "-"}</span>
+            <span>Blocked rate: {runKpis ? `${Math.round(runKpis.blocked_rate * 100)}%` : "-"}</span>
+          </div>
+        </InsightSection>
+
+        <InsightSection title="Actividad y decisiones" summary={`${recentRuns.length} runs recientes / ${visibleMessages.length} mensajes`} open={false}>
+          <div className="recent-card">
+            <strong>Actividad reciente</strong>
+            {recentRuns.length === 0 ? <span className="empty-inline">Sin runs todavía.</span> : recentRuns.map((run) => (
+              <div className="recent-run" key={run.source_json}>
+                <span>{run.objective}</span>
+                <small>{statusLabel(run.review_status)}</small>
+              </div>
+            ))}
+          </div>
+          <div className="home-chat-preview" aria-label="Conversacion reciente del agente">
+            {visibleMessages.length === 0 ? <span className="empty-inline">Sin mensajes recientes.</span> : visibleMessages.map((message) => <article className={message.role} key={message.id}>
+              <span>{message.role === "assistant" ? "agent" : "you"}</span>
+              <MessageRichText content={message.content} animate={false} compact />
+            </article>)}
+          </div>
+        </InsightSection>
+
+        <CognitiveStatsPanel cognitiveStats={cognitiveStats} onRefresh={onRefreshCognitiveStats} />
         <div className="agent-stack">
           <strong>Agentes activos <span>{readyRuns}</span></strong>
           <AgentPulse name="Planner" detail="Analizando requisitos" tone="green" />
           <AgentPulse name="Coder" detail="Editando sandbox" tone="blue" />
           <AgentPulse name="Reviewer" detail={`${evidenceCount} evidence handle(s)`} tone="violet" />
-        </div>
-        <div className="recent-card">
-          <strong>Actividad reciente</strong>
-          {recentRuns.length === 0 ? <span className="empty-inline">Sin runs todavía.</span> : recentRuns.map((run) => (
-            <div className="recent-run" key={run.source_json}>
-              <span>{run.objective}</span>
-              <small>{statusLabel(run.review_status)}</small>
-            </div>
-          ))}
         </div>
         {state.approval_queue.length > 0 && (
           <div className="home-approval-queue">
@@ -1803,6 +1918,8 @@ type AgentPaneProps = {
   onCloneRepo: () => void;
   reviewPlan: ReviewPlan | null;
   applyHistory: ApplyHistoryItem[];
+  riskMap: RiskMapState | null;
+  onRefreshRiskMap: () => void;
   cleanupResult: CleanupResult | null;
   onCleanup: (dryRun: boolean) => void;
   orphanCleanupResult: OrphanCleanupResult | null;
@@ -1956,7 +2073,34 @@ function AutopilotFlowPanel({
   );
 }
 
-function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, showSettingsPanel = true }: AgentPaneProps) {
+function InsightSection({
+  title,
+  summary,
+  open,
+  children,
+}: {
+  title: string;
+  summary: string;
+  open: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="ops-panel" open={open}>
+      <summary style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <strong>{title}</strong>
+        <span className="muted">{summary}</span>
+      </summary>
+      <div style={{ marginTop: 10 }}>
+        {children}
+      </div>
+    </details>
+  );
+}
+
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, showSettingsPanel = true }: AgentPaneProps) {
+  const [compactView, setCompactView] = useState(true);
+  const riskCount = run?.risk_flags.length ?? 0;
+
   return (
     <aside className="agent-pane">
       <div className="panel-title"><Bot size={16} /> Control del Agente</div>
@@ -1983,6 +2127,11 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
         <Metric icon={<Database size={16} />} label="NEMO" value={state.settings.nemo_required ? "on" : "off"} />
       </div>
 
+      <div className="review-actions" style={{ marginBottom: 10 }}>
+        <button className={compactView ? "active" : ""} onClick={() => setCompactView(true)}>Lectura compacta</button>
+        <button className={!compactView ? "active" : ""} onClick={() => setCompactView(false)}>Lectura detallada</button>
+      </div>
+
       <AutopilotFlowPanel
         run={run}
         mode={autonomyMode}
@@ -2000,8 +2149,22 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
           <strong>{run.task_id} / {run.run_id}</strong>
           <p>{run.source_json}</p>
         </div>
-        <OperationalStatePanel run={run} />
-        {run.risk_flags.length > 0 && <div className="risk-box">{run.risk_flags.map((risk) => <span key={risk}>{risk}</span>)}</div>}
+
+        <div className="agent-card">
+          <span>Estado rapido</span>
+          <strong>{statusLabel(run.review_status)}</strong>
+          <p>{run.mergeable ? "Listo para aplicar" : "Requiere revision"} · {riskCount} riesgo(s) · {run.changed_files.length} archivo(s)</p>
+          {run.risk_flags.length > 0 && <div className="risk-box">{run.risk_flags.map((risk) => <span key={risk}>{risk}</span>)}</div>}
+        </div>
+
+        <InsightSection
+          title="Runtime State"
+          summary={`${run.runtime_state || "unknown"} / ${run.execution_phase || "unknown"}`}
+          open={!compactView}
+        >
+          <OperationalStatePanel run={run} />
+        </InsightSection>
+
         <div className="review-actions">
           <button onClick={() => onReview(run)}><GitPullRequest size={16} /> Revisar cambios</button>
           <button disabled={!run.mergeable} onClick={() => onApply(run)}><CheckCircle2 size={16} /> Aplicar</button>
@@ -2011,13 +2174,52 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
         {applyJson && <p className="muted">Last apply JSON: {applyJson}</p>}
       </> : <EmptyState />}
 
-      <SelfImprovementPanel insights={selfInsights} />
-      <RiskMapPanel riskMap={riskMap} onRefresh={loadRiskMap} />
-      <NemoMemoryPanel nemoState={nemoState} mcpWatcher={mcpWatcher} />
+      <InsightSection
+        title="Self-Improvement"
+        summary={`${selfInsights?.trajectory?.grade ?? "sin run"} / ${selfInsights?.impact?.risk_flags.length ?? 0} riesgo(s)`}
+        open={!compactView}
+      >
+        <SelfImprovementPanel insights={selfInsights} />
+      </InsightSection>
 
-      <ReviewPlanPanel plan={reviewPlan} />
-      <ApplyHistoryPanel applies={applyHistory} />
-      {showSettingsPanel && <RepoSettingsPanel
+      <InsightSection
+        title="Risk Map"
+        summary={`${riskMap?.count ?? 0} patron(es)`}
+        open={!compactView}
+      >
+        <RiskMapPanel riskMap={riskMap} onRefresh={onRefreshRiskMap} />
+      </InsightSection>
+
+      <InsightSection
+        title="NEMO Memory"
+        summary={`${nemoState?.health.atom_count ?? 0} atoms / ${nemoState?.health.evidence_count ?? 0} evidence`}
+        open={!compactView}
+      >
+        <NemoMemoryPanel nemoState={nemoState} mcpWatcher={mcpWatcher} />
+      </InsightSection>
+
+      <InsightSection
+        title="Apply Plan"
+        summary={reviewPlan ? `${reviewPlan.mergeable ? "mergeable" : "blocked"} / ${reviewPlan.risk_flags.length} riesgo(s)` : "sin plan"}
+        open={!compactView}
+      >
+        <ReviewPlanPanel plan={reviewPlan} />
+      </InsightSection>
+
+      <InsightSection
+        title="Apply History"
+        summary={`${applyHistory.length} evento(s)`}
+        open={!compactView}
+      >
+        <ApplyHistoryPanel applies={applyHistory} />
+      </InsightSection>
+
+      {showSettingsPanel && <InsightSection
+        title="Ajustes"
+        summary="repo, validacion, mcp, limpieza"
+        open={!compactView}
+      >
+        <RepoSettingsPanel
         state={state}
         settings={settingsDraft}
         onSettingsChange={onSettingsChange}
@@ -2034,7 +2236,8 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
         onCleanupOrphans={onCleanupOrphans}
         mcpWatcher={mcpWatcher}
         onRefreshMcpWatcher={onRefreshMcpWatcher}
-      />}
+        />
+      </InsightSection>}
     </aside>
   );
 }
@@ -2408,6 +2611,42 @@ function SelfImprovementPanel({ insights }: { insights: SelfModInsights | null }
   );
 }
 
+function CognitiveStatsPanel({ cognitiveStats, onRefresh }: { cognitiveStats: CognitiveStatsState | null; onRefresh: () => void }) {
+  const memory = cognitiveStats?.memory_kpis;
+  const run = cognitiveStats?.run_kpis;
+  return (
+    <section className="self-improve-panel">
+      <div className="panel-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Database size={16} /> Cognitive KPIs</span>
+        <button onClick={onRefresh} title="Reload cognitive KPIs" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><RefreshCw size={13} /></button>
+      </div>
+      {!cognitiveStats ? (
+        <span className="empty-inline">Loading cognitive KPIs…</span>
+      ) : !cognitiveStats.enabled ? (
+        <span className="empty-inline">NEMO memory not configured.</span>
+      ) : memory && run ? <>
+        <div className="metric-grid">
+          <Metric icon={<Database size={16} />} label="Atoms" value={memory.atom_count} />
+          <Metric icon={<ShieldCheck size={16} />} label="Corrections" value={memory.correction_count} />
+          <Metric icon={<TerminalSquare size={16} />} label="Evidence" value={memory.evidence_count} />
+          <Metric icon={<Bot size={16} />} label="Feedback" value={memory.feedback_count} />
+        </div>
+        <div className="metric-grid">
+          <Metric icon={<CheckCircle2 size={16} />} label="Useful" value={memory.useful_feedback_rate == null ? "-" : `${Math.round(memory.useful_feedback_rate * 100)}%`} />
+          <Metric icon={<ArrowUp size={16} />} label="Apply succ." value={`${Math.round(run.apply_success_rate * 100)}%`} />
+          <Metric icon={<AlertTriangle size={16} />} label="Blocked" value={`${Math.round(run.blocked_rate * 100)}%`} />
+          <Metric icon={<Database size={16} />} label="Portfolio" value={memory.portfolio_utilization == null ? "-" : `${Math.round(memory.portfolio_utilization * 100)}%`} />
+        </div>
+        <div className="mini-list">
+          <span>useful {memory.useful_feedback_count} / {memory.feedback_count} feedback events</span>
+          <span>runs {run.total_runs} total, {run.ready_runs} ready, {run.blocked_runs} blocked</span>
+          <span>portfolio tokens {memory.portfolio_tokens == null ? "-" : memory.portfolio_tokens} / {memory.portfolio_budget == null ? "-" : memory.portfolio_budget}</span>
+        </div>
+      </> : null}
+    </section>
+  );
+}
+
 function ReviewPlanPanel({ plan }: { plan: ReviewPlan | null }) {
   return (
     <section className="ops-panel">
@@ -2674,6 +2913,7 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
 function BottomPanel({ run, status, job, onControl }: { run: MissionRun | undefined; status: string; job: HandoffJob | null; onControl: (action: "cancel" | "pause" | "resume") => void }) {
   const running = job ? ["starting", "running"].includes(job.status) : false;
   const paused = job?.status === "paused";
+  const iterationLines = job ? extractIterationLines(job.logs) : [];
   return (
     <section className="bottom-panel">
       <div className="bottom-tabs">
@@ -2693,7 +2933,14 @@ function BottomPanel({ run, status, job, onControl }: { run: MissionRun | undefi
               <button disabled={!running} onClick={() => onControl("cancel")}>Cancel</button>
             </div>
           </div>
-          <pre>{job.logs.slice(-80).join("\n") || "No logs yet."}</pre>
+          {iterationLines.length > 0 ? (
+            <>
+              <div className="job-iteration-title">Iteration output ({iterationLines.length})</div>
+              <pre>{iterationLines.join("\n")}</pre>
+            </>
+          ) : null}
+          <div className="job-iteration-title">Full live output</div>
+          <pre>{job.logs.slice(-300).join("\n") || "No logs yet."}</pre>
         </div>}
         {run?.timeline.map((event, index) => (
           <div className="timeline-row" key={`${event.sequence ?? index}-${event.kind}`}>

@@ -66,6 +66,36 @@ class SelfModificationTests(unittest.TestCase):
         self.assertIn("portfolio", context)
         self.assertIn("anticipate", context)
 
+    def test_execute_self_modification_expands_repair_budget_from_continuity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_repo(root)
+            memory_db = root / ".nemo-runtimes" / "memory.sqlite"
+            record_self_mod_decision(
+                memory_db,
+                objective="Improve repair adaptation",
+                chosen_path="use prior continuity to expand repair budget",
+                rationale="Past self-mod runs should increase confidence when risk is low.",
+                task_type="tool_expansion",
+                task_id="seed-task",
+                run_id="seed-run",
+            )
+            request = SelfModRequest(
+                description="Improve repair adaptation",
+                task_type=SelfModTaskType.TOOL_EXPANSION,
+                validation_policy="none",
+                repair_budget=2,
+                memory_db=str(memory_db),
+                repo_root=str(root),
+                provider_mode="fake",
+            )
+
+            result = execute_self_modification(request, task_id="adaptive-task", run_id="adaptive-run")
+
+        self.assertEqual(result.request.repair_budget, 3)
+        self.assertEqual(result.context["adaptive_repair_budget"], 3)
+        self.assertIn("expanded after 1 continuity item", result.context["adaptive_repair_budget_reason"])
+
     def test_execute_self_modification_runs_in_controlled_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -90,6 +120,43 @@ class SelfModificationTests(unittest.TestCase):
         self.assertTrue(permissions_exists)
         self.assertTrue(run_json_exists)
         self.assertTrue(summary["memory_writeback"]["stored"])
+
+    def test_execute_self_modification_security_audit_run_exposes_history_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _make_repo(root)
+            request = SelfModRequest(
+                description="Audit bugs and vulnerabilities in the codebase and fix them safely.",
+                task_type=SelfModTaskType.ARCHITECTURE_HARDENING,
+                validation_policy="none",
+                repair_budget=2,
+                memory_db=str(root / ".nemo-runtimes" / "memory.sqlite"),
+                repo_root=str(root),
+                provider_mode="fake",
+                timeout_seconds=1800,
+            )
+
+            result = execute_self_modification(request, task_id="security-audit", run_id="security-audit-run")
+            summary = result.to_summary_dict()
+            run_json = Path(summary["run_json"])
+            persisted = json.loads(run_json.read_text(encoding="utf-8"))
+            tool_names = [item.call.tool_name for item in result.result.nemo_results]
+            timeline_kinds = [event.kind.value for event in result.result.timeline.events]
+            run_json_exists = run_json.exists()
+
+        self.assertEqual(result.request.timeout_seconds, 1800)
+        self.assertIn("Audit bugs and vulnerabilities", result.request.description)
+        self.assertTrue(run_json_exists)
+        self.assertGreaterEqual(len(timeline_kinds), 1)
+        self.assertIn("prime_context", tool_names)
+        self.assertIn("build_context_portfolio", tool_names)
+        self.assertIn("record_context_feedback", tool_names)
+        self.assertIn("compress_context_artifact", tool_names)
+        self.assertIn("store_conversation", tool_names)
+        self.assertIn("timeline", persisted)
+        self.assertIn("memory_traces", persisted)
+        self.assertGreaterEqual(len(persisted["timeline"]), len(timeline_kinds))
+        self.assertGreaterEqual(len(persisted["memory_traces"]), 1)
 
     def test_self_mod_review_flags_policy_denied_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

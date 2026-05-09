@@ -57,6 +57,46 @@ class ReviewGateTests(unittest.TestCase):
         self.assertIn("run_not_ready", plan.risk_flags)
         self.assertIn("validation_failed", plan.risk_flags)
 
+    def test_plan_blocks_simulated_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            repo.mkdir()
+            sandbox.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            payload = ready_payload(repo, sandbox, ["created.txt"])
+            payload["validation"] = {
+                "results": [
+                    {"status": "passed", "returncode": None, "output": "simulated pass"},
+                ]
+            }
+
+            plan = build_merge_plan(payload)
+
+        self.assertFalse(plan.mergeable)
+        self.assertIn("simulated_validation", plan.risk_flags)
+
+    def test_plan_blocks_context_window_exceeded_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            repo.mkdir()
+            sandbox.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            payload = ready_payload(repo, sandbox, ["created.txt"])
+            payload["mutation_result"] = {
+                "changed_files": ["created.txt"],
+                "stdout": "MidStreamFallbackError: Context size has been exceeded",
+                "stderr": "",
+            }
+
+            plan = build_merge_plan(payload)
+
+        self.assertFalse(plan.mergeable)
+        self.assertIn("context_window_exceeded", plan.risk_flags)
+
     def test_plan_blocks_path_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from nemo_coding_platform.core.engine_interface import FakeEngineProvider, MutationRequest, SubprocessEngineProvider, apply_mutation_request, build_default_engine_command, create_engine_provider, render_engine_message
 from nemo_coding_platform.core.model_config import DEFAULT_LMSTUDIO_MODEL
@@ -136,6 +137,41 @@ class AiderInterfaceTests(unittest.TestCase):
             self.assertIsNotNone(result.token_usage)
             self.assertEqual(result.token_usage.total_tokens, 20)
             self.assertEqual(result.token_usage.model_name, "openai/test2")
+
+    @patch("nemo_coding_platform.core.engine_interface.subprocess.run")
+    def test_subprocess_provider_replaces_recursive_platform_command(self, mock_run) -> None:
+        class _Completed:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        mock_run.return_value = _Completed()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = SubprocessEngineProvider(
+                (
+                    sys.executable,
+                    "-m",
+                    "nemo_coding_platform",
+                    "long-handoff-run",
+                    "bad-recursive-command",
+                )
+            )
+            provider.create_plan(
+                MutationRequest(
+                    "Build feature",
+                    "generated-spec.md",
+                    ("passes",),
+                    "context",
+                    provider_mode="subprocess",
+                    runtime_path=tmp,
+                )
+            )
+
+        launched_command = mock_run.call_args[0][0]
+        self.assertIn("nemo_code_runtime", launched_command)
+        self.assertNotIn("nemo_coding_platform", launched_command)
+        self.assertIn("recursive engine command detected", provider.last_stderr)
 
 
 if __name__ == "__main__":

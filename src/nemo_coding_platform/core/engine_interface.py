@@ -11,7 +11,7 @@ from typing import Protocol
 
 from nemo_coding_platform.core.model_config import ModelProfile, default_model_profile
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan, QualityMutationEngine
-from nemo_coding_platform.core.role_execution_profile import default_execution_profile_for_role
+from nemo_coding_platform.core.role_execution_profile import RoleExecutionProfile
 from nemo_coding_platform.core.runtime_diff import diff_snapshots, snapshot_path
 from nemo_coding_platform.core.workspace import mask_host_paths
 
@@ -30,11 +30,18 @@ def _runtime_model_name(profile: ModelProfile) -> str:
 def render_engine_message(request: MutationRequest) -> str:
     acceptance = "\n".join(f"- {item}" for item in request.acceptance_criteria) or "- Pass configured validation."
     targets = "\n".join(f"- {item}" for item in request.target_files) or "- Create or update the smallest necessary files inside this runtime."
-    validation = request.validation_output.strip() or "No validation output yet."
     context = request.context.strip() or "No NEMO context supplied."
     repair = f"Repair attempt: {request.repair_attempt}" if request.repair_attempt else "Initial implementation."
     skill_section = ("\n", "# Skill Guidance", request.skill_prompt) if request.skill_prompt.strip() else ()
     design_section = ("\n", "# Design Reference", f"An image has been provided for this task: {request.image_path}\nUse your vision capabilities to analyze it and implement the UI accordingly.") if request.image_path else ()
+    # On repair attempts the context already contains a '# Repair Evidence' block
+    # with the same information, so skip the separate section to avoid duplication.
+    validation_section: tuple[str, ...]
+    if request.repair_attempt:
+        validation_section = ()
+    else:
+        raw = request.validation_output.strip()
+        validation_section = ("\n", "# Previous Validation Output", raw) if raw else ()
     return "\n".join(
         (
             "You are implementing a NEMO Full Handoff task inside an isolated runtime worktree.",
@@ -54,15 +61,10 @@ def render_engine_message(request: MutationRequest) -> str:
             "",
             "# NEMO Context",
             context,
+            *validation_section,
             "",
-            "# Previous Validation Output",
-            validation,
-            "",
-            "# NEMO Autonomy Tools",
-            "You have access to the NEMO memory plane. Use these shell commands if needed:",
-            "- `!python -m nemo_code_runtime.nemo_platform call search_memories --args '{\"query\": \"API_NAME\"}'`: Search for unknown APIs or facts.",
-            "- `!python -m nemo_code_runtime.nemo_platform call expand_context_evidence --args '{\"handle\": \"ev_...\"}'`: Expand a portfolio handle.",
-            "- `!python -m nemo_code_runtime.nemo_platform call store_architectural_decision --args '{\"decision\": \"...\", \"importance\": 8}'`: Record a technical choice.",
+            "# Memory Tools",
+            "Use `!python -m nemo_code_runtime.nemo_platform call search_memories --args '{\"query\": \"...\"}' only for missing APIs. If context includes `evidence_handle=...`, expand with `... call expand_context_evidence --args '{\"handle\": \"...\"}'`.",
             "",
             "Produce the implementation now. Keep changes focused and validation-friendly.",
         )
@@ -95,6 +97,14 @@ def build_default_engine_command(profile: ModelProfile, message_file: str | Path
         "--no-gitignore",
         "--no-analytics",
     )
+
+
+def _is_recursive_platform_command(command: tuple[str, ...]) -> bool:
+    lowered = tuple(item.lower() for item in command)
+    if "nemo_coding_platform" not in lowered:
+        return False
+    recursive_entrypoints = {"long-handoff-run", "headless-run", "self-modify", "mission-control-server"}
+    return any(item in recursive_entrypoints for item in lowered)
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,11 +246,17 @@ class SubprocessEngineProvider:
         cwd = Path(request.runtime_path).resolve() if request.runtime_path else self.cwd
         message_file = write_engine_message(cwd, request)
         command = self.command or build_default_engine_command(profile, message_file)
+        if _is_recursive_platform_command(tuple(command)):
+            command = build_default_engine_command(profile, message_file)
+            self.last_stderr = (
+                "recursive engine command detected; "
+                "falling back to default nemo_code_runtime invocation"
+            )
 
         # Determine effective timeout: apply role-specific constraints if role is specified
         effective_timeout = request.timeout_seconds
         if request.role:
-            role_profile = default_execution_profile_for_role(request.role, "subprocess")
+            role_profile = RoleExecutionProfile(request.role, "subprocess", request.timeout_seconds)
             effective_timeout = role_profile.effective_timeout_seconds
 
         root = _repo_root()
@@ -284,7 +300,11 @@ class SubprocessEngineProvider:
             return MutationPlan(writes=())
         self.last_returncode = completed.returncode
         self.last_stdout = completed.stdout.strip()
-        self.last_stderr = completed.stderr.strip()
+        completed_stderr = completed.stderr.strip()
+        if self.last_stderr and completed_stderr:
+            self.last_stderr = f"{self.last_stderr}; {completed_stderr}"
+        elif completed_stderr:
+            self.last_stderr = completed_stderr
         self.last_usage = self._extract_token_usage(self.last_stdout, cwd, profile)
         return MutationPlan(writes=())
 

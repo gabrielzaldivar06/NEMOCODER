@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
-from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_job_signal, api_kpis, api_nemo, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_self_modify_start, api_settings, api_terminal_run
+from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_self_modify_start, api_settings, api_state, api_terminal_run
 from tests.test_review_gate_cli import write_ready_run
 
 
@@ -607,6 +607,115 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertEqual(job.logs[0], "line-25")
         self.assertEqual(job.logs[-1], f"line-{JOB_LOG_LIMIT + 24}")
 
+    def test_job_manager_persists_snapshot_and_restores_completed_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_root = root / "jobs"
+            run_json = root / "runs" / "job-run.json"
+            run_json.parent.mkdir(parents=True, exist_ok=True)
+            write_ready_run(run_json, root, root / "sandbox", ["created.txt"])
+
+            manager = HandoffJobManager(snapshot_root)
+            job = HandoffJob(
+                job_id="job-persisted",
+                task_id="task-persisted",
+                run_id="run-persisted",
+                run_json=str(run_json),
+                status="running",
+                command=("python", "-m", "nemo_coding_platform"),
+                payload={"objective": "persist me", "timeout_seconds": 600},
+                logs=["starting self-modification job"],
+            )
+
+            manager._jobs[job.job_id] = job
+            manager._persist_job(job)
+
+            restored = HandoffJobManager(snapshot_root)
+            recovered = restored.get("job-persisted")
+
+        self.assertEqual(recovered.status, "completed")
+        self.assertEqual(recovered.returncode, 0)
+        self.assertTrue(any("restored snapshot detected completed run_json" in line for line in recovered.logs))
+
+    def test_job_manager_heartbeat_snapshot_reports_runtime_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            runtime_root = config.runtimes_path / "self-task-1-self-run-1"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            (runtime_root / ".nemo-engine-message.md").write_text("engine message", encoding="utf-8")
+            (runtime_root / "generated-spec.md").write_text("spec", encoding="utf-8")
+            (runtime_root / "checkpoint-repair-00001.json").write_text("{}", encoding="utf-8")
+            manager = HandoffJobManager()
+            job = HandoffJob(
+                job_id="self-job-1",
+                task_id="self-task-1",
+                run_id="self-run-1",
+                run_json=str(config.runtimes_path / "self-mod" / "runs" / "self-task-1-self-run-1.json"),
+                status="running",
+                command=("python",),
+                payload={},
+                logs=[],
+            )
+
+            snapshot = manager._heartbeat_snapshot(config, job)
+
+        self.assertIn("runtime_exists=1", snapshot)
+        self.assertIn("runtime_files=3", snapshot)
+        self.assertIn("engine_message_exists=1", snapshot)
+        self.assertIn("checkpoints=1", snapshot)
+        self.assertIn("generated-spec.md", snapshot)
+
+    def test_job_manager_heartbeat_tick_appends_runtime_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            runtime_root = config.runtimes_path / "self-task-2-self-run-2"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            (runtime_root / ".nemo-engine-message.md").write_text("engine message", encoding="utf-8")
+            manager = HandoffJobManager()
+            job = HandoffJob(
+                job_id="self-job-2",
+                task_id="self-task-2",
+                run_id="self-run-2",
+                run_json=str(config.runtimes_path / "self-mod" / "runs" / "self-task-2-self-run-2.json"),
+                status="running",
+                command=("python",),
+                payload={},
+                logs=["starting self-modification job"],
+            )
+
+            manager._heartbeat_tick(config, job)
+
+        self.assertEqual(len(job.logs), 2)
+        self.assertIn("heartbeat process_alive=1", job.logs[-1])
+        self.assertIn("runtime_exists=1", job.logs[-1])
+
+    def test_api_state_includes_persisted_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                job = HandoffJob(
+                    job_id="job-visible",
+                    task_id="task-visible",
+                    run_id="run-visible",
+                    run_json=str(root / "runs" / "visible.json"),
+                    status="running",
+                    command=("python",),
+                    payload={"objective": "visible job", "timeout_seconds": 600},
+                    logs=["starting handoff job"],
+                )
+                server.jobs._jobs[job.job_id] = job
+                server.jobs._persist_job(job)
+                payload = api_state(server.config, server.jobs)
+            finally:
+                server.server_close()
+
+        self.assertIn("jobs", payload)
+        self.assertEqual(payload["jobs"][0]["job_id"], "job-visible")
+
     def test_agent_message_returns_tool_calls_and_actions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -734,6 +843,61 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertIn("apps/mission-control/src/main.tsx", command)
         self.assertIn("npm --prefix apps/mission-control run build", command)
 
+    def test_self_modify_start_exposes_timeout_and_job_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            payload = None
+            try:
+                payload = api_self_modify_start(
+                    server,
+                    {
+                        "objective": "Audit bugs and vulnerabilities in the codebase and fix them safely.",
+                        "provider": "subprocess",
+                        "timeout_seconds": 1800,
+                        "validation_policy": "none",
+                    },
+                )
+                job = payload["job"]
+            finally:
+                if payload and payload.get("job"):
+                    server.jobs.cancel(payload["job"]["job_id"])
+                server.server_close()
+
+        self.assertEqual(job["objective"], "Audit bugs and vulnerabilities in the codebase and fix them safely.")
+        self.assertEqual(job["timeout_seconds"], 1800)
+        self.assertTrue(job["logs"])
+        self.assertEqual(job["logs"][0], "starting self-modification job")
+        self.assertIn("--timeout", job["command"])
+        self.assertEqual(job["command"][job["command"].index("--timeout") + 1], "1800.0")
+
+    def test_handoff_start_enables_real_validation_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            payload = None
+            try:
+                payload = api_handoff_start(
+                    server,
+                    {
+                        "objective": "Create a measurable run.",
+                        "provider": "fake",
+                        "validation_policy": "targeted",
+                    },
+                )
+                command = payload["job"]["command"]
+            finally:
+                if payload and payload.get("job"):
+                    server.jobs.cancel(payload["job"]["job_id"])
+                server.server_close()
+
+        self.assertIn("long-handoff-run", command)
+        self.assertIn("--real-validation", command)
+
     def test_agent_message_uses_lmstudio_for_subprocess_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -798,6 +962,38 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertEqual(payload["corrections"][0]["content"], "Prefer full NEMO tool plane.")
         self.assertEqual(payload["evidence"][0]["handle"], evidence_handle)
         self.assertEqual(payload["feedback"][0]["event_type"], "useful")
+
+    def test_nemo_cognitive_stats_returns_memory_and_run_kpis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            sandbox.mkdir()
+            runtimes.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            store = PersistentMemoryStore(memory_db)
+            correction_id = store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "Prefer short context portfolios.", "user"), topic="NEMOCODE self-modification", importance=10)
+            evidence_handle = store.create_evidence("full evidence", "compact evidence", source_task_id="task-1", source_run_id="run-1")
+            store.record_feedback(atom_id=correction_id, evidence_handle=evidence_handle, event_type="useful", was_useful=True)
+            run_json = runtimes / "run.json"
+            write_ready_run(run_json, repo, sandbox, ["created.txt"])
+            run_payload = json.loads(run_json.read_text(encoding="utf-8"))
+            run_payload["portfolio"] = {"estimated_tokens": 120, "token_budget": 200, "memory_atom_ids": [correction_id]}
+            run_json.write_text(json.dumps(run_payload), encoding="utf-8")
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            payload = api_nemo_cognitive_stats(config, {"source_json": str(run_json)})
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["health"]["enabled"])
+        self.assertEqual(payload["memory_kpis"]["atom_count"], 1)
+        self.assertEqual(payload["memory_kpis"]["correction_count"], 1)
+        self.assertEqual(payload["memory_kpis"]["useful_feedback_rate"], 1.0)
+        self.assertEqual(payload["memory_kpis"]["portfolio_utilization"], 0.6)
+        self.assertIn("total_runs", payload["run_kpis"])
 
     def test_settings_persist_and_repo_open_validates_git_repo(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1059,7 +1255,7 @@ class MissionControlServerTests(unittest.TestCase):
             server = MissionControlHttpServer(("127.0.0.1", 0), config)
             try:
                 with self.assertRaises(ApiRequestError) as ctx:
-                    api_settings(server, {"provider": "fake", "timeout_seconds": 240})
+                    api_settings(server, {"provider": "fake", "timeout_seconds": 360})
             finally:
                 server.server_close()
 

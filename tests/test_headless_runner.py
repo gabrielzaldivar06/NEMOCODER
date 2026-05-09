@@ -2,17 +2,19 @@ import unittest
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from nemo_coding_platform.core.engine_interface import FakeEngineProvider
 from nemo_coding_platform.core.evals import score_headless_result
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
-from nemo_coding_platform.core.headless_runner import execute_headless_handoff
+from nemo_coding_platform.core.headless_runner import _bounded_nemo_context, execute_headless_handoff
 from nemo_coding_platform.core.memory import MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan
 from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
 from nemo_coding_platform.core.worktree_runtime import snapshot_runtime_files
 from nemo_coding_platform.core.task_run import ArtifactType, EventKind
+from nemo_coding_platform.core.validation import ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult
 
 
 def _execute_fake_handoff(request: HandoffRequest, *args, **kwargs):
@@ -21,6 +23,18 @@ def _execute_fake_handoff(request: HandoffRequest, *args, **kwargs):
 
 
 class HeadlessRunnerTests(unittest.TestCase):
+    def test_bounded_nemo_context_keeps_short_text_unchanged(self) -> None:
+        text = "short context"
+        self.assertEqual(_bounded_nemo_context(text, max_chars=50), text)
+
+    def test_bounded_nemo_context_truncates_and_marks_payload(self) -> None:
+        text = "A" * 120
+        bounded = _bounded_nemo_context(text, max_chars=40)
+
+        self.assertIn("[truncated_nemo_context", bounded)
+        self.assertIn("limit=40", bounded)
+        self.assertLessEqual(len(bounded), 120)
+
     def test_headless_run_produces_replayable_review_gated_result(self) -> None:
         result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",))
@@ -225,6 +239,126 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertTrue(any(artifact.artifact_type == ArtifactType.ENGINE_OUTPUT for artifact in result.artifacts))
         output = (Path(result.run.sandbox_path) / "engine-output.txt").read_text(encoding="utf-8")
         self.assertIn("stdout-marker", output)
+
+    def test_headless_run_retries_with_chunked_objective_after_context_overflow(self) -> None:
+        class OverflowThenChunkProvider:
+            name = "overflow-then-chunk"
+
+            def __init__(self) -> None:
+                self.calls = 0
+                self.objectives: list[str] = []
+                self.last_returncode: int | None = None
+                self.last_stdout = ""
+                self.last_stderr = ""
+
+            def create_plan(self, request):
+                self.calls += 1
+                self.objectives.append(request.objective)
+                if self.calls == 1:
+                    self.last_returncode = 1
+                    self.last_stdout = "MidStreamFallbackError: Context size has been exceeded"
+                    self.last_stderr = ""
+                    return MutationPlan(writes=())
+                self.last_returncode = 0
+                self.last_stdout = "retry-success"
+                self.last_stderr = ""
+                return MutationPlan(writes=(FileWrite("flower_ascii_iterations.md", "## Iteration 01\nDRAW\n"),))
+
+        provider = OverflowThenChunkProvider()
+        _execute_fake_handoff(
+            HandoffRequest(
+                "Produce an ASCII flower through 50 strict improvement iterations and save full log.",
+                ".",
+                ("file created",),
+                ("python -m unittest",),
+            ),
+            mutation_provider=provider,
+        )
+
+        self.assertEqual(provider.calls, 2)
+        self.assertIn("CHUNKED EXECUTION MODE", provider.objectives[1])
+
+    def test_headless_run_does_not_adopt_retry_without_changed_files(self) -> None:
+        class OverflowThenNoopRetryProvider:
+            name = "overflow-then-noop-retry"
+
+            def __init__(self) -> None:
+                self.calls = 0
+                self.objectives: list[str] = []
+                self.last_returncode: int | None = None
+                self.last_stdout = ""
+                self.last_stderr = ""
+
+            def create_plan(self, request):
+                self.calls += 1
+                self.objectives.append(request.objective)
+                if self.calls == 1:
+                    self.last_returncode = 1
+                    self.last_stdout = "MidStreamFallbackError: Context size has been exceeded"
+                    self.last_stderr = ""
+                    return MutationPlan(writes=())
+                self.last_returncode = 0
+                self.last_stdout = "retry-success-noop"
+                self.last_stderr = ""
+                return MutationPlan(writes=())
+
+        provider = OverflowThenNoopRetryProvider()
+        result = _execute_fake_handoff(
+            HandoffRequest(
+                "Produce an ASCII flower through 50 strict improvement iterations and save full log.",
+                ".",
+                ("file created",),
+                ("python -m unittest",),
+                repair_budget=0,
+            ),
+            mutation_provider=provider,
+        )
+
+        self.assertEqual(provider.calls, 2)
+        self.assertFalse(result.validation.passed)
+        self.assertIn("no changed files", result.validation.results[0].output)
+
+    def test_headless_run_fails_closed_when_real_validation_is_simulated(self) -> None:
+        class OneFileProvider:
+            name = "one-file-provider"
+
+            def __init__(self) -> None:
+                self.last_returncode = 0
+                self.last_stdout = "ok"
+                self.last_stderr = ""
+
+            def create_plan(self, _request):
+                return MutationPlan(writes=(FileWrite("generated-implementation.md", "ok\n"),))
+
+        provider = OneFileProvider()
+        simulated_suite = ValidationSuiteResult(
+            (
+                ValidationResult(
+                    ValidationCommand("python -m unittest"),
+                    ValidationStatus.PASSED,
+                    "simulated pass",
+                    None,
+                ),
+            )
+        )
+
+        with patch("nemo_coding_platform.core.headless_runner.run_validation_suite", return_value=simulated_suite):
+            result = execute_headless_handoff(
+                HandoffRequest(
+                    "Build feature",
+                    ".",
+                    ("passes tests",),
+                    ("python -m unittest",),
+                    repair_budget=0,
+                ),
+                real_validation=True,
+                mutation_provider=provider,
+                provider_mode="fake",
+            )
+
+        self.assertFalse(result.validation.passed)
+        self.assertTrue(any("integrity guard" in item.command.command for item in result.validation.results))
+        self.assertTrue(any("simulated validation detected" in (item.output or "") for item in result.validation.results))
 
     def test_headless_run_persists_structured_nemo_memory_with_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

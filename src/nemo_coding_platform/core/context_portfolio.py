@@ -53,7 +53,7 @@ TYPE_PRIORITY: dict[MemoryAtomType, int] = {
 
 PHASE_BONUS: dict[ExecutionPhase, set[MemoryAtomType]] = {
     ExecutionPhase.PLAN: {MemoryAtomType.CORRECTION, MemoryAtomType.PREFERENCE, MemoryAtomType.PROJECT_FACT, MemoryAtomType.OPEN_LOOP},
-    ExecutionPhase.EXECUTE: {MemoryAtomType.CORRECTION, MemoryAtomType.PROJECT_FACT, MemoryAtomType.DECISION, MemoryAtomType.ARTIFACT_STATE},
+    ExecutionPhase.EXECUTE: {MemoryAtomType.CORRECTION, MemoryAtomType.PROJECT_FACT, MemoryAtomType.DECISION},
     ExecutionPhase.REVIEW: {MemoryAtomType.CORRECTION, MemoryAtomType.PREFERENCE, MemoryAtomType.DECISION, MemoryAtomType.EVIDENCE},
 }
 

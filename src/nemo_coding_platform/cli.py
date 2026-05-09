@@ -13,6 +13,7 @@ from nemo_coding_platform.core.evals import score_headless_result
 from nemo_coding_platform.core.headless_handoff import HandoffRequest, build_handoff_plan
 from nemo_coding_platform.core.headless_runner import execute_headless_handoff, HeadlessRunResult
 from nemo_coding_platform.core.long_handoff_supervisor import LongHandoffBudget, build_long_handoff_resume_plan, execute_long_handoff_continuation, execute_long_handoff_supervisor
+from nemo_coding_platform.core.llm_benchmark import run_llm_benchmark, save_benchmark_report
 from nemo_coding_platform.core.memory import MemoryAtomType, nemo_tools_for_phase
 from nemo_coding_platform.core.mission_control import build_mission_control_state
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
@@ -74,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     headless_run.add_argument("--target-file", action="append", default=[])
     headless_run.add_argument("--model-profile", default=default_model_profile().model)
     headless_run.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
-    headless_run.add_argument("--timeout", type=float, default=30.0)
+    headless_run.add_argument("--timeout", type=float, default=300.0)
     headless_run.add_argument("--bounded-simulation", action="store_true")
     headless_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store")
     headless_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
@@ -97,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     self_modify.add_argument("--engine-command", "--aider-command", dest="engine_command")
     self_modify.add_argument("--model-profile", default=default_model_profile().model)
     self_modify.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
-    self_modify.add_argument("--timeout", type=float, default=30.0)
+    self_modify.add_argument("--timeout", type=float, default=300.0)
     self_modify.add_argument("--bounded-simulation", action="store_true")
     self_modify.add_argument("--real-validation", action="store_true")
     self_modify.add_argument("--memory-db", default=DEFAULT_MEMORY_DB)
@@ -151,15 +152,15 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--target-file", action="append", default=[])
     long_run.add_argument("--model-profile", default=default_model_profile().model)
     long_run.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
-    long_run.add_argument("--timeout", type=float, default=30.0)
-    long_run.add_argument("--max-runtime-minutes", type=int, default=120)
-    long_run.add_argument("--heartbeat-minutes", type=int, default=15)
-    long_run.add_argument("--max-heartbeats", type=int, default=4)
-    long_run.add_argument("--token-budget", type=int, default=32000)
+    long_run.add_argument("--timeout", type=float, default=300.0)
+    long_run.add_argument("--max-runtime-minutes", type=int, default=240)
+    long_run.add_argument("--heartbeat-minutes", type=int, default=30)
+    long_run.add_argument("--max-heartbeats", type=int, default=8)
+    long_run.add_argument("--token-budget", type=int, default=64000)
     long_run.add_argument("--pause-after-minutes", type=int)
-    long_run.add_argument("--plan-minutes", type=int, default=30)
-    long_run.add_argument("--execute-minutes", type=int, default=60)
-    long_run.add_argument("--review-minutes", type=int, default=30)
+    long_run.add_argument("--plan-minutes", type=int, default=60)
+    long_run.add_argument("--execute-minutes", type=int, default=120)
+    long_run.add_argument("--review-minutes", type=int, default=60)
     long_run.add_argument("--repair-time-limit-seconds", type=float)
     long_run.add_argument("--validation-time-budget-seconds", type=float)
     long_run.add_argument("--validation-escalation-mode", action="store_true")
@@ -248,15 +249,15 @@ def build_parser() -> argparse.ArgumentParser:
     continue_long.add_argument("--target-file", action="append", default=[])
     continue_long.add_argument("--model-profile", default=default_model_profile().model)
     continue_long.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
-    continue_long.add_argument("--timeout", type=float, default=30.0)
-    continue_long.add_argument("--max-runtime-minutes", type=int, default=30)
-    continue_long.add_argument("--heartbeat-minutes", type=int, default=10)
-    continue_long.add_argument("--max-heartbeats", type=int, default=1)
-    continue_long.add_argument("--token-budget", type=int, default=8000)
+    continue_long.add_argument("--timeout", type=float, default=300.0)
+    continue_long.add_argument("--max-runtime-minutes", type=int, default=240)
+    continue_long.add_argument("--heartbeat-minutes", type=int, default=30)
+    continue_long.add_argument("--max-heartbeats", type=int, default=8)
+    continue_long.add_argument("--token-budget", type=int, default=64000)
     continue_long.add_argument("--pause-after-minutes", type=int)
-    continue_long.add_argument("--plan-minutes", type=int, default=30)
-    continue_long.add_argument("--execute-minutes", type=int, default=60)
-    continue_long.add_argument("--review-minutes", type=int, default=30)
+    continue_long.add_argument("--plan-minutes", type=int, default=60)
+    continue_long.add_argument("--execute-minutes", type=int, default=120)
+    continue_long.add_argument("--review-minutes", type=int, default=60)
     continue_long.add_argument("--repair-time-limit-seconds", type=float)
     continue_long.add_argument("--validation-time-budget-seconds", type=float)
     continue_long.add_argument("--validation-escalation-mode", action="store_true")
@@ -270,6 +271,22 @@ def build_parser() -> argparse.ArgumentParser:
     lineage = subparsers.add_parser("long-handoff-lineage", help="Build a lineage summary from long handoff JSON files")
     lineage.add_argument("paths", nargs="+")
     lineage.add_argument("--json", action="store_true")
+    llm_benchmark = subparsers.add_parser("llm-benchmark", help="Benchmark LLM speed/efficiency for model comparison baselines")
+    llm_benchmark.add_argument("--repo", default=".")
+    llm_benchmark.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    llm_benchmark.add_argument("--model-profile", default=default_model_profile().model)
+    llm_benchmark.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
+    llm_benchmark.add_argument("--engine-command", "--aider-command", dest="engine_command")
+    llm_benchmark.add_argument("--timeout", type=float, default=300.0)
+    llm_benchmark.add_argument("--repeats", type=int, default=3)
+    llm_benchmark.add_argument("--no-warmup", action="store_true")
+    llm_benchmark.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for benchmark runs")
+    llm_benchmark.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
+    llm_benchmark.add_argument("--mcp-url", help="Connect benchmark runs to a remote MCP server via SSE")
+    llm_benchmark.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    llm_benchmark.add_argument("--save-json")
+    llm_benchmark.add_argument("--baseline-json", help="Optional previous benchmark JSON to compare against")
+    llm_benchmark.add_argument("--json", action="store_true")
     return parser
 
 
@@ -332,6 +349,28 @@ def _write_apply_memory(applied: object, memory_db: str | None, no_memory_db: bo
         source_scope="review_gate",
         importance=9,
     )
+
+
+def _benchmark_delta(current: dict[str, object], baseline: dict[str, object]) -> dict[str, float]:
+    current_summary = current.get("summary", {}) if isinstance(current.get("summary"), dict) else {}
+    baseline_summary = baseline.get("summary", {}) if isinstance(baseline.get("summary"), dict) else {}
+
+    def _metric(name: str) -> float:
+        current_value = float(current_summary.get(name, 0.0) or 0.0)
+        baseline_value = float(baseline_summary.get(name, 0.0) or 0.0)
+        return round(current_value - baseline_value, 4)
+
+    return {
+        "delta_avg_wall_time_ms": _metric("avg_wall_time_ms"),
+        "delta_avg_mutation_duration_ms": _metric("avg_mutation_duration_ms"),
+        "delta_avg_tokens_per_second": _metric("avg_tokens_per_second"),
+        "delta_success_rate": _metric("success_rate"),
+        "delta_noop_rate": _metric("noop_rate"),
+        "delta_validation_pass_rate": _metric("validation_pass_rate"),
+        "delta_first_pass_rate": _metric("first_pass_rate"),
+        "delta_repair_success_rate": _metric("repair_success_rate"),
+        "delta_avg_repair_attempts": _metric("avg_repair_attempts"),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -851,6 +890,64 @@ def main(argv: list[str] | None = None) -> int:
             print(f"nodes={lineage['node_count']} links={lineage['link_count']} complete={lineage['complete']} ready={lineage['ready']}")
             for link in lineage["links"]:
                 print(f"{link['source_run']} -> {link['continuation_run']} token={link['resume_token']}")
+        return 0
+    if args.command == "llm-benchmark":
+        report = run_llm_benchmark(
+            repo_path=args.repo,
+            model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
+            provider_mode=args.provider,
+            engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
+            timeout_seconds=args.timeout,
+            repeats=args.repeats,
+            warmup=not args.no_warmup,
+            nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
+        )
+        payload = report.to_dict()
+        if args.baseline_json:
+            baseline_payload = load_headless_result_json(args.baseline_json)
+            if isinstance(baseline_payload, dict):
+                payload["baseline_delta"] = _benchmark_delta(payload, baseline_payload)
+        if args.save_json:
+            save_benchmark_report(report, args.save_json)
+            payload["saved_json"] = args.save_json
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            summary = payload.get("summary", {})
+            print(
+                " ".join(
+                    (
+                        f"model={payload.get('model')}",
+                        f"provider={payload.get('provider')}",
+                        f"count={summary.get('count')}",
+                        f"success_rate={summary.get('success_rate')}",
+                        f"avg_wall_time_ms={summary.get('avg_wall_time_ms')}",
+                        f"avg_tokens_per_second={summary.get('avg_tokens_per_second')}",
+                        f"validation_pass_rate={summary.get('validation_pass_rate')}",
+                        f"first_pass_rate={summary.get('first_pass_rate')}",
+                        f"repair_success_rate={summary.get('repair_success_rate')}",
+                        f"noop_rate={summary.get('noop_rate')}",
+                    )
+                )
+            )
+            if "baseline_delta" in payload:
+                delta = payload["baseline_delta"]
+                print(
+                    "baseline_delta "
+                    + " ".join(
+                        (
+                            f"wall_ms={delta.get('delta_avg_wall_time_ms')}",
+                            f"mutation_ms={delta.get('delta_avg_mutation_duration_ms')}",
+                            f"tokens_per_s={delta.get('delta_avg_tokens_per_second')}",
+                            f"success={delta.get('delta_success_rate')}",
+                            f"validation={delta.get('delta_validation_pass_rate')}",
+                            f"first_pass={delta.get('delta_first_pass_rate')}",
+                            f"repair_success={delta.get('delta_repair_success_rate')}",
+                            f"repair_attempts={delta.get('delta_avg_repair_attempts')}",
+                            f"noop={delta.get('delta_noop_rate')}",
+                        )
+                    )
+                )
         return 0
     parser.error(f"unknown command: {args.command}")
     return 2

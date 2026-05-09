@@ -185,6 +185,34 @@ class CliHeadlessTests(unittest.TestCase):
         self.assertEqual(payload["score"], 1.0)
         self.assertFalse(memory_db.exists())
 
+    def test_llm_benchmark_json_with_fake_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = io.StringIO()
+            save_path = Path(tmp) / "llm-benchmark.json"
+            with contextlib.redirect_stdout(output):
+                code = main([
+                    "llm-benchmark",
+                    "--repo",
+                    tmp,
+                    "--provider",
+                    "fake",
+                    "--repeats",
+                    "1",
+                    "--no-warmup",
+                    "--no-memory-db",
+                    "--save-json",
+                    str(save_path),
+                    "--json",
+                ])
+            payload = json.loads(output.getvalue())
+
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["provider"], "fake")
+            self.assertEqual(payload["repeats"], 1)
+            self.assertIn("summary", payload)
+            self.assertEqual(payload["saved_json"], str(save_path))
+            self.assertTrue(save_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

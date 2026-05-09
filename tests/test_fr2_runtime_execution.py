@@ -74,11 +74,11 @@ class RoleExecutionProfileTests(unittest.TestCase):
         self.assertEqual(bounds["min"], 5.0)
         self.assertEqual(bounds["max"], 600.0)
 
-    def test_fake_provider_bounds_1_to_120_seconds(self):
-        """Fake provider enforces 1-120 second bounds."""
+    def test_fake_provider_bounds_1_to_300_seconds(self):
+        """Fake provider enforces 1-300 second bounds."""
         bounds = RoleExecutionProfile.PROVIDER_TIMEOUT_BOUNDS["fake"]
         self.assertEqual(bounds["min"], 1.0)
-        self.assertEqual(bounds["max"], 120.0)
+        self.assertEqual(bounds["max"], 300.0)
 
     def test_timeout_clamped_to_min_bound_for_subprocess(self):
         """Timeout below min bound is clamped up for subprocess."""
@@ -101,8 +101,8 @@ class RoleExecutionProfileTests(unittest.TestCase):
     def test_timeout_clamped_to_max_bound_for_fake(self):
         """Timeout above max bound is clamped down for fake."""
         profile = RoleExecutionProfile("summarizer", "fake", base_timeout_seconds=100.0)
-        # summarizer: 100.0 * 2.0 = 200.0, but clamped to 120.0 (fake max)
-        self.assertEqual(profile.effective_timeout_seconds, 120.0)
+        # summarizer: 100.0 * 2.0 = 200.0, which now fits within the fake max bound.
+        self.assertEqual(profile.effective_timeout_seconds, 200.0)
 
     def test_unsupported_role_raises_error(self):
         """Creating profile with unsupported role raises ValueError."""
