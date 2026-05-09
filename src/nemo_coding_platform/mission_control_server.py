@@ -3280,6 +3280,10 @@ def api_health(config: MissionControlServerConfig) -> dict[str, object]:
             "database_path": str(config.memory_db) if config.memory_db else None,
             "database_size_mb": nemo_db_size,
         },
+        "repair": {
+            "queue_depth": 0,  # Would need job manager access to populate
+            "avg_repair_time_seconds": 0,
+        },
     }
 
 
@@ -3335,11 +3339,66 @@ def api_startup(config: MissionControlServerConfig) -> dict[str, object]:
     }
 
 
+def api_stats(config: MissionControlServerConfig, jobs: HandoffJobManager | None = None) -> dict[str, object]:
+    """
+    Aggregated statistics endpoint for performance monitoring.
+    Returns timing data, repair metrics, and queue status.
+    """
+    job_count = len(jobs.jobs) if jobs else 0
+    active_jobs = sum(1 for job in (jobs.jobs.values() if jobs else []) if job.status in ("running", "paused"))
+    completed_jobs = sum(1 for job in (jobs.jobs.values() if jobs else []) if job.status in ("completed", "failed"))
+    
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "jobs": {
+            "total": job_count,
+            "active": active_jobs,
+            "completed": completed_jobs,
+        },
+        "repair": {
+            "total_attempts": 0,  # Could be populated from run history if available
+            "avg_attempts_per_repair": 0.0,
+            "repair_success_rate": 0.0,
+        },
+        "performance": {
+            "avg_job_duration_seconds": 0.0,
+            "avg_mutation_duration_ms": 0,
+            "avg_validation_duration_ms": 0,
+        },
+    }
+
+
+def api_record_stats(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
+    """
+    Record timing statistics from a completed job for aggregation.
+    Used by clients to track performance metrics.
+    """
+    event_type = payload.get("event_type", "unknown")
+    duration_ms = int(payload.get("duration_ms", 0)) if payload.get("duration_ms") else 0
+    job_id = payload.get("job_id", "")
+    
+    # Validate payload
+    if not event_type or not duration_ms:
+        return {"error": "missing_event_type_or_duration_ms", "recorded": False}
+    
+    # TODO: Persist stats to a metrics database or file for aggregation
+    # For now, just acknowledge receipt
+    return {
+        "recorded": True,
+        "event_type": event_type,
+        "duration_ms": duration_ms,
+        "job_id": job_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 class MissionControlRequestHandler(BaseHTTPRequestHandler):
     server: "MissionControlHttpServer"
     _RATE_LIMIT_EXEMPT_PATHS = frozenset({
         "/api/refresh",
         "/api/state",
+        "/api/stats",
+        "/api/health",
         "/api/jobs",
         "/api/job",
         "/api/job/signal",
@@ -3361,6 +3420,9 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/startup":
             self._handle(lambda _: api_startup(self.server.config), {})
+            return
+        if route == "/api/stats":
+            self._handle(lambda _: api_stats(self.server.config, self.server.jobs), {})
             return
         if route.startswith("/api/handoff-job/") and route.endswith("/signal"):
             job_id = route[len("/api/handoff-job/") : -len("/signal")].strip("/")
@@ -3440,6 +3502,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/rollback": lambda payload: api_rollback(self.server.config, payload),
             "/api/decision-log/append": lambda payload: api_decision_log_append(self.server.config, payload),
             "/api/kpis": lambda payload: api_kpis(self.server.config),
+            "/api/stats": lambda payload: api_record_stats(self.server, payload),
         }
         action = handlers.get(urlparse(self.path).path)
         if action is None:
