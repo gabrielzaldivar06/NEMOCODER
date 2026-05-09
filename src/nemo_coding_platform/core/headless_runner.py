@@ -26,9 +26,12 @@ from nemo_coding_platform.core.task_run import (
     EventKind,
     HandoffCompletionGuard,
     MemoryTrace,
+    NemoMemoryEvent,
     Run,
+    RunModelProfileLink,
     RunEvent,
     Task,
+    WorkflowRecipe,
 )
 from nemo_coding_platform.core.todo_guard import build_todo_reminder, extract_todos_from_plan
 from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
@@ -134,7 +137,7 @@ class HeadlessRunResult:
     run: Run
     timeline: AppendOnlyTimeline
     artifacts: tuple[Artifact, ...]
-    memory_traces: tuple[MemoryTrace, ...]
+    memory_traces: tuple[MemoryTrace | NemoMemoryEvent, ...]
     validation: ValidationSuiteResult
     review_package: ReviewPackage
     nemo_results: tuple[NemoCallResult, ...] = ()
@@ -145,6 +148,7 @@ class HeadlessRunResult:
     mutation_result: MutationResult | None = None
     repair_result: RepairRunResult | None = None
     runtime_files: tuple[str, ...] = ()
+    workflow_recipe: WorkflowRecipe | None = None
 
     @property
     def effective_mutation_result(self) -> MutationResult | None:
@@ -350,6 +354,7 @@ def execute_headless_handoff(
         nemo_results.append(search_result)
         nemo_context = _bounded_nemo_context(str(search_result.payload.get("results", "")))
     platform = get_platform_info("nemo-code")
+    profile = model_profile or default_model_profile()
     run = Run(
         run_id,
         task.id,
@@ -360,9 +365,13 @@ def execute_headless_handoff(
         "local-model",
         "full-handoff",
         validation_policy,
+        model_profile_link=RunModelProfileLink(
+            model=profile.model,
+            base_url=profile.base_url,
+            provider_mode=provider_mode,
+        ),
     )
 
-    profile = model_profile or default_model_profile()
     provider = mutation_provider or create_engine_provider(provider_mode, engine_command, cwd=Path("product/nemo_code_runtime"))
     engine = QualityMutationEngine(Workspace.from_path(runtime.worktree_path))
 
@@ -652,9 +661,15 @@ def execute_headless_handoff(
     adapter, result = adapter.call(NemoLifecyclePhase.BUILD, "record_context_feedback", was_useful=True)
     nemo_results.append(result)
     memory_traces = (
-        MemoryTrace("mem-1", run.id, "prime_context", "startup_context", "read_only", "Loaded startup context."),
-        MemoryTrace("mem-2", run.id, "build_context_portfolio", "context_economy", "read_only", f"Built context portfolio tokens={portfolio_result.payload.get('estimated_tokens', 0)}."),
-        MemoryTrace("mem-3", run.id, "store_conversation", "conversation", "memory_write", "Prepared final writeback."),
+        NemoMemoryEvent("mem-1", run.id, "prime_context", "startup_context", "read_only", "Loaded startup context."),
+        NemoMemoryEvent("mem-2", run.id, "build_context_portfolio", "context_economy", "read_only", f"Built context portfolio tokens={portfolio_result.payload.get('estimated_tokens', 0)}."),
+        NemoMemoryEvent("mem-3", run.id, "store_conversation", "conversation", "memory_write", "Prepared final writeback."),
+    )
+    workflow_recipe = WorkflowRecipe(
+        mode=request.spec_mode,
+        step_kinds=tuple(step.kind.value for step in plan.steps),
+        review_gate_required=plan.review_gate_required,
+        can_run_unattended=plan.can_run_unattended,
     )
     runtime_files = snapshot_runtime_files(runtime)
     permission_risks = tuple(f"permission_denied:{path}" for path in denied_files)
@@ -894,4 +909,5 @@ def execute_headless_handoff(
         mutation_result=mutation_result,
         repair_result=repair_result,
         runtime_files=runtime_files,
+        workflow_recipe=workflow_recipe,
     )

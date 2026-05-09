@@ -103,6 +103,24 @@ body {
   background: rgba(255, 107, 107, 0.15);
 }
 
+.status-pill.degraded {
+  color: #fff0c7;
+  border-color: rgba(255, 181, 71, 0.48);
+  background: rgba(255, 181, 71, 0.15);
+}
+
+.status-pill.setup_required {
+  color: #ffe0c9;
+  border-color: rgba(255, 140, 65, 0.52);
+  background: rgba(255, 140, 65, 0.16);
+}
+
+.status-pill.fatal_error {
+  color: #ffd8d8;
+  border-color: rgba(255, 107, 107, 0.62);
+  background: rgba(255, 107, 107, 0.2);
+}
+
 .workspace-canvas {
   flex: 1;
   padding: 0.95rem;
@@ -180,6 +198,197 @@ body {
   max-width: none;
   margin: 0;
   text-align: left;
+}
+
+.onboarding-pane {
+  max-width: 1080px;
+  margin: 0 auto;
+  display: grid;
+  gap: 1rem;
+  padding: 1.2rem;
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(9, 27, 41, 0.92), rgba(7, 18, 28, 0.92));
+  border: 1px solid rgba(108, 177, 210, 0.25);
+  box-shadow: var(--shadow);
+  animation: panel-rise 260ms ease-out;
+}
+
+.setup-hero {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.setup-hero h2 {
+  font-size: 1.5rem;
+}
+
+.setup-hero p,
+.support-text.subtle {
+  color: var(--text-soft);
+  line-height: 1.6;
+}
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.setup-card {
+  padding: 1rem;
+  border-radius: 16px;
+  background: rgba(9, 30, 45, 0.78);
+  border: 1px solid rgba(108, 177, 210, 0.22);
+  display: grid;
+  gap: 0.85rem;
+}
+
+.setup-card.emphasis {
+  border-color: rgba(78, 208, 255, 0.34);
+}
+
+.setup-card h3 {
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+
+.checklist {
+  list-style: none;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.checklist li {
+  position: relative;
+  padding: 0.68rem 0.78rem 0.68rem 2rem;
+  border-radius: 12px;
+  background: rgba(4, 18, 28, 0.75);
+  border: 1px solid rgba(112, 156, 181, 0.24);
+  color: var(--text-soft);
+}
+
+.checklist li::before {
+  position: absolute;
+  left: 0.8rem;
+  top: 0.68rem;
+  font-weight: 700;
+  content: '•';
+}
+
+.checklist li.ok {
+  border-color: rgba(79, 208, 145, 0.28);
+  color: #d6fff0;
+}
+
+.checklist li.ok::before {
+  content: '✓';
+  color: var(--ok);
+}
+
+.checklist li.bad {
+  border-color: rgba(255, 107, 107, 0.3);
+  color: #ffd6d6;
+}
+
+.checklist li.bad::before {
+  content: '!';
+  color: var(--warn);
+}
+
+.issue-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.issue-pill {
+  padding: 0.45rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(9, 30, 45, 0.88);
+  border: 1px solid rgba(108, 177, 210, 0.24);
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.button-row.split {
+  gap: 0.75rem;
+}
+
+.secondary-btn {
+  border: 1px solid rgba(78, 208, 255, 0.26);
+  border-radius: 999px;
+  padding: 0.72rem 1.35rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  background: rgba(8, 29, 44, 0.82);
+  color: var(--text-strong);
+  cursor: pointer;
+  transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+
+.secondary-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(78, 208, 255, 0.46);
+  background: rgba(11, 38, 57, 0.96);
+}
+
+.secondary-btn:active {
+  transform: translateY(0);
+}
+
+.settings-panel.compact {
+  background: rgba(7, 24, 36, 0.82);
+}
+
+.wizard-form {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.wizard-form label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.wizard-form label span {
+  font-size: 0.76rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.wizard-form input,
+.wizard-form select {
+  width: 100%;
+  border: 1px solid rgba(78, 208, 255, 0.26);
+  border-radius: 12px;
+  padding: 0.72rem 0.85rem;
+  background: rgba(4, 18, 28, 0.88);
+  color: var(--text-strong);
+  font: inherit;
+}
+
+.wizard-form input:focus,
+.wizard-form select:focus {
+  outline: 2px solid rgba(78, 208, 255, 0.35);
+  outline-offset: 1px;
+}
+
+.toggle-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.toggle-row input[type='checkbox'] {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.wizard-actions {
+  margin-top: 0.2rem;
 }
 
 .error-pane h2 {
@@ -271,6 +480,10 @@ body {
     padding: 0.7rem;
   }
 
+  .setup-grid {
+    grid-template-columns: 1fr;
+  }
+
   .meta-chip {
     width: 100%;
   }
@@ -297,5 +510,9 @@ body {
 
   .mission-control-wrap {
     min-height: 420px;
+  }
+
+  .button-row.split {
+    flex-direction: column;
   }
 }

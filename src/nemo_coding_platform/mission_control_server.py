@@ -1212,6 +1212,15 @@ def _chat_model(payload: dict[str, object]) -> str:
     return value.strip()
 
 
+def _redact_secrets(text: str) -> str:
+    value = str(text)
+    for env_name in ("LMSTUDIO_API_KEY", "OPENAI_API_KEY"):
+        secret = os.environ.get(env_name)
+        if secret:
+            value = value.replace(secret, "***")
+    return value
+
+
 def _agent_context_summary(
     selected: dict[str, Any] | None,
     changed_files: tuple[str, ...],
@@ -1368,10 +1377,10 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response_payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
-        details = error.read().decode("utf-8", errors="replace")
+        details = _redact_secrets(error.read().decode("utf-8", errors="replace"))
         raise ValueError(f"LM Studio chat failed: HTTP {error.code} {details[:400]}") from error
     except (urllib.error.URLError, TimeoutError) as error:
-        raise ValueError(f"LM Studio chat failed: {error}") from error
+        raise ValueError(f"LM Studio chat failed: {_redact_secrets(str(error))}") from error
     choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
     if not isinstance(choices, list) or not choices:
         raise ValueError("LM Studio chat failed: response had no choices")

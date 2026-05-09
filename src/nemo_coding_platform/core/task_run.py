@@ -47,6 +47,21 @@ class ArtifactType(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class WorkflowRecipe:
+    mode: str
+    step_kinds: tuple[str, ...]
+    review_gate_required: bool = True
+    can_run_unattended: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class RunModelProfileLink:
+    model: str
+    base_url: str
+    provider_mode: str
+
+
+@dataclass(frozen=True, slots=True)
 class Task:
     id: str
     repo_path: str
@@ -70,6 +85,7 @@ class Run:
     permission_profile: str
     validation_profile: str
     failure_reason: str | None = None
+    model_profile_link: RunModelProfileLink | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +123,18 @@ class Artifact:
 
 @dataclass(frozen=True, slots=True)
 class MemoryTrace:
+    id: str
+    run_id: str
+    nemo_tool: str
+    suite: str
+    risk: str
+    summary: str
+    evidence_handle: str | None = None
+    memory_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class NemoMemoryEvent:
     id: str
     run_id: str
     nemo_tool: str

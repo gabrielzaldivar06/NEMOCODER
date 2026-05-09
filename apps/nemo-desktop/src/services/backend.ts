@@ -25,6 +25,18 @@ export interface HealthStatus {
   message: string;
 }
 
+export type SetupStatus = "ready" | "degraded" | "setup_required" | "fatal_error";
+
+export interface SetupDiagnostics {
+  lmStudioFound: boolean;
+  nemoDbFound: boolean;
+  diskSpaceOk: boolean;
+  permissionsOk: boolean;
+  ready: boolean;
+  status: SetupStatus;
+  issues: string[];
+}
+
 /**
  * Application settings
  */
@@ -201,6 +213,8 @@ export async function detectSetup(): Promise<{
   diskSpaceOk: boolean;
   permissionsOk: boolean;
   ready: boolean;
+  status: SetupStatus;
+  issues: string[];
 }> {
   try {
     // Route through the Tauri backend proxy to avoid browser CORS restrictions.
@@ -209,13 +223,35 @@ export async function detectSetup(): Promise<{
       method: "GET",
     });
     const data = JSON.parse(payload);
+
+    const lmStudioFound = Boolean(data.checks.lm_studio_reachable);
+    const nemoDbFound = Boolean(data.checks.nemo_database_exists);
+    const diskSpaceOk = Boolean(data.checks.disk_space_sufficient);
+    const permissionsOk = Boolean(data.checks.permissions_ok);
+    const ready = Boolean(data.ready);
+    const issues = [];
+
+    if (!lmStudioFound) issues.push("LM Studio not reachable");
+    if (!nemoDbFound) issues.push("NEMO database missing");
+    if (!diskSpaceOk) issues.push("Insufficient disk space");
+    if (!permissionsOk) issues.push("Permission denied");
+
+    const status: SetupStatus = ready
+      ? "ready"
+      : !lmStudioFound || !nemoDbFound || !permissionsOk
+        ? "setup_required"
+        : !diskSpaceOk
+          ? "degraded"
+          : "fatal_error";
     
     return {
-      lmStudioFound: data.checks.lm_studio_reachable,
-      nemoDbFound: data.checks.nemo_database_exists,
-      diskSpaceOk: data.checks.disk_space_sufficient,
-      permissionsOk: data.checks.permissions_ok,
-      ready: data.ready,
+      lmStudioFound,
+      nemoDbFound,
+      diskSpaceOk,
+      permissionsOk,
+      ready,
+      status,
+      issues,
     };
   } catch (error) {
     console.error("Failed to detect setup:", error);
@@ -225,6 +261,8 @@ export async function detectSetup(): Promise<{
       diskSpaceOk: false,
       permissionsOk: false,
       ready: false,
+      status: "fatal_error",
+      issues: ["Unable to reach startup probe"],
     };
   }
 }

@@ -38,6 +38,7 @@ def headless_result_to_dict(result: object) -> dict[str, Any]:
         "repair_result": _json_value(getattr(result, "repair_result", None)),
         "execution_snapshots": _json_value(getattr(result, "execution_snapshots", None)),
         "runtime_files": _json_value(getattr(result, "runtime_files", ())),
+        "workflow_recipe": _json_value(getattr(result, "workflow_recipe", None)),
         "readiness": _json_value(score),
     }
 
