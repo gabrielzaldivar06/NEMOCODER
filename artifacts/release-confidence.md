@@ -1,7 +1,7 @@
 # Release Confidence Evidence
 
-run_json=C:\Users\gabri\AppData\Local\Temp\tmptrl9v2ab\runtimes\run.json
-apply_json=C:\Users\gabri\AppData\Local\Temp\tmptrl9v2ab\apply-results\task-1-run-1.json
+run_json=C:\Users\gabri\AppData\Local\Temp\tmpv4qxh2o8\runtimes\run.json
+apply_json=C:\Users\gabri\AppData\Local\Temp\tmpv4qxh2o8\apply-results\task-1-run-1.json
 
 ## Review
 - ok: true
@@ -23,7 +23,7 @@ apply_json=C:\Users\gabri\AppData\Local\Temp\tmptrl9v2ab\apply-results\task-1-ru
 ## Replay
 - headless_exit_code: 0
 - exit_code: 0
-- run_json: C:\Users\gabri\AppData\Local\Temp\tmptrl9v2ab\headless-result.json
+- run_json: C:\Users\gabri\AppData\Local\Temp\tmpv4qxh2o8\headless-result.json
 - can_replay: true
 - grade: ready
 - event_count: 8
@@ -37,3 +37,14 @@ apply_json=C:\Users\gabri\AppData\Local\Temp\tmptrl9v2ab\apply-results\task-1-ru
 ## State
 - run_count: 1
 - approval_queue_count: 1
+
+## Benchmark Gate
+- baseline_exit_code: 0
+- baseline_json: C:\Users\gabri\AppData\Local\Temp\tmpv4qxh2o8\bench-baseline.json
+- current_json: C:\Users\gabri\AppData\Local\Temp\tmpv4qxh2o8\bench-current.json
+- pass_case_exit_code: 0
+- pass_case_passed: true
+- pass_case_violation_count: 0
+- fail_case_exit_code: 1
+- fail_case_passed: false
+- fail_case_violation_count: 1

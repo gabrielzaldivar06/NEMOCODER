@@ -17,6 +17,7 @@ from nemo_coding_platform.mission_control_server import (
     api_state,
 )
 from tests.test_review_gate_cli import write_ready_run
+from tests.generate_release_confidence_evidence import build_release_confidence_evidence
 
 
 class ReleaseConfidenceE2ETests(unittest.TestCase):
@@ -164,6 +165,18 @@ class ReleaseConfidenceE2ETests(unittest.TestCase):
         self.assertTrue(replay_payload["can_replay"])
         self.assertEqual(replay_payload["grade"], "ready")
         self.assertGreaterEqual(replay_payload["event_count"], 1)
+
+    def test_release_confidence_evidence_includes_benchmark_regression_gate(self) -> None:
+        payload = build_release_confidence_evidence()
+        evidence = payload["release_confidence"]
+        benchmark_gate = evidence["benchmark_gate"]
+
+        self.assertEqual(benchmark_gate["baseline_exit_code"], 0)
+        self.assertEqual(benchmark_gate["pass_case_exit_code"], 0)
+        self.assertTrue(benchmark_gate["pass_case_passed"])
+        self.assertEqual(benchmark_gate["fail_case_exit_code"], 1)
+        self.assertFalse(benchmark_gate["fail_case_passed"])
+        self.assertGreaterEqual(benchmark_gate["fail_case_violation_count"], 1)
 
 
 if __name__ == "__main__":

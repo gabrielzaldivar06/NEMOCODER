@@ -7,14 +7,14 @@
       ],
       "auto_applied": false,
       "autonomy_profile": "manual",
-      "backup_dir": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmptrl9v2ab\\repo\\.nemo-apply-backups\\task-1-run-1",
+      "backup_dir": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmpv4qxh2o8\\repo\\.nemo-apply-backups\\task-1-run-1",
       "backup_files": [
         "existing.txt"
       ],
       "created_files": [
         "created.txt"
       ],
-      "repo_path": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmptrl9v2ab\\repo",
+      "repo_path": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmpv4qxh2o8\\repo",
       "review_approved": true,
       "run_id": "run-1",
       "task_id": "task-1",
@@ -23,7 +23,18 @@
       ]
     },
     "apply_history_count": 1,
-    "apply_json": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmptrl9v2ab\\apply-results\\task-1-run-1.json",
+    "apply_json": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmpv4qxh2o8\\apply-results\\task-1-run-1.json",
+    "benchmark_gate": {
+      "baseline_exit_code": 0,
+      "baseline_json": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmpv4qxh2o8\\bench-baseline.json",
+      "current_json": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmpv4qxh2o8\\bench-current.json",
+      "fail_case_exit_code": 1,
+      "fail_case_passed": false,
+      "fail_case_violation_count": 1,
+      "pass_case_exit_code": 0,
+      "pass_case_passed": true,
+      "pass_case_violation_count": 0
+    },
     "file_preview": {
       "file_risk_flags": [],
       "hunk_count": 1,
@@ -49,7 +60,7 @@
         "engine-output.txt",
         "checkpoint.md"
       ],
-      "run_json": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmptrl9v2ab\\headless-result.json"
+      "run_json": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmpv4qxh2o8\\headless-result.json"
     },
     "review": {
       "changed_files": [
@@ -71,7 +82,7 @@
       "run_id": "run-1",
       "task_id": "task-1"
     },
-    "run_json": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmptrl9v2ab\\runtimes\\run.json",
+    "run_json": "C:\\Users\\gabri\\AppData\\Local\\Temp\\tmpv4qxh2o8\\runtimes\\run.json",
     "state": {
       "approval_queue_count": 1,
       "run_count": 1

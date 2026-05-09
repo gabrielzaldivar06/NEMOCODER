@@ -40,6 +40,8 @@ def build_release_confidence_evidence() -> dict[str, object]:
         config = MissionControlServerConfig.from_paths(repo, runtimes, apply_results, None)
 
         replay_run_json = root / "headless-result.json"
+        benchmark_baseline_json = root / "bench-baseline.json"
+        benchmark_current_json = root / "bench-current.json"
         with contextlib.redirect_stdout(io.StringIO()):
             replay_headless_exit = main([
                 "headless-run",
@@ -50,6 +52,80 @@ def build_release_confidence_evidence() -> dict[str, object]:
                 "--save-json",
                 str(replay_run_json),
             ])
+
+        # Build deterministic fake benchmark baseline for CI-safe regression gate checks.
+        with contextlib.redirect_stdout(io.StringIO()):
+            baseline_bench_exit = main([
+                "llm-benchmark",
+                "--repo",
+                str(repo),
+                "--provider",
+                "fake",
+                "--suite",
+                "quick",
+                "--repeats",
+                "1",
+                "--no-warmup",
+                "--no-memory-db",
+                "--save-json",
+                str(benchmark_baseline_json),
+                "--json",
+            ])
+
+        benchmark_gate_output = io.StringIO()
+        with contextlib.redirect_stdout(benchmark_gate_output):
+            benchmark_gate_pass_exit = main([
+                "llm-benchmark",
+                "--repo",
+                str(repo),
+                "--provider",
+                "fake",
+                "--suite",
+                "quick",
+                "--repeats",
+                "1",
+                "--no-warmup",
+                "--no-memory-db",
+                "--baseline-json",
+                str(benchmark_baseline_json),
+                "--save-json",
+                str(benchmark_current_json),
+                "--fail-on-regression",
+                "--min-success-rate-delta",
+                "0.0",
+                "--min-validation-pass-rate-delta",
+                "0.0",
+                "--min-repair-success-rate-delta",
+                "0.0",
+                "--max-noop-rate-delta",
+                "0.0",
+                "--json",
+            ])
+        benchmark_gate_payload = json.loads(benchmark_gate_output.getvalue())
+
+        # Controlled failing scenario to prove gate blocks regressions when threshold is strict.
+        benchmark_gate_fail_output = io.StringIO()
+        with contextlib.redirect_stdout(benchmark_gate_fail_output):
+            benchmark_gate_fail_exit = main([
+                "llm-benchmark",
+                "--repo",
+                str(repo),
+                "--provider",
+                "fake",
+                "--suite",
+                "quick",
+                "--repeats",
+                "1",
+                "--no-warmup",
+                "--no-memory-db",
+                "--baseline-json",
+                str(benchmark_baseline_json),
+                "--fail-on-regression",
+                "--min-success-rate-delta",
+                "0.1",
+                "--json",
+            ])
+        benchmark_gate_fail_payload = json.loads(benchmark_gate_fail_output.getvalue())
 
         review_payload = api_review(config, {"source_json": str(run_json)})
         file_payload = api_file(config, {"source_json": str(run_json), "file_path": "existing.txt"})
@@ -97,6 +173,17 @@ def build_release_confidence_evidence() -> dict[str, object]:
                     "run_count": len(state_payload.get("runs", [])),
                     "approval_queue_count": len(state_payload.get("approval_queue", [])),
                 },
+                "benchmark_gate": {
+                    "baseline_exit_code": baseline_bench_exit,
+                    "baseline_json": str(benchmark_baseline_json),
+                    "current_json": str(benchmark_current_json),
+                    "pass_case_exit_code": benchmark_gate_pass_exit,
+                    "pass_case_passed": bool((benchmark_gate_payload.get("regression_gate") or {}).get("passed", False)),
+                    "pass_case_violation_count": len((benchmark_gate_payload.get("regression_gate") or {}).get("violations", [])),
+                    "fail_case_exit_code": benchmark_gate_fail_exit,
+                    "fail_case_passed": bool((benchmark_gate_fail_payload.get("regression_gate") or {}).get("passed", True)),
+                    "fail_case_violation_count": len((benchmark_gate_fail_payload.get("regression_gate") or {}).get("violations", [])),
+                },
             }
         }
 
@@ -109,6 +196,7 @@ def to_markdown(payload: dict[str, object]) -> str:
     replay = evidence["replay"]
     rollback = evidence["rollback"]
     state = evidence["state"]
+    benchmark_gate = evidence["benchmark_gate"]
     lines = [
         "# Release Confidence Evidence",
         "",
@@ -149,6 +237,17 @@ def to_markdown(payload: dict[str, object]) -> str:
         "## State",
         f"- run_count: {state['run_count']}",
         f"- approval_queue_count: {state['approval_queue_count']}",
+        "",
+        "## Benchmark Gate",
+        f"- baseline_exit_code: {benchmark_gate['baseline_exit_code']}",
+        f"- baseline_json: {benchmark_gate['baseline_json']}",
+        f"- current_json: {benchmark_gate['current_json']}",
+        f"- pass_case_exit_code: {benchmark_gate['pass_case_exit_code']}",
+        f"- pass_case_passed: {str(benchmark_gate['pass_case_passed']).lower()}",
+        f"- pass_case_violation_count: {benchmark_gate['pass_case_violation_count']}",
+        f"- fail_case_exit_code: {benchmark_gate['fail_case_exit_code']}",
+        f"- fail_case_passed: {str(benchmark_gate['fail_case_passed']).lower()}",
+        f"- fail_case_violation_count: {benchmark_gate['fail_case_violation_count']}",
         "",
     ]
     return "\n".join(lines)
