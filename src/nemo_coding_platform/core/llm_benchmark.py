@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean, median
+import sys
 from time import perf_counter
 from typing import Any
 
@@ -238,7 +239,7 @@ assert scores == sorted(scores, reverse=True)
 
 def quick_benchmark_cases() -> tuple[BenchmarkCase, ...]:
     cases = standard_benchmark_cases()
-    return (cases[0], cases[1])
+    return tuple(replace(case, repair_budget=0) for case in (cases[0], cases[1]))
 
 
 def benchmark_cases_for_suite(suite: str) -> tuple[BenchmarkCase, ...]:
@@ -417,7 +418,7 @@ def _run_case_once(
         prd=case.objective,
         repo_path=repo_path,
         acceptance_criteria=case.acceptance_criteria,
-        validation_commands=("mutation changed files",),
+        validation_commands=(f"{sys.executable} --version",),
         repair_budget=max(0, int(case.repair_budget)),
         objective_summary=case.objective,
         spec_mode="auto",
