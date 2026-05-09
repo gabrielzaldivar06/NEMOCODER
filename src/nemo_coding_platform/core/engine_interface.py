@@ -95,6 +95,7 @@ def build_default_engine_command(profile: ModelProfile, message_file: str | Path
         "--no-auto-commits",
         "--no-dirty-commits",
         "--no-gitignore",
+        "--no-show-model-warnings",
         "--no-analytics",
     )
 

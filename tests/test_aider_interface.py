@@ -20,6 +20,7 @@ class AiderInterfaceTests(unittest.TestCase):
         self.assertIn("openai/nvidia.agentic.coder-4b", command)
         self.assertIn("http://localhost:1234/v1", command)
         self.assertIn("--message-file", command)
+        self.assertIn("--no-show-model-warnings", command)
 
     def test_render_engine_message_includes_context_and_acceptance(self) -> None:
         message = render_engine_message(MutationRequest("Build", "spec.md", ("passes tests",), "NEMO context"))
