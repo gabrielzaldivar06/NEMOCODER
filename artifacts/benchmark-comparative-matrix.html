@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NEMOCODE Benchmark Dashboard</title>
+  <style>
+    :root {
+      --bg: #f2f4f8;
+      --ink: #12243a;
+      --muted: #5d6b7b;
+      --surface: #ffffff;
+      --line: #d9e1ea;
+      --brand: #0f6f8b;
+      --brand-2: #f59f00;
+      --ok: #248046;
+      --warn: #d9480f;
+      --local: #0f6f8b;
+      --mcp: #9b5de5;
+      --shadow: 0 10px 30px rgba(18, 36, 58, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% -8%, #b8ecff 0%, transparent 32%),
+        radial-gradient(circle at 88% 0%, #ffe5ae 0%, transparent 30%),
+        var(--bg);
+      font-family: "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+
+    .shell {
+      max-width: 1200px;
+      margin: 22px auto;
+      padding: 0 14px 36px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, #073b4c 0%, #0f6f8b 58%, #36b3c9 100%);
+      color: #f4fbff;
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+      margin-bottom: 14px;
+    }
+
+    .hero h1 {
+      margin: 0 0 8px;
+      font-size: 29px;
+      letter-spacing: 0.2px;
+    }
+
+    .hero p {
+      margin: 0;
+      color: #d7f6ff;
+      font-size: 14px;
+    }
+
+    .grid-kpi {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+    }
+
+    .kpi .label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    .kpi .value {
+      font-size: 21px;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+
+    .kpi .note {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+
+    .card h2 {
+      margin: 0 0 4px;
+      font-size: 18px;
+    }
+
+    .hint {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .bars {
+      display: grid;
+      gap: 10px;
+    }
+
+    .bar-line {
+      display: grid;
+      grid-template-columns: 130px 1fr 76px;
+      gap: 8px;
+      align-items: center;
+      font-size: 13px;
+    }
+
+    .bar-name {
+      color: #334b67;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .track {
+      height: 11px;
+      border-radius: 999px;
+      background: #ebf0f5;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .fill {
+      height: 100%;
+      border-radius: 999px;
+      min-width: 2px;
+    }
+
+    .local { background: linear-gradient(90deg, #0f6f8b, #36b3c9); }
+    .mcp { background: linear-gradient(90deg, #7b2cbf, #c77dff); }
+    .ext { background: linear-gradient(90deg, #f59f00, #f76707); }
+
+    .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: #2d425b;
+      font-weight: 600;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 8px;
+      vertical-align: top;
+    }
+
+    th {
+      text-align: left;
+      background: #f7fafc;
+      color: #2a3e58;
+    }
+
+    td.r {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #08303a;
+      background: #caf0f8;
+    }
+
+    .pill.warn {
+      color: #532c07;
+      background: #ffe8cc;
+    }
+
+    .refs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .source {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 10px;
+    }
+
+    a {
+      color: var(--brand);
+      text-decoration: none;
+    }
+
+    a:hover { text-decoration: underline; }
+
+    @media (max-width: 980px) {
+      .grid-kpi { grid-template-columns: 1fr 1fr; }
+      .row, .refs { grid-template-columns: 1fr; }
+      .bar-line { grid-template-columns: 118px 1fr 70px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <h1>NEMOCODE Benchmark Dashboard</h1>
+      <p>
+        Snapshot: 2026-05 · Suite quick (2 casos, repeats=1, sin warmup, timeout=60s) ·
+        Comparativa Local Adapter vs Remote NEMO MCP + contexto externo de modelos populares.
+      </p>
+    </section>
+
+    <section class="grid-kpi">
+      <article class="kpi">
+        <div class="label">Mejor Wall Time</div>
+        <div class="value">105,458 ms</div>
+        <div class="note">nvidia.agentic.coder-4b + MCP</div>
+      </article>
+      <article class="kpi">
+        <div class="label">Mayor Throughput</div>
+        <div class="value">14.48 tok/s</div>
+        <div class="note">nvidia.agentic.coder-4b + MCP</div>
+      </article>
+      <article class="kpi">
+        <div class="label">Mayor Success Rate</div>
+        <div class="value">1.00</div>
+        <div class="note">opus4.7-gods.ghost.codex-4b.gguf + MCP</div>
+      </article>
+      <article class="kpi">
+        <div class="label">Estado Validacion</div>
+        <div class="value">0.00</div>
+        <div class="note">Aun es el cuello de botella principal</div>
+      </article>
+    </section>
+
+    <section class="row">
+      <article class="card">
+        <h2>Comparativa directa: nuestros dos modelos</h2>
+        <p class="hint">Los dos modelos locales se comparan en la misma corrida. MCP mejora el throughput de NVIDIA y la tasa de éxito de OPUS.</p>
+        <div class="bars">
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA vs OPUS</div>
+            <div class="track"><div class="fill local" style="width:71%"></div><div class="fill mcp" style="width:100%; opacity:0.55; margin-left:-71%"></div></div>
+            <div class="num">Wall time</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA vs OPUS</div>
+            <div class="track"><div class="fill local" style="width:82%"></div><div class="fill mcp" style="width:44.5%; opacity:0.55; margin-left:-82%"></div></div>
+            <div class="num">Tok/s</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA vs OPUS</div>
+            <div class="track"><div class="fill local" style="width:50%"></div><div class="fill mcp" style="width:100%; opacity:0.55; margin-left:-50%"></div></div>
+            <div class="num">Success</div>
+          </div>
+        </div>
+        <div class="source">Local = barra principal · MCP = superposición más clara · para ver la ganancia relativa de un vistazo.</div>
+      </article>
+
+      <article class="card">
+        <h2>Comerciales destacados: líderes populares</h2>
+        <p class="hint">Cada barra resume un benchmark público diferente. Sirve como referencia visual, no como ranking mezclado.</p>
+        <div class="bars">
+          <div class="bar-line">
+            <div class="bar-name">SWE-bench</div>
+            <div class="track"><div class="fill ext" style="width:100%"></div></div>
+            <div class="num">Claude 4.5 Opus · 76.8</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">EvalPlus</div>
+            <div class="track"><div class="fill ext" style="width:100%"></div></div>
+            <div class="num">O1 Preview · 89.0</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">Aider</div>
+            <div class="track"><div class="fill ext" style="width:100%"></div></div>
+            <div class="num">o1 / Sonnet · 84.2%</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">CRUXEval</div>
+            <div class="track"><div class="fill ext" style="width:100%"></div></div>
+            <div class="num">gpt-4-turbo · 75.7</div>
+          </div>
+        </div>
+        <div class="source">Commercial = referencias externas de mercado para situar magnitud y nivel general.</div>
+      </article>
+    </section>
+
+    <section class="row">
+      <article class="card">
+        <h2>Grafico: Wall Time (ms)</h2>
+        <p class="hint">Menor es mejor. Escala relativa al mayor valor observado (153,013.5 ms).</p>
+        <div class="bars">
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA Local</div>
+            <div class="track"><div class="fill local" style="width:71.31%"></div></div>
+            <div class="num">109,112</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA MCP</div>
+            <div class="track"><div class="fill mcp" style="width:68.92%"></div></div>
+            <div class="num">105,458</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">OPUS Local</div>
+            <div class="track"><div class="fill local" style="width:79.00%"></div></div>
+            <div class="num">120,876</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">OPUS MCP</div>
+            <div class="track"><div class="fill mcp" style="width:100%"></div></div>
+            <div class="num">153,013</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Grafico: Tokens/s</h2>
+        <p class="hint">Mayor es mejor. Escala relativa al mayor valor observado (14.48 tok/s).</p>
+        <div class="bars">
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA Local</div>
+            <div class="track"><div class="fill local" style="width:81.49%"></div></div>
+            <div class="num">11.80</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA MCP</div>
+            <div class="track"><div class="fill mcp" style="width:100%"></div></div>
+            <div class="num">14.48</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">OPUS Local</div>
+            <div class="track"><div class="fill local" style="width:0%"></div></div>
+            <div class="num">0.00</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">OPUS MCP</div>
+            <div class="track"><div class="fill mcp" style="width:44.54%"></div></div>
+            <div class="num">6.45</div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="row">
+      <article class="card">
+        <h2>Grafico: Success Rate</h2>
+        <p class="hint">Escala 0 a 1.0.</p>
+        <div class="bars">
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA Local</div>
+            <div class="track"><div class="fill local" style="width:50%"></div></div>
+            <div class="num">0.50</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">NVIDIA MCP</div>
+            <div class="track"><div class="fill mcp" style="width:50%"></div></div>
+            <div class="num">0.50</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">OPUS Local</div>
+            <div class="track"><div class="fill local" style="width:50%"></div></div>
+            <div class="num">0.50</div>
+          </div>
+          <div class="bar-line">
+            <div class="bar-name">OPUS MCP</div>
+            <div class="track"><div class="fill mcp" style="width:100%"></div></div>
+            <div class="num">1.00</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Deltas MCP vs Local</h2>
+        <p class="hint">Valores negativos de wall time indican mejora de velocidad con MCP.</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Modelo</th>
+              <th>Delta wall time</th>
+              <th>Delta mutation</th>
+              <th>Delta tok/s</th>
+              <th>Delta success</th>
+              <th>Delta noop</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>nvidia.agentic.coder-4b</td>
+              <td class="r"><span class="pill">-3654.0 ms</span></td>
+              <td class="r">-3692.0 ms</td>
+              <td class="r">+2.68</td>
+              <td class="r">+0.00</td>
+              <td class="r">+0.00</td>
+            </tr>
+            <tr>
+              <td>opus4.7-gods.ghost.codex-4b.gguf</td>
+              <td class="r"><span class="pill warn">+32137.5 ms</span></td>
+              <td class="r">-11326.5 ms</td>
+              <td class="r">+6.45</td>
+              <td class="r">+0.50</td>
+              <td class="r">-0.50</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+
+    <section class="card">
+      <h2>Matriz Completa (Datos internos)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>NEMO Mode</th>
+            <th>avg_wall_time_ms</th>
+            <th>avg_mutation_duration_ms</th>
+            <th>avg_tokens_per_second</th>
+            <th>success_rate</th>
+            <th>noop_rate</th>
+            <th>validation_pass_rate</th>
+            <th>avg_changed_files</th>
+            <th>avg_memory_calls</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>nvidia.agentic.coder-4b</td>
+            <td>Local persistent adapter</td>
+            <td class="r">109112.5</td>
+            <td class="r">50804.0</td>
+            <td class="r">11.80</td>
+            <td class="r">0.50</td>
+            <td class="r">0.50</td>
+            <td class="r">0.00</td>
+            <td class="r">1.0</td>
+            <td class="r">7.0</td>
+          </tr>
+          <tr>
+            <td>nvidia.agentic.coder-4b</td>
+            <td>Remote NEMO MCP</td>
+            <td class="r">105458.5</td>
+            <td class="r">47112.0</td>
+            <td class="r">14.48</td>
+            <td class="r">0.50</td>
+            <td class="r">0.50</td>
+            <td class="r">0.00</td>
+            <td class="r">1.0</td>
+            <td class="r">6.0</td>
+          </tr>
+          <tr>
+            <td>opus4.7-gods.ghost.codex-4b.gguf</td>
+            <td>Local persistent adapter</td>
+            <td class="r">120876.0</td>
+            <td class="r">60163.0</td>
+            <td class="r">0.00</td>
+            <td class="r">0.50</td>
+            <td class="r">0.50</td>
+            <td class="r">0.00</td>
+            <td class="r">0.5</td>
+            <td class="r">7.0</td>
+          </tr>
+          <tr>
+            <td>opus4.7-gods.ghost.codex-4b.gguf</td>
+            <td>Remote NEMO MCP</td>
+            <td class="r">153013.5</td>
+            <td class="r">48836.5</td>
+            <td class="r">6.45</td>
+            <td class="r">1.00</td>
+            <td class="r">0.00</td>
+            <td class="r">0.00</td>
+            <td class="r">2.0</td>
+            <td class="r">6.0</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>Referencias Externas: Modelos Populares (Visual)</h2>
+      <p class="hint">Orientativo. No es comparacion directa 1:1 con la suite local NEMOCODE; es una escala de referencia para comerciales populares.</p>
+
+      <div class="refs">
+        <article>
+          <h3>SWE-bench Verified (% Resolved)</h3>
+          <div class="bars">
+            <div class="bar-line">
+              <div class="bar-name">Claude 4.5 Opus</div>
+              <div class="track"><div class="fill ext" style="width:100%"></div></div>
+              <div class="num">76.80</div>
+            </div>
+            <div class="bar-line">
+              <div class="bar-name">Gemini 3 Flash</div>
+              <div class="track"><div class="fill ext" style="width:98.70%"></div></div>
+              <div class="num">75.80</div>
+            </div>
+            <div class="bar-line">
+              <div class="bar-name">GPT-5-2 Codex</div>
+              <div class="track"><div class="fill ext" style="width:94.79%"></div></div>
+              <div class="num">72.80</div>
+            </div>
+            <div class="bar-line">
+              <div class="bar-name">GPT-5 Mini</div>
+              <div class="track"><div class="fill ext" style="width:73.18%"></div></div>
+              <div class="num">56.20</div>
+            </div>
+          </div>
+          <div class="source">Fuente: <a href="https://www.swebench.com/verified.html">SWE-bench Verified</a></div>
+        </article>
+
+        <article>
+          <h3>EvalPlus (score)</h3>
+          <div class="bars">
+            <div class="bar-line">
+              <div class="bar-name">O1 Preview</div>
+              <div class="track"><div class="fill ext" style="width:100%"></div></div>
+              <div class="num">89.0</div>
+            </div>
+            <div class="bar-line">
+              <div class="bar-name">Qwen2.5-Coder-32B</div>
+              <div class="track"><div class="fill ext" style="width:97.98%"></div></div>
+              <div class="num">87.2</div>
+            </div>
+            <div class="bar-line">
+              <div class="bar-name">GPT-4o (Aug 2024)</div>
+              <div class="track"><div class="fill ext" style="width:97.98%"></div></div>
+              <div class="num">87.2</div>
+            </div>
+            <div class="bar-line">
+              <div class="bar-name">DeepSeek-V3</div>
+              <div class="track"><div class="fill ext" style="width:97.30%"></div></div>
+              <div class="num">86.6</div>
+            </div>
+          </div>
+          <div class="source">Fuente: <a href="https://evalplus.github.io/leaderboard.html">EvalPlus Leaderboard</a></div>
+        </article>
+      </div>
+
+      <div class="refs">
+        <article>
+          <h3>Aider Code Editing (legacy)</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Modelo</th>
+                <th>% completed correctly</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>o1</td><td class="r">84.2%</td></tr>
+              <tr><td>claude-3-5-sonnet-20241022</td><td class="r">84.2%</td></tr>
+              <tr><td>gemini-exp-1206</td><td class="r">80.5%</td></tr>
+              <tr><td>qwen2.5-coder:32b (ollama)</td><td class="r">72.9%</td></tr>
+            </tbody>
+          </table>
+          <div class="source">Fuente: <a href="https://aider.chat/docs/leaderboards/edit.html">Aider leaderboard (legacy)</a></div>
+        </article>
+
+        <article>
+          <h3>CRUXEval-I (pass@1)</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Modelo</th>
+                <th>pass@1</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>gpt-4-turbo-2024-04-09+cot</td><td class="r">75.7</td></tr>
+              <tr><td>gpt-4o+cot</td><td class="r">75.6</td></tr>
+              <tr><td>gpt-4-0613+cot</td><td class="r">75.5</td></tr>
+              <tr><td>claude-3-opus+cot</td><td class="r">73.4</td></tr>
+            </tbody>
+          </table>
+          <div class="source">Fuente: <a href="https://crux-eval.github.io/leaderboard.html">CRUXEval Leaderboard</a></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Interpretacion rapida</h2>
+      <ul>
+        <li>En esta suite corta, MCP mejora velocidad y throughput para NVIDIA, sin cambio en success_rate.</li>
+        <li>Para OPUS, MCP mejora completion signal, pero sube el wall time total.</li>
+        <li>validation_pass_rate en 0.00 confirma que el foco siguiente es cierre funcional de validaciones.</li>
+      </ul>
+      <p class="source">Artefactos base: bench-nvidia-coder-4b-quick-baseline.json, bench-nvidia-coder-4b-quick-mcp.json, bench-opus47-codex4b-quick-local.json, bench-opus47-codex4b-quick-mcp.json</p>
+    </section>
+  </div>
+</body>
+</html>

@@ -1,0 +1,147 @@
+{
+  "base_url": "http://localhost:1234/v1",
+  "case_summaries": {
+    "mbpp_like_codegen": {
+      "avg_artifacts": 8,
+      "avg_changed_files": 2,
+      "avg_chars_per_second": 11.9,
+      "avg_memory_calls": 6,
+      "avg_mutation_duration_ms": 59942,
+      "avg_portfolio_tokens": 0,
+      "avg_repair_attempts": 1,
+      "avg_timeline_events": 8,
+      "avg_token_efficiency_per_file": 481.5,
+      "avg_tokens_per_second": 7.13,
+      "avg_wall_time_ms": 135011,
+      "count": 1,
+      "first_pass_rate": 0.0,
+      "median_wall_time_ms": 135011.0,
+      "noop_rate": 0.0,
+      "repair_success_rate": 0.0,
+      "success_rate": 1.0,
+      "validation_pass_rate": 0.0
+    },
+    "quixbugs_like_repair": {
+      "avg_artifacts": 8,
+      "avg_changed_files": 2,
+      "avg_chars_per_second": 17.74,
+      "avg_memory_calls": 6,
+      "avg_mutation_duration_ms": 31453,
+      "avg_portfolio_tokens": 0,
+      "avg_repair_attempts": 1,
+      "avg_timeline_events": 8,
+      "avg_token_efficiency_per_file": 457.0,
+      "avg_tokens_per_second": 11.27,
+      "avg_wall_time_ms": 81080,
+      "count": 1,
+      "first_pass_rate": 0.0,
+      "median_wall_time_ms": 81080.0,
+      "noop_rate": 0.0,
+      "repair_success_rate": 0.0,
+      "success_rate": 1.0,
+      "validation_pass_rate": 0.0
+    }
+  },
+  "cases": [
+    {
+      "acceptance_criteria": [
+        "bench-output/algorithms.py exists",
+        "is_palindrome and chunk_sum pass validation tests"
+      ],
+      "case_id": "mbpp_like_codegen",
+      "objective": "Create bench-output/algorithms.py with functions is_palindrome(text: str) -> bool and chunk_sum(values: list[int], chunk_size: int) -> list[int].",
+      "target_files": [
+        "bench-output/algorithms.py"
+      ]
+    },
+    {
+      "acceptance_criteria": [
+        "bench-output/buggy_stats.py fixed",
+        "mean passes functional tests"
+      ],
+      "case_id": "quixbugs_like_repair",
+      "objective": "Fix bench-output/buggy_stats.py: mean(values) must return the arithmetic mean and raise ValueError on empty input. Keep API unchanged.",
+      "target_files": [
+        "bench-output/buggy_stats.py"
+      ]
+    }
+  ],
+  "completed_at": "2026-05-09T04:25:20.102030+00:00",
+  "iterations": [
+    {
+      "artifacts_count": 8,
+      "case_id": "mbpp_like_codegen",
+      "changed_files_count": 2,
+      "chars_per_second": 11.8953,
+      "first_pass": false,
+      "iteration": 1,
+      "memory_calls": 6,
+      "mutation_duration_ms": 59942,
+      "output_chars": 1606,
+      "portfolio_tokens": 0,
+      "repair_attempts": 1,
+      "repair_success": false,
+      "repair_used": true,
+      "success": true,
+      "timeline_events": 8,
+      "token_efficiency_per_file": 481.5,
+      "token_usage_completion": 167,
+      "token_usage_prompt": 796,
+      "token_usage_total": 963,
+      "tokens_per_second": 7.1328,
+      "validation_passed": false,
+      "wall_time_ms": 135011
+    },
+    {
+      "artifacts_count": 8,
+      "case_id": "quixbugs_like_repair",
+      "changed_files_count": 2,
+      "chars_per_second": 17.7356,
+      "first_pass": false,
+      "iteration": 1,
+      "memory_calls": 6,
+      "mutation_duration_ms": 31453,
+      "output_chars": 1438,
+      "portfolio_tokens": 0,
+      "repair_attempts": 1,
+      "repair_success": false,
+      "repair_used": true,
+      "success": true,
+      "timeline_events": 8,
+      "token_efficiency_per_file": 457.0,
+      "token_usage_completion": 125,
+      "token_usage_prompt": 789,
+      "token_usage_total": 914,
+      "tokens_per_second": 11.2728,
+      "validation_passed": false,
+      "wall_time_ms": 81080
+    }
+  ],
+  "model": "gemma-4-e4b",
+  "provider": "subprocess",
+  "repeats": 1,
+  "repo_path": ".",
+  "schema_version": 1,
+  "started_at": "2026-05-09T04:21:44.008128+00:00",
+  "summary": {
+    "avg_artifacts": 8,
+    "avg_changed_files": 2,
+    "avg_chars_per_second": 14.82,
+    "avg_memory_calls": 6,
+    "avg_mutation_duration_ms": 45697.5,
+    "avg_portfolio_tokens": 0,
+    "avg_repair_attempts": 1,
+    "avg_timeline_events": 8,
+    "avg_token_efficiency_per_file": 469.25,
+    "avg_tokens_per_second": 9.2,
+    "avg_wall_time_ms": 108045.5,
+    "count": 2,
+    "first_pass_rate": 0.0,
+    "median_wall_time_ms": 108045.5,
+    "noop_rate": 0.0,
+    "repair_success_rate": 0.0,
+    "success_rate": 1.0,
+    "validation_pass_rate": 0.0
+  },
+  "warmup": false
+}

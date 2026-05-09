@@ -1,0 +1,5 @@
+Model,Mode,avg_wall_time_ms,avg_mutation_duration_ms,avg_tokens_per_second,success_rate,noop_rate,validation_pass_rate,avg_changed_files,avg_memory_calls,source_artifact
+nvidia.agentic.coder-4b,Remote NEMO MCP,128788,54746.5,8.52,1.0,0.0,0.0,2,6,artifacts/bench-nvidia-coder-4b-quick-mcp-all.json
+opus4.7-gods.ghost.codex-4b.gguf,Remote NEMO MCP,96733,47637,0.0,0.5,0.5,0.0,0.5,6,artifacts/bench-opus47-codex4b-quick-mcp-all.json
+gemma-4-e4b,Remote NEMO MCP,53814.5,21000.5,0.0,0.0,1.0,0.0,0,6,artifacts/bench-gemma4-e4b-quick-mcp-all.json
+Qwen3.5-9B-MoQ-3.65.gguf,Remote NEMO MCP,49859.5,18621.5,0.0,0.0,1.0,0.0,0,6,artifacts/bench-qwen35-9b-moq-365-quick-mcp-all.json
