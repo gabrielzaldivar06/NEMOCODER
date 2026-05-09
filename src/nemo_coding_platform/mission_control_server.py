@@ -63,6 +63,7 @@ class HandoffJob:
     process: subprocess.Popen[str] | None = None
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    run_thread: threading.Thread | None = None
     error: str | None = None
     last_runtime_signature: str = ""
     stagnant_heartbeats: int = 0
@@ -142,7 +143,9 @@ class HandoffJobManager:
         with self._lock:
             self._jobs[job_id] = job
         self._persist_job(job)
-        threading.Thread(target=self._run_job, args=(config, job), daemon=True).start()
+        run_thread = threading.Thread(target=self._run_job, args=(config, job), daemon=True)
+        job.run_thread = run_thread
+        run_thread.start()
         return job
 
     def start_self_modify(self, config: "MissionControlServerConfig", payload: dict[str, object]) -> HandoffJob:
@@ -162,7 +165,9 @@ class HandoffJobManager:
         with self._lock:
             self._jobs[job_id] = job
         self._persist_job(job)
-        threading.Thread(target=self._run_job, args=(config, job), daemon=True).start()
+        run_thread = threading.Thread(target=self._run_job, args=(config, job), daemon=True)
+        job.run_thread = run_thread
+        run_thread.start()
         return job
 
     def list(self) -> list[dict[str, object]]:
@@ -214,7 +219,17 @@ class HandoffJobManager:
         elif job.status not in {"completed", "failed", "cancelled"}:
             self._set_status(job, stopped_status)
         self._join_heartbeat(job)
+        self._join_run_thread(job)
         return job
+
+    def _join_run_thread(self, job: HandoffJob) -> None:
+        run_thread = job.run_thread
+        if run_thread is None:
+            return
+        if run_thread.is_alive() and run_thread is not threading.current_thread():
+            run_thread.join(timeout=6)
+        if not run_thread.is_alive():
+            job.run_thread = None
 
     def find_orphans(self, *, grace_seconds: int = 120) -> list[dict[str, object]]:
         now_ts = time.time()
@@ -565,6 +580,9 @@ class HandoffJobManager:
             self._set_status(job, "failed")
             job.error = str(error)
             self._append_log(job, str(error))
+        finally:
+            if job.run_thread is threading.current_thread():
+                job.run_thread = None
 
 
 class ApiRequestError(ValueError):
