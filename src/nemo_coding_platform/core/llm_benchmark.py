@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean, median
@@ -238,8 +238,70 @@ assert scores == sorted(scores, reverse=True)
 
 
 def quick_benchmark_cases() -> tuple[BenchmarkCase, ...]:
-    cases = standard_benchmark_cases()
-    return tuple(replace(case, repair_budget=0) for case in (cases[0], cases[1]))
+    return (
+        BenchmarkCase(
+            case_id="quick_smoke_codegen",
+            objective="Create bench-output/quick_math.py with function add(a: int, b: int) -> int returning the arithmetic sum.",
+            acceptance_criteria=(
+                "bench-output/quick_math.py exists",
+                "add returns expected sums",
+            ),
+            target_files=("bench-output/quick_math.py",),
+            validation_python_scripts=(
+                """
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+path = Path("bench-output/quick_math.py")
+assert path.exists(), "quick_math.py missing"
+spec = spec_from_file_location("quick_math", path)
+assert spec and spec.loader
+mod = module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert mod.add(2, 3) == 5
+assert mod.add(-1, 1) == 0
+""".strip(),
+            ),
+            repair_budget=0,
+        ),
+        BenchmarkCase(
+            case_id="quick_smoke_repair",
+            objective="Fix bench-output/quick_bug.py so increment(n: int) returns n + 1.",
+            acceptance_criteria=(
+                "bench-output/quick_bug.py fixed",
+                "increment returns n + 1",
+            ),
+            target_files=("bench-output/quick_bug.py",),
+            setup_files=(
+                (
+                    "bench-output/quick_bug.py",
+                    """
+def increment(n: int) -> int:
+    return n - 1
+""".strip()
+                    + "\n",
+                ),
+            ),
+            validation_python_scripts=(
+                """
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+
+path = Path("bench-output/quick_bug.py")
+assert path.exists(), "quick_bug.py missing"
+spec = spec_from_file_location("quick_bug", path)
+assert spec and spec.loader
+mod = module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert mod.increment(0) == 1
+assert mod.increment(9) == 10
+""".strip(),
+            ),
+            repair_budget=0,
+        ),
+    )
 
 
 def benchmark_cases_for_suite(suite: str) -> tuple[BenchmarkCase, ...]:

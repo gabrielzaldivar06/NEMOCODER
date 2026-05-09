@@ -246,13 +246,17 @@ class SubprocessEngineProvider:
         profile = request.model_profile or default_model_profile()
         cwd = Path(request.runtime_path).resolve() if request.runtime_path else self.cwd
         message_file = write_engine_message(cwd, request)
+        using_default_command = self.command is None
         command = self.command or build_default_engine_command(profile, message_file)
         if _is_recursive_platform_command(tuple(command)):
+            using_default_command = True
             command = build_default_engine_command(profile, message_file)
             self.last_stderr = (
                 "recursive engine command detected; "
                 "falling back to default nemo_code_runtime invocation"
             )
+        if using_default_command and request.target_files:
+            command = (*command, *request.target_files)
 
         # Determine effective timeout: apply role-specific constraints if role is specified
         effective_timeout = request.timeout_seconds

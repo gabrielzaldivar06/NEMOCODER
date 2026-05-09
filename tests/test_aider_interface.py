@@ -174,6 +174,32 @@ class AiderInterfaceTests(unittest.TestCase):
         self.assertNotIn("nemo_coding_platform", launched_command)
         self.assertIn("recursive engine command detected", provider.last_stderr)
 
+    @patch("nemo_coding_platform.core.engine_interface.subprocess.run")
+    def test_subprocess_provider_default_command_includes_target_files(self, mock_run) -> None:
+        class _Completed:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        mock_run.return_value = _Completed()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = SubprocessEngineProvider()
+            provider.create_plan(
+                MutationRequest(
+                    "Build feature",
+                    "generated-spec.md",
+                    ("passes",),
+                    "context",
+                    provider_mode="subprocess",
+                    runtime_path=tmp,
+                    target_files=("bench-output/algorithms.py",),
+                )
+            )
+
+        launched_command = mock_run.call_args[0][0]
+        self.assertIn("bench-output/algorithms.py", launched_command)
+
 
 if __name__ == "__main__":
     unittest.main()
