@@ -28,6 +28,16 @@ Given a small repo and a task objective, the platform can execute a bounded run 
 - All decisions and artifacts must be inspectable after completion.
 - The flow must be compatible with later Full Handoff extension.
 
+## Workflow Mode Invariants
+
+The `workflow_mode` payload field enforces phase separation in headless and Full Handoff runs:
+
+- `plan` mode: reading and planning only. Write mutations, `handoff_start`, and `apply` are prohibited. Returns `workflow_policy_violation`.
+- `build` mode: write mutations and `handoff_start` allowed. Review-gate operations (`review`, `apply`) are prohibited.
+- `review` mode: `review` and `apply`/`apply_selection` allowed. New write mutations prohibited.
+
+If `workflow_mode` is absent the run has no phase restrictions (default, backward-compatible). Subagent runs inherit `workflow_mode` from their parent job payload.
+
 ## Acceptance Criteria
 
 - A fixture task can complete using only CLI/headless entrypoints.

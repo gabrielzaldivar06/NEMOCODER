@@ -66,7 +66,7 @@
     {
       "id": "FR4",
       "title": "OpenCode-Style Workflow",
-      "status": "partial",
+      "status": "aligned",
       "specs": [
         "docs/specs/task-run-model.md",
         "docs/specs/headless-run-mvp.md",
@@ -74,13 +74,14 @@
       ],
       "tests": [
         "tests/test_agent_runtime_contract.py",
-        "tests/test_desktop_ui_flows_contract.py"
+        "tests/test_desktop_ui_flows_contract.py",
+        "tests/test_mission_control_server.py"
       ],
       "anchors": [
         "src/nemo_coding_platform/mission_control_server.py:2068",
         "src/nemo_coding_platform/mission_control_server.py:1893"
       ],
-      "gap": "deepen planner/builder/reviewer/subagent contract coverage"
+      "gap": "none"
     },
     {
       "id": "FR5",

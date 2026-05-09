@@ -36,9 +36,25 @@ Define the durable task/run entities required for headless execution, desktop UI
 - model_profile
 - permission_profile
 - validation_profile
+- workflow_mode
 - started_at
 - completed_at
 - failure_reason
+
+## Workflow Mode
+
+`workflow_mode` is an optional field on any job payload that restricts which actions the agent may perform.
+
+| Mode | Allowed actions | Prohibited actions |
+| --- | --- | --- |
+| `plan` | read, search, inspect | write mutations, handoff_start, apply |
+| `build` | write mutations, handoff_start, self_modify_start | review-gate operations |
+| `review` | review, apply, apply_selection | write mutations |
+
+Rules:
+- If `workflow_mode` is absent, no restriction is applied (backward-compatible default).
+- A resumed job inherits `workflow_mode` from its parent payload so plan-mode write prohibitions propagate to child runs.
+- Policy violations return `error_code="workflow_policy_violation"` with HTTP 400.
 
 ## Event Fields
 
@@ -75,3 +91,7 @@ Define the durable task/run entities required for headless execution, desktop UI
 - Run state transitions follow the runtime state machine.
 - Full Handoff runs cannot complete without at least one checkpoint and final review package.
 - Desktop and CLI consume the same model.
+- `workflow_mode=plan` must prevent handoff_start and apply; contract test: `test_handoff_start_rejects_plan_mode_for_write_actions`.
+- `workflow_mode=review` must prevent build-mode mutations; contract test: `test_apply_endpoint_rejects_build_mode`.
+- `workflow_mode` is preserved through job payload round-trips; contract test: `test_workflow_mode_survives_job_snapshot_round_trip`.
+- Resumed jobs inherit parent `workflow_mode`; contract test: `test_resumed_job_inherits_parent_workflow_mode`.
