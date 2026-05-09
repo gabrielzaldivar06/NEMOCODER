@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean, median
@@ -304,10 +304,19 @@ assert mod.increment(9) == 10
     )
 
 
+def quick_quality_benchmark_cases() -> tuple[BenchmarkCase, ...]:
+    quick_cases = quick_benchmark_cases()
+    # Keep quick latency profile for pure generation, but allow one repair step
+    # for the targeted bug-fix case to improve validation pass rate.
+    return (quick_cases[0], replace(quick_cases[1], repair_budget=1))
+
+
 def benchmark_cases_for_suite(suite: str) -> tuple[BenchmarkCase, ...]:
     normalized = str(suite).strip().lower()
     if normalized == "quick":
         return quick_benchmark_cases()
+    if normalized in {"quick-quality", "quick_quality"}:
+        return quick_quality_benchmark_cases()
     if normalized == "standard":
         return standard_benchmark_cases()
     raise ValueError(f"unknown benchmark suite: {suite}")

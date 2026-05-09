@@ -31,6 +31,18 @@ class LLMBenchmarkCoreTests(unittest.TestCase):
         quick = benchmark_cases_for_suite("quick")
         self.assertTrue(all(case.repair_budget == 0 for case in quick))
 
+    def test_quick_quality_suite_enables_targeted_repair(self) -> None:
+        quick_quality = benchmark_cases_for_suite("quick-quality")
+        self.assertEqual(len(quick_quality), 2)
+        self.assertEqual(quick_quality[0].repair_budget, 0)
+        self.assertEqual(quick_quality[1].repair_budget, 1)
+
+    def test_quick_quality_suite_alias_is_supported(self) -> None:
+        quick_quality = benchmark_cases_for_suite("quick-quality")
+        quick_quality_alias = benchmark_cases_for_suite("quick_quality")
+        self.assertEqual([case.case_id for case in quick_quality], [case.case_id for case in quick_quality_alias])
+        self.assertEqual([case.repair_budget for case in quick_quality], [case.repair_budget for case in quick_quality_alias])
+
     def test_run_llm_benchmark_fake_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report = run_llm_benchmark(

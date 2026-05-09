@@ -282,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
     llm_benchmark.add_argument("--model-profile", default=default_model_profile().model)
     llm_benchmark.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
     llm_benchmark.add_argument("--engine-command", "--aider-command", dest="engine_command")
-    llm_benchmark.add_argument("--suite", choices=("quick", "standard"), default="quick")
+    llm_benchmark.add_argument("--suite", choices=("quick", "quick-quality", "standard"), default="quick")
     llm_benchmark.add_argument("--timeout", type=float, default=300.0)
     llm_benchmark.add_argument("--repeats", type=int, default=3)
     llm_benchmark.add_argument("--no-warmup", action="store_true")
