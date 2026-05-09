@@ -241,6 +241,89 @@ class CliHeadlessTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("requires --mcp-url", output.getvalue())
 
+    def test_llm_benchmark_fail_on_regression_returns_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_path = Path(tmp) / "baseline.json"
+            baseline_path.write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "success_rate": 1.0,
+                            "validation_pass_rate": 1.0,
+                            "repair_success_rate": 1.0,
+                            "noop_rate": 0.0,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main([
+                    "llm-benchmark",
+                    "--repo",
+                    tmp,
+                    "--provider",
+                    "fake",
+                    "--repeats",
+                    "1",
+                    "--no-warmup",
+                    "--no-memory-db",
+                    "--baseline-json",
+                    str(baseline_path),
+                    "--fail-on-regression",
+                    "--json",
+                ])
+            payload = json.loads(output.getvalue())
+
+        self.assertEqual(code, 1)
+        self.assertIn("regression_gate", payload)
+        self.assertFalse(payload["regression_gate"]["passed"])
+        self.assertGreaterEqual(len(payload["regression_gate"]["violations"]), 1)
+
+    def test_llm_benchmark_fail_on_regression_passes_with_relaxed_thresholds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_path = Path(tmp) / "baseline.json"
+            baseline_path.write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "success_rate": 0.0,
+                            "validation_pass_rate": 0.0,
+                            "repair_success_rate": 1.0,
+                            "noop_rate": 1.0,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = main([
+                    "llm-benchmark",
+                    "--repo",
+                    tmp,
+                    "--provider",
+                    "fake",
+                    "--repeats",
+                    "1",
+                    "--no-warmup",
+                    "--no-memory-db",
+                    "--baseline-json",
+                    str(baseline_path),
+                    "--fail-on-regression",
+                    "--min-repair-success-rate-delta",
+                    "-1.0",
+                    "--max-noop-rate-delta",
+                    "1.0",
+                    "--json",
+                ])
+            payload = json.loads(output.getvalue())
+
+        self.assertEqual(code, 0)
+        self.assertIn("regression_gate", payload)
+        self.assertTrue(payload["regression_gate"]["passed"])
+
 
 if __name__ == "__main__":
     unittest.main()

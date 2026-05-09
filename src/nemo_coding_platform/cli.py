@@ -293,6 +293,13 @@ def build_parser() -> argparse.ArgumentParser:
     llm_benchmark.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
     llm_benchmark.add_argument("--save-json")
     llm_benchmark.add_argument("--baseline-json", help="Optional previous benchmark JSON to compare against")
+    llm_benchmark.add_argument("--fail-on-regression", action="store_true", help="Exit with code 1 when baseline comparison breaches thresholds")
+    llm_benchmark.add_argument("--max-wall-time-regression-ms", type=float, help="Maximum allowed increase in avg wall time (ms)")
+    llm_benchmark.add_argument("--max-mutation-regression-ms", type=float, help="Maximum allowed increase in avg mutation duration (ms)")
+    llm_benchmark.add_argument("--min-success-rate-delta", type=float, default=0.0, help="Minimum allowed delta for success_rate (default: 0.0)")
+    llm_benchmark.add_argument("--min-validation-pass-rate-delta", type=float, default=0.0, help="Minimum allowed delta for validation_pass_rate (default: 0.0)")
+    llm_benchmark.add_argument("--min-repair-success-rate-delta", type=float, default=0.0, help="Minimum allowed delta for repair_success_rate (default: 0.0)")
+    llm_benchmark.add_argument("--max-noop-rate-delta", type=float, default=0.0, help="Maximum allowed delta for noop_rate (default: 0.0)")
     llm_benchmark.add_argument("--json", action="store_true")
     return parser
 
@@ -412,6 +419,68 @@ def _benchmark_delta(current: dict[str, object], baseline: dict[str, object]) ->
         "delta_first_pass_rate": _metric("first_pass_rate"),
         "delta_repair_success_rate": _metric("repair_success_rate"),
         "delta_avg_repair_attempts": _metric("avg_repair_attempts"),
+    }
+
+
+def _benchmark_regression_gate(
+    delta: dict[str, float],
+    *,
+    max_wall_time_regression_ms: float | None,
+    max_mutation_regression_ms: float | None,
+    min_success_rate_delta: float,
+    min_validation_pass_rate_delta: float,
+    min_repair_success_rate_delta: float,
+    max_noop_rate_delta: float,
+) -> dict[str, object]:
+    violations: list[str] = []
+
+    if max_wall_time_regression_ms is not None and delta.get("delta_avg_wall_time_ms", 0.0) > max_wall_time_regression_ms:
+        violations.append(
+            "avg_wall_time_ms regression exceeded "
+            f"(delta={delta.get('delta_avg_wall_time_ms')} > {max_wall_time_regression_ms})"
+        )
+
+    if max_mutation_regression_ms is not None and delta.get("delta_avg_mutation_duration_ms", 0.0) > max_mutation_regression_ms:
+        violations.append(
+            "avg_mutation_duration_ms regression exceeded "
+            f"(delta={delta.get('delta_avg_mutation_duration_ms')} > {max_mutation_regression_ms})"
+        )
+
+    if delta.get("delta_success_rate", 0.0) < min_success_rate_delta:
+        violations.append(
+            "success_rate regression exceeded "
+            f"(delta={delta.get('delta_success_rate')} < {min_success_rate_delta})"
+        )
+
+    if delta.get("delta_validation_pass_rate", 0.0) < min_validation_pass_rate_delta:
+        violations.append(
+            "validation_pass_rate regression exceeded "
+            f"(delta={delta.get('delta_validation_pass_rate')} < {min_validation_pass_rate_delta})"
+        )
+
+    if delta.get("delta_repair_success_rate", 0.0) < min_repair_success_rate_delta:
+        violations.append(
+            "repair_success_rate regression exceeded "
+            f"(delta={delta.get('delta_repair_success_rate')} < {min_repair_success_rate_delta})"
+        )
+
+    if delta.get("delta_noop_rate", 0.0) > max_noop_rate_delta:
+        violations.append(
+            "noop_rate regression exceeded "
+            f"(delta={delta.get('delta_noop_rate')} > {max_noop_rate_delta})"
+        )
+
+    return {
+        "passed": len(violations) == 0,
+        "violations": violations,
+        "thresholds": {
+            "max_wall_time_regression_ms": max_wall_time_regression_ms,
+            "max_mutation_regression_ms": max_mutation_regression_ms,
+            "min_success_rate_delta": min_success_rate_delta,
+            "min_validation_pass_rate_delta": min_validation_pass_rate_delta,
+            "min_repair_success_rate_delta": min_repair_success_rate_delta,
+            "max_noop_rate_delta": max_noop_rate_delta,
+        },
     }
 
 
@@ -990,10 +1059,23 @@ def main(argv: list[str] | None = None) -> int:
             nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
         )
         payload = report.to_dict()
+        should_fail_for_regression = False
         if args.baseline_json:
             baseline_payload = load_headless_result_json(args.baseline_json)
             if isinstance(baseline_payload, dict):
-                payload["baseline_delta"] = _benchmark_delta(payload, baseline_payload)
+                delta = _benchmark_delta(payload, baseline_payload)
+                payload["baseline_delta"] = delta
+                payload["regression_gate"] = _benchmark_regression_gate(
+                    delta,
+                    max_wall_time_regression_ms=args.max_wall_time_regression_ms,
+                    max_mutation_regression_ms=args.max_mutation_regression_ms,
+                    min_success_rate_delta=args.min_success_rate_delta,
+                    min_validation_pass_rate_delta=args.min_validation_pass_rate_delta,
+                    min_repair_success_rate_delta=args.min_repair_success_rate_delta,
+                    max_noop_rate_delta=args.max_noop_rate_delta,
+                )
+                if args.fail_on_regression and not bool(payload["regression_gate"].get("passed", True)):
+                    should_fail_for_regression = True
         if args.save_json:
             save_benchmark_report(report, args.save_json)
             payload["saved_json"] = args.save_json
@@ -1035,6 +1117,21 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     )
                 )
+            if "regression_gate" in payload:
+                gate = payload["regression_gate"]
+                print(
+                    "regression_gate "
+                    + " ".join(
+                        (
+                            f"passed={gate.get('passed')}",
+                            f"violations={len(gate.get('violations', []))}",
+                        )
+                    )
+                )
+                for violation in gate.get("violations", []):
+                    print(f"regression_violation={violation}")
+        if should_fail_for_regression:
+            return 1
         return 0
     parser.error(f"unknown command: {args.command}")
     return 2
