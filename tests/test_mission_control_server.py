@@ -898,6 +898,31 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertIn("long-handoff-run", command)
         self.assertIn("--real-validation", command)
 
+    def test_handoff_start_rejects_subprocess_without_active_mcp_when_memory_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with patch(
+                    "nemo_coding_platform.mission_control_server._probe_nemo_mcp_sse",
+                    return_value={"configured": True, "active": False, "status": "unreachable", "error": "connection refused"},
+                ):
+                    with self.assertRaises(ApiRequestError) as raised:
+                        api_handoff_start(
+                            server,
+                            {
+                                "objective": "Create a measurable run.",
+                                "provider": "subprocess",
+                                "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                            },
+                        )
+            finally:
+                server.server_close()
+
+        self.assertEqual(raised.exception.error_code, "nemo_mcp_unreachable")
+
     def test_agent_message_uses_lmstudio_for_subprocess_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

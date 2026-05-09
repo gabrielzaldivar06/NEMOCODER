@@ -93,7 +93,16 @@ class CliHeadlessTests(unittest.TestCase):
         command = f"{executable} -c \"from pathlib import Path; Path('cli-subprocess.txt').write_text('ok', encoding='utf-8')\""
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = main(["headless-run", "Build feature", "--provider", "subprocess", "--engine-command", command, "--json"])
+            code = main([
+                "headless-run",
+                "Build feature",
+                "--provider",
+                "subprocess",
+                "--allow-non-mcp",
+                "--engine-command",
+                command,
+                "--json",
+            ])
 
         payload = json.loads(output.getvalue())
 
@@ -212,6 +221,25 @@ class CliHeadlessTests(unittest.TestCase):
             self.assertIn("summary", payload)
             self.assertEqual(payload["saved_json"], str(save_path))
             self.assertTrue(save_path.exists())
+
+    def test_llm_benchmark_subprocess_requires_mcp_by_default(self) -> None:
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(output):
+                code = main([
+                    "llm-benchmark",
+                    "--repo",
+                    tmp,
+                    "--provider",
+                    "subprocess",
+                    "--repeats",
+                    "1",
+                    "--no-warmup",
+                    "--json",
+                ])
+
+        self.assertEqual(code, 1)
+        self.assertIn("requires --mcp-url", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ class BenchmarkCase:
     acceptance_criteria: tuple[str, ...]
     target_files: tuple[str, ...]
     validation_python_scripts: tuple[str, ...] = ()
-    repair_budget: int = 2
+    repair_budget: int = 1
     setup_files: tuple[tuple[str, str], ...] = ()
 
 
@@ -114,7 +114,7 @@ class LLMBenchmarkReport:
         }
 
 
-def default_benchmark_cases() -> tuple[BenchmarkCase, ...]:
+def standard_benchmark_cases() -> tuple[BenchmarkCase, ...]:
     return (
         BenchmarkCase(
             case_id="mbpp_like_codegen",
@@ -236,6 +236,24 @@ assert scores == sorted(scores, reverse=True)
     )
 
 
+def quick_benchmark_cases() -> tuple[BenchmarkCase, ...]:
+    cases = standard_benchmark_cases()
+    return (cases[0], cases[1])
+
+
+def benchmark_cases_for_suite(suite: str) -> tuple[BenchmarkCase, ...]:
+    normalized = str(suite).strip().lower()
+    if normalized == "quick":
+        return quick_benchmark_cases()
+    if normalized == "standard":
+        return standard_benchmark_cases()
+    raise ValueError(f"unknown benchmark suite: {suite}")
+
+
+def default_benchmark_cases() -> tuple[BenchmarkCase, ...]:
+    return quick_benchmark_cases()
+
+
 def run_llm_benchmark(
     *,
     repo_path: str,
@@ -246,13 +264,14 @@ def run_llm_benchmark(
     repeats: int = 3,
     warmup: bool = True,
     cases: tuple[BenchmarkCase, ...] | None = None,
+    suite: str = "quick",
     nemo_adapter: Any | None = None,
 ) -> LLMBenchmarkReport:
     if repeats <= 0:
         raise ValueError("repeats must be > 0")
 
     profile = model_profile or default_model_profile()
-    selected_cases = cases or default_benchmark_cases()
+    selected_cases = cases or benchmark_cases_for_suite(suite)
     started_at = _utc_now()
     results: list[BenchmarkIteration] = []
 

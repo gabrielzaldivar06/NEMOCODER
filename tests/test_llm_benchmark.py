@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from nemo_coding_platform.core.llm_benchmark import (
+    benchmark_cases_for_suite,
     default_benchmark_cases,
     run_llm_benchmark,
     save_benchmark_report,
@@ -13,10 +14,15 @@ from nemo_coding_platform.core.llm_benchmark import (
 class LLMBenchmarkCoreTests(unittest.TestCase):
     def test_default_cases_are_stable_and_non_empty(self) -> None:
         cases = default_benchmark_cases()
-        self.assertGreaterEqual(len(cases), 3)
+        self.assertGreaterEqual(len(cases), 2)
         case_ids = {case.case_id for case in cases}
         self.assertEqual(len(case_ids), len(cases))
         self.assertTrue(all(case.target_files for case in cases))
+
+    def test_standard_suite_is_larger_than_quick(self) -> None:
+        quick = benchmark_cases_for_suite("quick")
+        standard = benchmark_cases_for_suite("standard")
+        self.assertLess(len(quick), len(standard))
 
     def test_run_llm_benchmark_fake_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

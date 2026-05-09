@@ -28,7 +28,7 @@ from nemo_coding_platform.core.memory import MemoryAtomType, NEMO_TOOL_REGISTRY,
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.mission_control import build_mission_control_state
 from nemo_coding_platform.core.model_config import MODEL_ROLES, default_model_role_profile
-from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
+from nemo_coding_platform.core.nemo_adapter import McpNemoAdapter, PersistentNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase, lifecycle_contract, tool_allowed_in_lifecycle
 from nemo_coding_platform.core.persistence import load_headless_result_json, save_headless_result_json
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
@@ -465,6 +465,10 @@ class HandoffJobManager:
             command.append("--no-memory-db")
         else:
             command.extend(("--memory-db", str(config.memory_db)))
+            mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
+            if mcp_url:
+                command.extend(("--mcp-url", mcp_url))
+                command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
         command.extend(("--model-profile", str(payload.get("model") or "nvidia.agentic.coder-4b")))
         command.extend(("--lmstudio-base-url", str(payload.get("base_url") or "http://localhost:1234/v1")))
         if payload.get("pause_after_minutes") is not None:
@@ -1067,10 +1071,43 @@ def _handoff_request(config: MissionControlServerConfig, payload: dict[str, obje
     )
 
 
-def _nemo_adapter(memory_db: Path | None) -> PersistentNemoAdapter | None:
+def _nemo_adapter(
+    memory_db: Path | None,
+    *,
+    nemo_mcp_url: str | None = None,
+    nemo_mcp_prefix: str = "nemo.",
+) -> PersistentNemoAdapter | McpNemoAdapter | None:
+    normalized_mcp_url = str(nemo_mcp_url or "").strip()
+    if normalized_mcp_url:
+        return McpNemoAdapter(normalized_mcp_url, tool_prefix=nemo_mcp_prefix)
     if memory_db is None:
         return None
     return PersistentNemoAdapter(PersistentMemoryStore(memory_db))
+
+
+def _require_nemo_mcp_for_execution(
+    *,
+    payload: dict[str, object],
+    provider: str,
+    memory_enabled: bool,
+) -> str:
+    if provider != "subprocess" or not memory_enabled:
+        return ""
+    mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
+    if not mcp_url:
+        raise _bad_request(
+            "nemo_mcp_url is required for subprocess handoff execution",
+            error_code="missing_nemo_mcp_url",
+        )
+    probe = _probe_nemo_mcp_sse(mcp_url)
+    if not probe.get("active"):
+        status = str(probe.get("status") or "unknown")
+        details = str(probe.get("error") or probe.get("first_line") or "")
+        message = f"nemo_mcp_url must be reachable and active before subprocess handoff (status={status})"
+        if details:
+            message = f"{message}: {details}"
+        raise _bad_request(message, error_code="nemo_mcp_unreachable")
+    return mcp_url
 
 
 def _provider_mode(payload: dict[str, object]) -> str:
@@ -2575,6 +2612,8 @@ def api_apply_selection(config: MissionControlServerConfig, payload: dict[str, o
 
 def api_handoff(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     payload = _enforce_workspace_scope(config, {**_load_settings(config), **payload})
+    provider_mode = _provider_mode(payload)
+    nemo_mcp_url = _require_nemo_mcp_for_execution(payload=payload, provider=provider_mode, memory_enabled=config.memory_db is not None)
     run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     short_id = uuid4().hex[:8]
     task_id = f"mc-task-{run_suffix}-{short_id}"
@@ -2596,12 +2635,16 @@ def api_handoff(config: MissionControlServerConfig, payload: dict[str, object]) 
         task_id=task_id,
         run_id=run_id,
         validation_cwd="runtime",
-        provider_mode=_provider_mode(payload),
+        provider_mode=provider_mode,
         timeout_seconds=_timeout_seconds(payload),
         target_files=target_files,
         validation_policy=str(payload.get("validation_policy") or "smoke"),
         real_validation=bool(payload.get("real_validation", True)),
-        nemo_adapter=_nemo_adapter(config.memory_db),
+        nemo_adapter=_nemo_adapter(
+            config.memory_db,
+            nemo_mcp_url=nemo_mcp_url,
+            nemo_mcp_prefix=str(payload.get("nemo_mcp_prefix") or "nemo."),
+        ),
         repair_time_limit_seconds=float(payload.get("repair_time_limit_seconds")) if payload.get("repair_time_limit_seconds") is not None else None,
         validation_time_budget_seconds=float(payload.get("validation_time_budget_seconds")) if payload.get("validation_time_budget_seconds") is not None else None,
         validation_escalation_mode=bool(payload.get("validation_escalation_mode")),
@@ -2613,7 +2656,10 @@ def api_handoff(config: MissionControlServerConfig, payload: dict[str, object]) 
 
 
 def api_handoff_start(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
-    job = server.jobs.start(server.config, _enforce_workspace_scope(server.config, payload))
+    merged_payload = _enforce_workspace_scope(server.config, {**_load_settings(server.config), **payload})
+    provider_mode = _provider_mode(merged_payload)
+    _require_nemo_mcp_for_execution(payload=merged_payload, provider=provider_mode, memory_enabled=server.config.memory_db is not None)
+    job = server.jobs.start(server.config, merged_payload)
     return {"ok": True, "job": job.to_dict()}
 
 

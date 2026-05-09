@@ -5,6 +5,8 @@ import json
 import logging
 import shlex
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from nemo_coding_platform.core.architecture import default_blueprint
@@ -80,7 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
     headless_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store")
     headless_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     headless_run.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
-    headless_run.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    headless_run.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    headless_run.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
     headless_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the NEMO CODE engine prompt")
     headless_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
     headless_run.add_argument("--permissions-file", help="Path to .nemocode-permissions.json")
@@ -167,7 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store")
     long_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     long_run.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
-    long_run.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    long_run.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    long_run.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
     long_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the NEMO CODE engine prompt")
     long_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
     long_run.add_argument("--permissions-file", help="Path to .nemocode-permissions.json")
@@ -264,7 +268,8 @@ def build_parser() -> argparse.ArgumentParser:
     continue_long.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for this continuation")
     continue_long.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     continue_long.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
-    continue_long.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    continue_long.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    continue_long.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
     continue_long.add_argument("--lineage-context", action="append", default=[], help="Existing run JSON to use as autonomy lineage context")
     continue_long.add_argument("--allow-fork", action="store_true", help="Allow continuing a source run that already has a continuation")
     continue_long.add_argument("--json", action="store_true")
@@ -277,13 +282,15 @@ def build_parser() -> argparse.ArgumentParser:
     llm_benchmark.add_argument("--model-profile", default=default_model_profile().model)
     llm_benchmark.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
     llm_benchmark.add_argument("--engine-command", "--aider-command", dest="engine_command")
+    llm_benchmark.add_argument("--suite", choices=("quick", "standard"), default="quick")
     llm_benchmark.add_argument("--timeout", type=float, default=300.0)
     llm_benchmark.add_argument("--repeats", type=int, default=3)
     llm_benchmark.add_argument("--no-warmup", action="store_true")
     llm_benchmark.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for benchmark runs")
     llm_benchmark.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     llm_benchmark.add_argument("--mcp-url", help="Connect benchmark runs to a remote MCP server via SSE")
-    llm_benchmark.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    llm_benchmark.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    llm_benchmark.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
     llm_benchmark.add_argument("--save-json")
     llm_benchmark.add_argument("--baseline-json", help="Optional previous benchmark JSON to compare against")
     llm_benchmark.add_argument("--json", action="store_true")
@@ -296,6 +303,41 @@ def _persistent_nemo_adapter(db_path: str, no_memory_db: bool, mcp_url: str | No
     if no_memory_db:
         return InMemoryNemoAdapter()
     return PersistentNemoAdapter(PersistentMemoryStore(Path(db_path)))
+
+
+def _probe_mcp_sse(mcp_url: str, timeout_seconds: float = 3.0) -> None:
+    request = urllib.request.Request(mcp_url, headers={"Accept": "text/event-stream"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            status = int(response.getcode() or 0)
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+            if status < 200 or status >= 300:
+                raise ValueError(f"MCP SSE endpoint returned HTTP {status}")
+            if "text/event-stream" not in content_type and status != 200:
+                raise ValueError(f"MCP endpoint did not return SSE content-type (got '{content_type or 'unknown'}')")
+    except urllib.error.HTTPError as error:
+        raise ValueError(f"MCP SSE endpoint returned HTTP {error.code}") from error
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise ValueError(f"MCP SSE endpoint is unreachable: {error}") from error
+
+
+def _enforce_remote_mcp_policy(
+    *,
+    command_name: str,
+    provider_mode: str,
+    mcp_url: str | None,
+    mcp_prefix: str | None,
+    allow_non_mcp: bool,
+) -> None:
+    if allow_non_mcp or provider_mode != "subprocess":
+        return
+    normalized_url = str(mcp_url or "").strip()
+    if not normalized_url:
+        raise ValueError(f"{command_name} requires --mcp-url for subprocess mode (NEMO MCP remote is mandatory)")
+    normalized_prefix = str(mcp_prefix or "").strip()
+    if not normalized_prefix:
+        raise ValueError(f"{command_name} requires --mcp-prefix for subprocess mode (use 'nemo.')")
+    _probe_mcp_sse(normalized_url)
 
 
 def _nemo_memory_summaries(memory_db: str | None, no_memory_db: bool = False) -> list[str]:
@@ -432,6 +474,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"- {step.kind}: {step.summary}")
         return 0
     if args.command == "headless-run":
+        try:
+            _enforce_remote_mcp_policy(
+                command_name="headless-run",
+                provider_mode=args.provider,
+                mcp_url=args.mcp_url,
+                mcp_prefix=args.mcp_prefix,
+                allow_non_mcp=bool(args.allow_non_mcp),
+            )
+        except ValueError as error:
+            print(f"error={error}")
+            return 1
         request = HandoffRequest(
             prd=args.objective,
             repo_path=args.repo,
@@ -587,6 +640,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"- {run['id']}: {run['content']}")
         return 0
     if args.command == "long-handoff-run":
+        try:
+            _enforce_remote_mcp_policy(
+                command_name="long-handoff-run",
+                provider_mode=args.provider,
+                mcp_url=args.mcp_url,
+                mcp_prefix=args.mcp_prefix,
+                allow_non_mcp=bool(args.allow_non_mcp),
+            )
+        except ValueError as error:
+            print(f"error={error}")
+            return 1
         request = HandoffRequest(
             prd=args.prd_text or args.objective,
             repo_path=args.repo,
@@ -816,6 +880,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"next_action={resume['next_action']}")
         return 0
     if args.command == "long-handoff-continue":
+        try:
+            _enforce_remote_mcp_policy(
+                command_name="long-handoff-continue",
+                provider_mode=args.provider,
+                mcp_url=args.mcp_url,
+                mcp_prefix=args.mcp_prefix,
+                allow_non_mcp=bool(args.allow_non_mcp),
+            )
+        except ValueError as error:
+            print(f"error={error}")
+            return 1
         source_payload = load_headless_result_json(args.path)
         if args.lineage_context:
             lineage_payloads = [load_headless_result_json(path) for path in args.lineage_context]
@@ -892,6 +967,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{link['source_run']} -> {link['continuation_run']} token={link['resume_token']}")
         return 0
     if args.command == "llm-benchmark":
+        try:
+            _enforce_remote_mcp_policy(
+                command_name="llm-benchmark",
+                provider_mode=args.provider,
+                mcp_url=args.mcp_url,
+                mcp_prefix=args.mcp_prefix,
+                allow_non_mcp=bool(args.allow_non_mcp),
+            )
+        except ValueError as error:
+            print(f"error={error}")
+            return 1
         report = run_llm_benchmark(
             repo_path=args.repo,
             model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
@@ -900,6 +986,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout,
             repeats=args.repeats,
             warmup=not args.no_warmup,
+            suite=args.suite,
             nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
         )
         payload = report.to_dict()
