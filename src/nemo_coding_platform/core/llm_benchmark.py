@@ -306,9 +306,9 @@ assert mod.increment(9) == 10
 
 def quick_quality_benchmark_cases() -> tuple[BenchmarkCase, ...]:
     quick_cases = quick_benchmark_cases()
-    # Keep quick latency profile for pure generation, but allow one repair step
-    # for the targeted bug-fix case to improve validation pass rate.
-    return (quick_cases[0], replace(quick_cases[1], repair_budget=1))
+    # Quality profile: enable one bounded repair step for each quick case so
+    # codegen failures can recover without changing the suite shape.
+    return tuple(replace(case, repair_budget=1) for case in quick_cases)
 
 
 def benchmark_cases_for_suite(suite: str) -> tuple[BenchmarkCase, ...]:

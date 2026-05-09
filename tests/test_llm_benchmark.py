@@ -34,7 +34,7 @@ class LLMBenchmarkCoreTests(unittest.TestCase):
     def test_quick_quality_suite_enables_targeted_repair(self) -> None:
         quick_quality = benchmark_cases_for_suite("quick-quality")
         self.assertEqual(len(quick_quality), 2)
-        self.assertEqual(quick_quality[0].repair_budget, 0)
+        self.assertEqual(quick_quality[0].repair_budget, 1)
         self.assertEqual(quick_quality[1].repair_budget, 1)
 
     def test_quick_quality_suite_alias_is_supported(self) -> None:
