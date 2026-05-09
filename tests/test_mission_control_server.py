@@ -923,6 +923,86 @@ class MissionControlServerTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.error_code, "nemo_mcp_unreachable")
 
+    def test_handoff_start_rejects_plan_mode_for_write_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as raised:
+                    api_handoff_start(
+                        server,
+                        {
+                            "objective": "Create a measurable run.",
+                            "provider": "fake",
+                            "workflow_mode": "plan",
+                        },
+                    )
+            finally:
+                server.server_close()
+
+        self.assertEqual(raised.exception.error_code, "workflow_policy_violation")
+
+    def test_self_modify_start_rejects_review_mode_for_write_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", root / "nemo.sqlite")
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with self.assertRaises(ApiRequestError) as raised:
+                    api_self_modify_start(
+                        server,
+                        {
+                            "objective": "self improve",
+                            "provider": "fake",
+                            "workflow_mode": "review",
+                        },
+                    )
+            finally:
+                server.server_close()
+
+        self.assertEqual(raised.exception.error_code, "workflow_policy_violation")
+
+    def test_review_endpoint_rejects_build_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            runtimes = root / "runtimes"
+            repo.mkdir()
+            sandbox.mkdir()
+            runtimes.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            run_json = runtimes / "run.json"
+            write_ready_run(run_json, repo, sandbox, ["created.txt"])
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", None)
+
+            with self.assertRaises(ApiRequestError) as raised:
+                api_review(config, {"source_json": str(run_json), "workflow_mode": "build"})
+
+        self.assertEqual(raised.exception.error_code, "workflow_policy_violation")
+
+    def test_apply_endpoint_rejects_build_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            sandbox = root / "sandbox"
+            runtimes = root / "runtimes"
+            repo.mkdir()
+            sandbox.mkdir()
+            runtimes.mkdir()
+            (sandbox / "created.txt").write_text("created", encoding="utf-8")
+            run_json = runtimes / "run.json"
+            write_ready_run(run_json, repo, sandbox, ["created.txt"])
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", None)
+
+            with self.assertRaises(ApiRequestError) as raised:
+                api_apply(config, {"source_json": str(run_json), "approve_review": True, "workflow_mode": "build"})
+
+        self.assertEqual(raised.exception.error_code, "workflow_policy_violation")
+
     def test_agent_message_uses_lmstudio_for_subprocess_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

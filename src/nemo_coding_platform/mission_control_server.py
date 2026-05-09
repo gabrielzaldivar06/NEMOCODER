@@ -1135,6 +1135,31 @@ def _provider_mode(payload: dict[str, object]) -> str:
     return provider
 
 
+def _workflow_mode(payload: dict[str, object]) -> str | None:
+    value = payload.get("workflow_mode")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise _bad_request("workflow_mode must be plan, build, or review", error_code="invalid_workflow_mode")
+    mode = value.strip().lower()
+    if mode not in {"plan", "build", "review"}:
+        raise _bad_request("workflow_mode must be plan, build, or review", error_code="invalid_workflow_mode")
+    return mode
+
+
+def _enforce_workflow_policy(payload: dict[str, object], *, action: str, allowed_modes: tuple[str, ...]) -> None:
+    mode = _workflow_mode(payload)
+    if mode is None:
+        return
+    if mode in allowed_modes:
+        return
+    allowed_label = ", ".join(allowed_modes)
+    raise _bad_request(
+        f"{action} is not allowed in workflow_mode={mode}; allowed mode(s): {allowed_label}",
+        error_code="workflow_policy_violation",
+    )
+
+
 def _is_self_improvement_request(message: str) -> bool:
     text = message.lower()
     self_terms = (
@@ -1458,6 +1483,7 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
         "validation_escalation_mode",
         "real_validation",
         "validation_policy",
+        "workflow_mode",
         "quality_core",
     }
     unknown = {key for key in payload if key not in allowed and key != "repo_path"}
@@ -1465,6 +1491,8 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
         raise _bad_request(f"unknown setting key(s): {', '.join(sorted(unknown))}", error_code="invalid_setting_key")
     if "provider" in payload:
         _provider_mode(payload)
+    if "workflow_mode" in payload:
+        _workflow_mode(payload)
     if "validation_policy" in payload and payload["validation_policy"] not in {"none", "smoke", "targeted", "full"}:
         raise _bad_request("validation_policy must be none, smoke, targeted, or full", error_code="invalid_validation_policy")
     for _numeric_key in (
@@ -2492,6 +2520,7 @@ def api_eval(config: MissionControlServerConfig, payload: dict[str, object]) -> 
 
 
 def api_review(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    _enforce_workflow_policy(payload, action="review", allowed_modes=("review",))
     plan = build_merge_plan(load_headless_result_json(_source_json(payload)))
     return {"ok": plan.mergeable, "plan": plan.to_dict()}
 
@@ -2528,6 +2557,7 @@ def api_file(config: MissionControlServerConfig, payload: dict[str, object]) -> 
 
 
 def api_apply(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    _enforce_workflow_policy(payload, action="apply", allowed_modes=("review",))
     source_json = _source_json(payload)
     persisted = load_headless_result_json(source_json)
     plan = build_merge_plan(persisted)
@@ -2564,6 +2594,7 @@ def api_apply(config: MissionControlServerConfig, payload: dict[str, object]) ->
 
 
 def api_apply_selection(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    _enforce_workflow_policy(payload, action="apply_selection", allowed_modes=("review",))
     if not bool(payload.get("approve_review")):
         raise PermissionError("review approval required before applying selected changes")
     accepted_files_payload = payload.get("accepted_files", [])
@@ -2630,6 +2661,7 @@ def api_apply_selection(config: MissionControlServerConfig, payload: dict[str, o
 
 def api_handoff(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     payload = _enforce_workspace_scope(config, {**_load_settings(config), **payload})
+    _enforce_workflow_policy(payload, action="handoff", allowed_modes=("build",))
     provider_mode = _provider_mode(payload)
     nemo_mcp_url = _require_nemo_mcp_for_execution(payload=payload, provider=provider_mode, memory_enabled=config.memory_db is not None)
     run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -2675,6 +2707,7 @@ def api_handoff(config: MissionControlServerConfig, payload: dict[str, object]) 
 
 def api_handoff_start(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
     merged_payload = _enforce_workspace_scope(server.config, {**_load_settings(server.config), **payload})
+    _enforce_workflow_policy(merged_payload, action="handoff_start", allowed_modes=("build",))
     provider_mode = _provider_mode(merged_payload)
     _require_nemo_mcp_for_execution(payload=merged_payload, provider=provider_mode, memory_enabled=server.config.memory_db is not None)
     job = server.jobs.start(server.config, merged_payload)
@@ -2741,7 +2774,9 @@ def api_job_signal(server: "MissionControlHttpServer", payload: dict[str, object
 
 
 def api_self_modify_start(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
-    job = server.jobs.start_self_modify(server.config, _enforce_workspace_scope(server.config, payload))
+    scoped_payload = _enforce_workspace_scope(server.config, payload)
+    _enforce_workflow_policy(scoped_payload, action="self_modify_start", allowed_modes=("build",))
+    job = server.jobs.start_self_modify(server.config, scoped_payload)
     return {"ok": True, "job": job.to_dict()}
 
 
