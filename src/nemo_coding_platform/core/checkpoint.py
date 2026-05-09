@@ -175,6 +175,37 @@ def save_execution_snapshot(
     return str(checkpoint_path)
 
 
+def load_execution_snapshot(
+    checkpoint_path: str | Path,
+    *,
+    retries: int = 3,
+    retry_delay_seconds: float = 0.02,
+) -> dict[str, Any]:
+    """Load checkpoint JSON with small retries for transient file-read races.
+
+    This is intentionally defensive for local Windows runs where antivirus/file indexers
+    can occasionally expose a just-written file as temporarily empty.
+    """
+    path = Path(checkpoint_path)
+    attempts = max(1, int(retries) + 1)
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            raw = path.read_text(encoding="utf-8")
+            if not raw.strip():
+                raise ValueError("empty checkpoint payload")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("checkpoint payload must be a JSON object")
+            return payload
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            last_error = error
+            if attempt == attempts - 1:
+                break
+            time.sleep(max(0.0, retry_delay_seconds))
+    raise ValueError(f"unable to load checkpoint snapshot from {path}") from last_error
+
+
 def build_checkpoint_markdown(
     phase: str,
     changed_files: tuple[str, ...],

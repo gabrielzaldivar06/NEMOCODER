@@ -1,12 +1,10 @@
 from __future__ import annotations
-
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from nemo_coding_platform.core.engine_interface import EngineProvider, MutationRequest, MutationResult, apply_mutation_request, create_engine_provider
-from nemo_coding_platform.core.checkpoint import build_checkpoint_markdown, restore_file_snapshot, save_execution_snapshot, snapshot_changed_files
+from nemo_coding_platform.core.checkpoint import build_checkpoint_markdown, load_execution_snapshot, restore_file_snapshot, save_execution_snapshot, snapshot_changed_files
 from nemo_coding_platform.core.contracts import ExecutionPhase, RuntimeState
 from nemo_coding_platform.core.headless_handoff import HandoffRequest, build_handoff_plan, validate_handoff_request
 from nemo_coding_platform.core.memory import MemoryAtomType
@@ -305,7 +303,7 @@ def execute_headless_handoff(
             nemo_evidence_handles=list(nemo_evidence_handles),
             snapshot_runtime_path=str(runtime.worktree_path),
         )
-        payload = json.loads(Path(checkpoint_path).read_text(encoding="utf-8"))
+        payload = load_execution_snapshot(checkpoint_path)
         execution_snapshots[checkpoint_id] = payload
 
     def _nemo_handles() -> tuple[str, ...]:
