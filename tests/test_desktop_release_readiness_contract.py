@@ -60,6 +60,9 @@ class DesktopReleaseReadinessContractTests(unittest.TestCase):
         self.assertIn("LM Studio URL", source)
         self.assertIn("NEMO Database Path", source)
         self.assertIn("Auto start backend on launch", source)
+        self.assertIn("Recommended next step", source)
+        self.assertIn("Set LM Studio URL to localhost", source)
+        self.assertIn("Choose NEMO database folder", source)
 
     def test_setup_detection_contract_uses_backend_startup_probe(self) -> None:
         source = self.backend_service.read_text(encoding="utf-8")

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nemo_coding_platform.core.model_config import default_model_role_profile
 from nemo_coding_platform.core.persistence import load_headless_result_json, summarize_persisted_result
 from nemo_coding_platform.core.review_gate import build_merge_plan
 
@@ -220,20 +221,27 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
     runs.sort(key=lambda item: (_source_mtime(item), item.source_json), reverse=True)
     review_queue = [run for run in runs if run.review_status in {"awaiting_review", "blocked"}]
     repos = sorted({run.repo_path for run in runs if run.repo_path} | {str(repo)} | set(recent_repos))
+    role_models = default_model_role_profile("nvidia.agentic.coder-4b")
     state_settings = {
         "model_base_url": "http://localhost:1234/v1",
         "default_model": "nvidia.agentic.coder-4b",
-        "provider": "fake",
+        "model_roles": {
+            "planner": role_models.planner,
+            "editor": role_models.editor,
+            "reviewer": role_models.reviewer,
+            "summarizer": role_models.summarizer,
+        },
+        "provider": "subprocess",
         "memory_db": ".nemo-runtimes/nemo-memory.sqlite",
         "runtime_path": str(runtime_root),
-        "timeout_seconds": 120,
-        "max_runtime_minutes": 120,
-        "heartbeat_minutes": 15,
-        "max_heartbeats": 4,
-        "token_budget": 32000,
+        "timeout_seconds": 300,
+        "max_runtime_minutes": 240,
+        "heartbeat_minutes": 30,
+        "max_heartbeats": 8,
+        "token_budget": 64000,
         "validation_policy": "smoke",
         "nemo_required": True,
-        "quality_core": "product/aider",
+        "quality_core": "product/nemo_code_runtime",
         "recent_repos": list(recent_repos),
     }
     if settings:
@@ -242,7 +250,7 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
         state_settings["validation_policy"] = "smoke"
     return {
         "schema_version": 1,
-        "product": "NEMO Desktop Mission Control",
+        "product": "NEMO CODE Mission Control",
         "repo_path": str(repo),
         "runtimes_path": str(runtime_root),
         "repos": repos,

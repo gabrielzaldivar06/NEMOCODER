@@ -1,3 +1,85 @@
+# Sprint Pivot 2026-05-09: Global PRD Finalization
+
+## Objetivo
+
+Cambiar el foco desde refinamientos locales de una pantalla hacia cierre de producto final alineado al PRD global/final: release desktop instalable, gate global ejecutable en CI y handoff largo confiable con metricas de operacion.
+
+## Por Que Este Sprint Tiene Maximo ROI Ahora
+
+La matriz de alineacion ya marca FR/NFR como `aligned`. El principal riesgo restante no es cobertura de contratos, sino brecha de producto-operacion:
+
+1. El empaquetado actual sigue en bundle zip backend+web y aun no cierra la entrega desktop instalable.
+2. El gate global existe pero no esta operado como release gate continuo en pipeline.
+3. Full Handoff y background autonomy necesitan validacion de robustez en corridas prolongadas, no solo casos focales.
+
+## Alcance (Macro, No Micro-UI)
+
+1. Release Path Desktop (Slice de producto final)
+   - Definir y automatizar build reproducible de instalador desktop.
+   - Incluir ciclo de vida backend gestionado por la app desktop.
+   - Estandarizar first-run setup verificable para modelo/NEMO path y recovery.
+
+2. Global Release Gate en CI
+   - Ejecutar `tests/test_global_mvp_gate.py`, release confidence y readiness desktop como gate obligatorio.
+   - Publicar artifacts de evidencia (JSON/MD) por corrida de release candidate.
+   - Fallo de gate bloquea entrega.
+
+3. Handoff Largo: Hardening orientado a operacion
+   - Suite de regresion de larga duracion con checkpoints/heartbeats/reanudacion.
+   - Medir estabilidad (success rate, validation pass rate, rollback incidents, stuck/no-op repair).
+   - Definir thresholds minimos para permitir autonomia alta en RC.
+
+## Fuera De Alcance
+
+- Rebrand visual amplio del desktop.
+- Nuevos paneles o polish cosmetico sin impacto en release gate o fiabilidad.
+- Features MCP nuevas que no aporten a operacion/release.
+
+## Entregables
+
+1. Especificacion y script de empaquetado desktop RC con checklist reproducible.
+2. Gate de CI documentado y ejecutable con evidencias de release.
+3. Informe de robustez de handoff largo con metricas y decision de autonomia para RC.
+
+## Acceptance Criteria
+
+1. Existe ruta unica de build RC desktop y se ejecuta sin pasos manuales ambiguos.
+2. Gate global en CI falla si cualquiera de los contratos RC clave falla.
+3. Release evidence se genera en cada corrida y queda versionada como artifact.
+4. Existe decision explicita de autonomia para RC basada en metricas, no en percepcion.
+
+## Corte Implementado 2026-05-09: Long Handoff Operational Confidence Batch
+
+- Se ejecuto un lote controlado de handoff largo en modo supervisado con pausa/reanudacion/continuacion usando comandos CLI existentes.
+- Evidencia generada en artifacts:
+   - `artifacts/long-handoff-paused.out.json`
+   - `artifacts/long-handoff-resume-plan.out.json`
+   - `artifacts/long-handoff-continued.out.json`
+   - `artifacts/long-handoff-paused-replay.json`
+   - `artifacts/long-handoff-continued-replay.json`
+   - `artifacts/long-handoff-lineage.json`
+- Consolidado operativo:
+   - `artifacts/long-handoff-operational-confidence.json`
+   - `artifacts/long-handoff-operational-confidence.md`
+- Resultado del lote:
+   - `decision=rc_autonomy_ready`
+   - `validation_pass_rate=1.0`
+   - `replay_ready_rate=1.0`
+   - `resume_available=true`
+   - `lineage_complete=true`
+   - `lineage_autonomy_ready=true`
+   - `no_op_signal_count=0`
+   - `violations=[]`
+
+## Plan De Implementacion
+
+1. Cerrar especificacion de release desktop (installer, lifecycle backend, first-run).
+2. Integrar gates globales en pipeline de CI con salida de artifacts.
+3. Ejecutar lote de handoff largo y consolidar reporte de estabilidad/autonomia.
+4. Congelar refinamientos de UI que no muevan esos tres ejes.
+
+---
+
 # Sprint: Full Handoff Reliability Loop
 
 ## Objetivo

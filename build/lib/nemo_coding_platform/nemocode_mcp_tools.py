@@ -7,13 +7,16 @@ from typing import Any
 from nemo_coding_platform.core.headless_runner import execute_headless_handoff
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.persistence import load_headless_result_json
-from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
+from nemo_coding_platform.core.nemo_adapter import McpNemoAdapter, PersistentNemoAdapter
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase, tool_allowed_in_lifecycle
 from nemo_coding_platform.core.self_modification import SelfModRequest, SelfModTaskType, execute_self_modification, get_self_mod_continuity, learn_from_self_mod_failure, mark_portfolio_effective, query_self_mod_risk_patterns, record_self_mod_decision, record_self_mod_feedback, self_mod_apply, self_mod_impact, self_mod_review, self_mod_rollback, self_mod_similar_runs, self_mod_status, self_mod_trajectory
 
 
-def _get_adapter(memory_db: str = ".nemo-memory.db") -> PersistentNemoAdapter:
+def _get_adapter(memory_db: str = ".nemo-memory.db", mcp_url: str = "", mcp_prefix: str = "") -> PersistentNemoAdapter | McpNemoAdapter:
+    if mcp_url.strip():
+        effective_prefix = mcp_prefix if mcp_prefix else "nemocode."
+        return McpNemoAdapter(mcp_url.strip(), tool_prefix=effective_prefix)
     store = PersistentMemoryStore(Path(memory_db))
     return PersistentNemoAdapter(store)
 
@@ -25,13 +28,26 @@ def _default_lifecycle_phase(tool_name: str) -> NemoLifecyclePhase:
     raise PermissionError(f"NEMO tool {tool_name} is not allowed in any lifecycle phase")
 
 
-def mcp_call_nemo_tool(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", **arguments: Any) -> dict[str, Any]:
+def mcp_call_nemo_tool(
+    tool_name: str,
+    lifecycle_phase: str | None = None,
+    memory_db: str = ".nemo-memory.db",
+    mcp_url: str = "",
+    mcp_prefix: str = "",
+    **arguments: Any,
+) -> dict[str, Any]:
     """MCP tool for calling any registered NEMO memory/tool-plane operation."""
     try:
         phase = NemoLifecyclePhase(lifecycle_phase) if lifecycle_phase else _default_lifecycle_phase(tool_name)
-        adapter = _get_adapter(memory_db)
+        adapter = _get_adapter(memory_db, mcp_url=mcp_url, mcp_prefix=mcp_prefix)
         _, result = adapter.call(phase, tool_name, **arguments)
-        return {"ok": result.ok, "tool": tool_name, "lifecycle_phase": phase.value, "payload": result.payload}
+        return {
+            "ok": result.ok,
+            "tool": tool_name,
+            "lifecycle_phase": phase.value,
+            "transport": "mcp_remote" if mcp_url.strip() else "persistent_local",
+            "payload": result.payload,
+        }
     except Exception as e:
         return {"ok": False, "tool": tool_name, "error": str(e)}
 
@@ -91,7 +107,7 @@ def mcp_self_modify(
     repair_budget: int = 2,
     memory_db: str = ".nemo-runtimes/nemo-memory.sqlite",
     repo_root: str | None = None,
-    provider_mode: str = "fake",
+    provider_mode: str = "subprocess",
     bounded_simulation: bool = False,
     real_validation: bool = False,
     **kwargs: Any,

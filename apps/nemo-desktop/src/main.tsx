@@ -225,6 +225,58 @@ export function App() {
     setErrorMsg('Settings reset to saved values.')
   }
 
+  async function handlePickDatabaseFolder() {
+    if (!settingsDraft) {
+      return
+    }
+
+    try {
+      const selectedPath = await invoke<string | null>('pick_folder')
+      if (!selectedPath) {
+        return
+      }
+      updateSettingsDraft({ nemo_database_path: `${selectedPath}\\.nemo-memory.db` })
+      setErrorMsg('Database path updated. Save settings to apply.')
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Unable to pick folder')
+    }
+  }
+
+  function applyRecommendedDefaults() {
+    if (!settingsDraft) {
+      return
+    }
+
+    updateSettingsDraft({
+      backend_port: 8787,
+      lm_studio_url: 'http://localhost:1234/v1',
+      auto_start_backend: true,
+    })
+    setErrorMsg('Recommended defaults applied. Save settings to continue.')
+  }
+
+  function buildGuidedActions() {
+    if (!setupDiagnostics) {
+      return [] as Array<{ id: string; label: string; onClick: () => void }>
+    }
+
+    const actions: Array<{ id: string; label: string; onClick: () => void }> = []
+    if (!setupDiagnostics.lmStudioFound) {
+      actions.push({ id: 'lmstudio-default', label: 'Set LM Studio URL to localhost', onClick: applyRecommendedDefaults })
+    }
+    if (!setupDiagnostics.nemoDbFound || !setupDiagnostics.permissionsOk) {
+      actions.push({ id: 'choose-db-path', label: 'Choose NEMO database folder', onClick: () => void handlePickDatabaseFolder() })
+    }
+    if (!setupDiagnostics.diskSpaceOk) {
+      actions.push({ id: 'retry-after-cleanup', label: 'Retry setup after freeing disk space', onClick: () => void handleRetrySetup() })
+    }
+    if (actions.length === 0 && setupDiagnostics.status !== 'ready') {
+      actions.push({ id: 'retry-generic', label: 'Run setup check again', onClick: () => void handleRetrySetup() })
+    }
+
+    return actions
+  }
+
   function statusLabel() {
     if (backendStatus === 'connecting') return 'Connecting'
     if (backendStatus === 'connected') return 'Connected'
@@ -238,6 +290,7 @@ export function App() {
   }
 
   const issueList = buildSetupIssueList(setupDiagnostics)
+  const guidedActions = buildGuidedActions()
 
   return (
     <div className="app-shell">
@@ -386,6 +439,19 @@ export function App() {
                   </span>
                 ))}
               </div>
+            )}
+
+            {guidedActions.length > 0 && (
+              <section className="setup-card quick-fixes">
+                <h3>Recommended next step</h3>
+                <div className="quick-fix-row">
+                  {guidedActions.map((action) => (
+                    <button key={action.id} onClick={action.onClick} className="secondary-btn">
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              </section>
             )}
 
             <div className="button-row split">

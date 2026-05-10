@@ -6,7 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 
 
-IGNORED_PARTS = {".git", ".venv", "__pycache__", ".nemo-aider-message.md"}
+IGNORED_PARTS = {".git", ".venv", "__pycache__", ".nemo-aider-message.md", ".nemo-engine-message.md"}
 MAX_UNIFIED_DIFF_CHARS = 10_000
 
 

@@ -1,0 +1,633 @@
+{
+  "artifacts": [
+    {
+      "artifact_type": "spec",
+      "content_hash": "c6769d24fb49045b5a546971915e67a58cd8221bcaedf773b402c0e18cf2d052",
+      "id": "artifact-spec",
+      "path": "generated-spec.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Generated specs"
+    },
+    {
+      "artifact_type": "test",
+      "content_hash": "53363113664349180eda81eae8323158d011e182ff38be9c1f88c810262f9c50",
+      "id": "artifact-test",
+      "path": "generated-test.txt",
+      "run_id": "run-1-resume-20",
+      "summary": "Generated tests"
+    },
+    {
+      "artifact_type": "patch",
+      "content_hash": "157ea2885925fa6b9ecf37894af298104b0fb664f96e1851e034047f76e28956",
+      "id": "artifact-patch",
+      "path": "patch.diff",
+      "run_id": "run-1-resume-20",
+      "summary": "Applied provider mutation files=1"
+    },
+    {
+      "artifact_type": "engine_output",
+      "content_hash": "9f8c7183596e3d1b7984a77a285f265b13507d9e1d01e0eec5b74ef0875a1522",
+      "id": "artifact-engine-output",
+      "path": "engine-output.txt",
+      "run_id": "run-1-resume-20",
+      "summary": "Engine output returncode=None"
+    },
+    {
+      "artifact_type": "validation",
+      "content_hash": "8475201fd9da1c0b6b49b9f18ff3338b6744bfe3d7e285d71a9cebfd67ecf4d8",
+      "id": "artifact-validation",
+      "path": "validation.txt",
+      "run_id": "run-1-resume-20",
+      "summary": "Validation summary"
+    },
+    {
+      "artifact_type": "memory_summary",
+      "content_hash": "bfb784b1ee9bae9f88d93dbdb3e3f0ce30ce71d502be393dfe67c0705cb8692a",
+      "id": "artifact-memory",
+      "path": "memory.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Memory writeback"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "e28f4e5d5a7ab74c845720e3fb3b256244292f13a215bc08e9e16d137abfca52",
+      "id": "artifact-checkpoint-1",
+      "path": "checkpoint-plan.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "80bb40b1b9ef399982ec4a44082fc678b4cd131a52aea8ccd8483f99cc4781b9",
+      "id": "artifact-checkpoint-2",
+      "path": "checkpoint-execute.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "checkpoint",
+      "content_hash": "fe37faec6526121f9f99b372600dcddd6e760d8185f0d128688262cfa9a37ff1",
+      "id": "artifact-checkpoint-3",
+      "path": "checkpoint-review.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Unattended checkpoint"
+    },
+    {
+      "artifact_type": "review_package",
+      "content_hash": "7a249206e994920ce0ca2651032df34168f8b83067384700d3c5a46090a36ac8",
+      "id": "artifact-review",
+      "path": "review-package.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Final review package"
+    },
+    {
+      "artifact_type": "supervisor",
+      "content_hash": "7c5f294c5ce2a5b17451613758641382f9d7029eece58fd6fa46053f89d80074",
+      "id": "artifact-supervisor",
+      "path": "supervisor-report.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Long handoff supervisor budget and heartbeats"
+    },
+    {
+      "artifact_type": "supervisor",
+      "content_hash": "8a4435739485533b3a46aeda9596c6faa577f17c87fd1192ef4b6c1bb0332373",
+      "id": "artifact-continuation-state",
+      "path": "continuation-state.json",
+      "run_id": "run-1-resume-20",
+      "summary": "Long handoff continuation state"
+    },
+    {
+      "artifact_type": "supervisor",
+      "content_hash": "4fd06cd9a1ba3ee74bd856a43e44e79d92ec6311aa44ef8d6d9af0cf8b8f52a8",
+      "id": "artifact-continuation-link",
+      "path": "continuation-link.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Long handoff continuation link"
+    },
+    {
+      "artifact_type": "memory_summary",
+      "content_hash": "51cbf2be2c147469488e09395ba4aacf6b924523b4bb290c8f5fc0924f8162c3",
+      "id": "artifact-continuation-memory",
+      "path": "continuation-memory.md",
+      "run_id": "run-1-resume-20",
+      "summary": "Long handoff continuation memory link"
+    }
+  ],
+  "execution_snapshots": {
+    "checkpoint-execute": {
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "checkpoint_format": "nemo_checkpoint_v2",
+      "recorded_at": 1778363139.4277616,
+      "schema_version": 2,
+      "snapshot": {
+        "changed_files": [
+          "generated-implementation.md"
+        ],
+        "checkpoint_id": "checkpoint-execute",
+        "global_elapsed_seconds": 0.0,
+        "mutation_count": 1,
+        "nemo_evidence_handles": [],
+        "phase": "execute",
+        "phase_elapsed_seconds": 0.0,
+        "repair_attempts": 0,
+        "repair_cursor": 0,
+        "resume_mode": "phase_boundary",
+        "risk_flags": [
+          "simulated_validation"
+        ],
+        "runtime_snapshot_manifest": [
+          "generated-implementation.md"
+        ],
+        "schema_version": 2,
+        "timeline_events_count": 0,
+        "timestamp": 1778363139.4276907,
+        "validation_results": [
+          "C:\\dev\\dev4\\.venv\\Scripts\\python.exe --version"
+        ],
+        "validation_state": [
+          "validation passed=1/1 required_ok=True"
+        ]
+      },
+      "snapshot_runtime_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "timeline_event_count": 0
+    },
+    "checkpoint-plan": {
+      "changed_files": [],
+      "checkpoint_format": "nemo_checkpoint_v2",
+      "recorded_at": 1778363137.3624625,
+      "schema_version": 2,
+      "snapshot": {
+        "changed_files": [],
+        "checkpoint_id": "checkpoint-plan",
+        "global_elapsed_seconds": 0.0,
+        "mutation_count": 1,
+        "nemo_evidence_handles": [],
+        "phase": "plan",
+        "phase_elapsed_seconds": 0.0,
+        "repair_attempts": 0,
+        "repair_cursor": 0,
+        "resume_mode": "phase_boundary",
+        "risk_flags": [],
+        "runtime_snapshot_manifest": [
+          "checkpoint-plan.md"
+        ],
+        "schema_version": 2,
+        "timeline_events_count": 0,
+        "timestamp": 1778363137.3623831,
+        "validation_results": [
+          "C:\\dev\\dev4\\.venv\\Scripts\\python.exe --version"
+        ],
+        "validation_state": [
+          "validation passed=1/1 required_ok=True"
+        ]
+      },
+      "snapshot_runtime_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "timeline_event_count": 0
+    },
+    "checkpoint-review": {
+      "changed_files": [
+        "generated-implementation.md"
+      ],
+      "checkpoint_format": "nemo_checkpoint_v2",
+      "recorded_at": 1778363141.4609158,
+      "schema_version": 2,
+      "snapshot": {
+        "changed_files": [
+          "generated-implementation.md"
+        ],
+        "checkpoint_id": "checkpoint-review",
+        "global_elapsed_seconds": 0.0,
+        "mutation_count": 1,
+        "nemo_evidence_handles": [],
+        "phase": "review",
+        "phase_elapsed_seconds": 0.0,
+        "repair_attempts": 0,
+        "repair_cursor": 0,
+        "resume_mode": "phase_boundary",
+        "risk_flags": [
+          "simulated_validation"
+        ],
+        "runtime_snapshot_manifest": [
+          "generated-implementation.md"
+        ],
+        "schema_version": 2,
+        "timeline_events_count": 0,
+        "timestamp": 1778363141.460856,
+        "validation_results": [
+          "C:\\dev\\dev4\\.venv\\Scripts\\python.exe --version"
+        ],
+        "validation_state": [
+          "validation passed=1/1 required_ok=True"
+        ]
+      },
+      "snapshot_runtime_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+      "timeline_event_count": 0
+    }
+  },
+  "memory_traces": [
+    {
+      "evidence_handle": null,
+      "id": "mem-1",
+      "memory_ids": [],
+      "nemo_tool": "prime_context",
+      "risk": "read_only",
+      "run_id": "run-1-resume-20",
+      "suite": "startup_context",
+      "summary": "Loaded startup context."
+    },
+    {
+      "evidence_handle": null,
+      "id": "mem-2",
+      "memory_ids": [],
+      "nemo_tool": "build_context_portfolio",
+      "risk": "read_only",
+      "run_id": "run-1-resume-20",
+      "suite": "context_economy",
+      "summary": "Built context portfolio tokens=0."
+    },
+    {
+      "evidence_handle": null,
+      "id": "mem-3",
+      "memory_ids": [],
+      "nemo_tool": "store_conversation",
+      "risk": "memory_write",
+      "run_id": "run-1-resume-20",
+      "suite": "conversation",
+      "summary": "Prepared final writeback."
+    },
+    {
+      "evidence_handle": null,
+      "id": "mem-continuation-link",
+      "memory_ids": [],
+      "nemo_tool": "store_conversation",
+      "risk": "memory_write",
+      "run_id": "run-1-resume-20",
+      "suite": "conversation",
+      "summary": "Long handoff continuation linked source_task=task-1 source_run=run-1 continuation_task=task-1-resume continuation_run=run-1-resume-20 resume_token=task-1:run-1:minute-20 resume_minute=20"
+    }
+  ],
+  "mutation_result": {
+    "applied_files": [
+      "generated-implementation.md"
+    ],
+    "changed_files": [
+      "generated-implementation.md"
+    ],
+    "diff_artifact": "--- before/generated-implementation.md\n+++ after/generated-implementation.md\n@@ -0,0 +1,10 @@\n+# Generated Implementation\n+\n+Objective: Resume paused long handoff from task-1:run-1:minute-20. Continue objective: RC operational confidence run\n+Spec: generated-spec.md\n+\n+## Acceptance Criteria\n+- continuation remains replayable\n+\n+## NEMO Context\n+No context supplied.",
+    "dry_run_files": [
+      "generated-implementation.md"
+    ],
+    "duration_ms": 2,
+    "model_profile": {
+      "api_key_env": "LMSTUDIO_API_KEY",
+      "base_url": "http://localhost:1234/v1",
+      "model": "nvidia.agentic.coder-4b",
+      "name": "lmstudio-small-coder"
+    },
+    "plan": {
+      "approved": true,
+      "dry_run_completed": true,
+      "writes": [
+        {
+          "content": "# Generated Implementation\n\nObjective: Resume paused long handoff from task-1:run-1:minute-20. Continue objective: RC operational confidence run\nSpec: generated-spec.md\n\n## Acceptance Criteria\n- continuation remains replayable\n\n## NEMO Context\nNo context supplied.",
+          "path": "generated-implementation.md"
+        }
+      ]
+    },
+    "provider": "fake-nemo-code",
+    "provider_mode": "fake",
+    "returncode": null,
+    "role": "",
+    "stderr": "",
+    "stdout": "",
+    "summary": "changed 1 file(s) through fake-nemo-code",
+    "token_usage": null
+  },
+  "platform_info": {
+    "audit_event_capabilities": {
+      "default_checkpoint_minutes": 15,
+      "event_types": [
+        "context_bootstrapped",
+        "mutation_created",
+        "validation_run",
+        "checkpoint"
+      ],
+      "risk_flags": [
+        "validation_failure",
+        "no_changed_files"
+      ]
+    },
+    "autonomy": {},
+    "capabilities": {
+      "audit_events": true,
+      "full_handoff": true,
+      "nemo_memory_plane": true,
+      "permission_gates": true,
+      "supported_isolation": [
+        "worktree",
+        "container"
+      ]
+    },
+    "command": {
+      "entrypoint": "python -m nemo_code_runtime.nemo_platform",
+      "output": "json",
+      "stable_schema": true
+    },
+    "extension_package": "nemo_code_runtime.nemo_platform",
+    "nemo_tools": [],
+    "nemo_tools_by_phase": {
+      "build": [
+        "build_context_portfolio",
+        "search_memories",
+        "expand_context_evidence",
+        "record_context_feedback"
+      ],
+      "plan": [
+        "prime_context",
+        "build_context_portfolio",
+        "search_memories"
+      ],
+      "review": [
+        "record_context_feedback",
+        "store_conversation",
+        "compress_context_artifact"
+      ]
+    },
+    "permissions": [],
+    "product_base": "nemo_code",
+    "schema_version": 1
+  },
+  "portfolio": {
+    "error": {
+      "code": -32003,
+      "data": {
+        "tool_call_audit": {
+          "allowed": false,
+          "approval_required": true,
+          "approved": false,
+          "reason": "approval required for risky MCP action: tool=nemo.build_context_portfolio risk=unknown. Pass approve_review=true to proceed.",
+          "risk": "unknown",
+          "tool": "nemo.build_context_portfolio"
+        }
+      },
+      "message": "approval required for risky MCP action: tool=nemo.build_context_portfolio risk=unknown. Pass approve_review=true to proceed."
+    }
+  },
+  "readiness": {
+    "grade": "ready",
+    "has_checkpoint": true,
+    "has_review_package": true,
+    "memory_writeback_present": true,
+    "mutation_present": true,
+    "reasons": [],
+    "score": 1.0,
+    "validation_passed": true
+  },
+  "repair_plan": {
+    "attempts": [],
+    "budget": {
+      "max_attempts": 3
+    }
+  },
+  "repair_result": null,
+  "run": {
+    "failure_reason": null,
+    "id": "run-1-resume-20",
+    "model_profile": "local-model",
+    "model_profile_link": {
+      "base_url": "http://localhost:1234/v1",
+      "model": "nvidia.agentic.coder-4b",
+      "provider_mode": "fake"
+    },
+    "permission_profile": "full-handoff",
+    "phase": "review",
+    "runtime_id": "task-1-resume-run-1-resume-20",
+    "sandbox_path": "C:\\dev\\dev4\\.nemo-runtimes\\task-1-resume-run-1-resume-20",
+    "state": "reviewing",
+    "task_id": "task-1-resume",
+    "validation_profile": "smoke"
+  },
+  "runtime_files": [
+    "checkpoint-execute.json",
+    "checkpoint-execute.md",
+    "checkpoint-plan.json",
+    "checkpoint-plan.md",
+    "checkpoint-review.json",
+    "checkpoint-review.md",
+    "continuation-link.md",
+    "continuation-memory.md",
+    "continuation-state.json",
+    "engine-output.txt",
+    "file-snapshots/checkpoint-execute/generated-implementation.md",
+    "file-snapshots/checkpoint-review/generated-implementation.md",
+    "generated-implementation.md",
+    "generated-spec.md",
+    "generated-test.txt",
+    "memory.md",
+    "review-package.md",
+    "supervisor-report.md",
+    "validation.txt"
+  ],
+  "schema_version": 1,
+  "task": {
+    "autonomy_level": "full_handoff",
+    "id": "task-1-resume",
+    "linked_prd": null,
+    "linked_specs": [
+      "generated-spec.md"
+    ],
+    "objective": "Resume paused long handoff from task-1:run-1:minute-20. Continue objective: RC operational confidence run",
+    "repo_path": ".",
+    "status": "open",
+    "title": "Headless Handoff"
+  },
+  "timeline": [
+    {
+      "id": "event-1",
+      "kind": "context_bootstrapped",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "run-1-resume-20",
+      "sequence": 1,
+      "summary": "NEMO context portfolio bootstrapped."
+    },
+    {
+      "id": "event-2",
+      "kind": "plan_created",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "run-1-resume-20",
+      "sequence": 2,
+      "summary": "Created handoff plan with 11 steps."
+    },
+    {
+      "id": "event-3",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-plan.md",
+      "phase": "plan",
+      "run_id": "run-1-resume-20",
+      "sequence": 3,
+      "summary": "Created plan checkpoint."
+    },
+    {
+      "id": "event-4",
+      "kind": "permission_decided",
+      "payload_ref": null,
+      "phase": "plan",
+      "run_id": "run-1-resume-20",
+      "sequence": 4,
+      "summary": "Full Handoff permissions preapproved in sandbox."
+    },
+    {
+      "id": "event-5",
+      "kind": "mutation_created",
+      "payload_ref": "engine-output.txt",
+      "phase": "execute",
+      "run_id": "run-1-resume-20",
+      "sequence": 5,
+      "summary": "changed 1 file(s) through fake-nemo-code"
+    },
+    {
+      "id": "event-6",
+      "kind": "validation_run",
+      "payload_ref": null,
+      "phase": "execute",
+      "run_id": "run-1-resume-20",
+      "sequence": 6,
+      "summary": "validation passed=1/1 required_ok=True"
+    },
+    {
+      "id": "event-7",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "execute",
+      "run_id": "run-1-resume-20",
+      "sequence": 7,
+      "summary": "Created execute checkpoint."
+    },
+    {
+      "id": "event-8",
+      "kind": "review_package_created",
+      "payload_ref": null,
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 8,
+      "summary": "Created review package."
+    },
+    {
+      "id": "event-9",
+      "kind": "checkpoint",
+      "payload_ref": "checkpoint-review.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 9,
+      "summary": "Created review checkpoint."
+    },
+    {
+      "id": "event-10",
+      "kind": "memory_written",
+      "payload_ref": null,
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 10,
+      "summary": "Prepared NEMO writeback summary."
+    },
+    {
+      "id": "event-11",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 11,
+      "summary": "Supervisor heartbeat at minute 30: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-12",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 12,
+      "summary": "Supervisor heartbeat at minute 60: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-13",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 13,
+      "summary": "Supervisor heartbeat at minute 90: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-14",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 14,
+      "summary": "Supervisor heartbeat at minute 120: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-15",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 15,
+      "summary": "Supervisor heartbeat at minute 150: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-16",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 16,
+      "summary": "Supervisor heartbeat at minute 180: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-17",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-execute.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 17,
+      "summary": "Supervisor heartbeat at minute 210: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-18",
+      "kind": "heartbeat",
+      "payload_ref": "checkpoint-review.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 18,
+      "summary": "Supervisor heartbeat at minute 240: validation and checkpoint trail remain replayable."
+    },
+    {
+      "id": "event-19",
+      "kind": "resumed",
+      "payload_ref": "continuation-link.md",
+      "phase": "review",
+      "run_id": "run-1-resume-20",
+      "sequence": 19,
+      "summary": "Continuation linked to resume token task-1:run-1:minute-20."
+    }
+  ],
+  "validation": {
+    "results": [
+      {
+        "command": {
+          "command": "C:\\dev\\dev4\\.venv\\Scripts\\python.exe --version",
+          "required": true
+        },
+        "output": "simulated pass",
+        "returncode": null,
+        "status": "passed"
+      }
+    ]
+  },
+  "workflow_recipe": null
+}

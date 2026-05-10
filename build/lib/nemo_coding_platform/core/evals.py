@@ -18,6 +18,44 @@ class ReadinessScore:
     reasons: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class MetricsReport:
+    task_id: str | None
+    run_id: str | None
+    success_rate: float
+    validation_pass_rate: float
+    override_rate: float
+    stale_memory_incidents: int
+    tool_failure_rate: float
+    validation_checks_total: int
+    validation_checks_failed: int
+    permission_events_total: int
+    permission_overrides: int
+    tool_invocations_total: int
+    tool_failures_total: int
+    readiness_grade: str
+    readiness_reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "run_id": self.run_id,
+            "success_rate": self.success_rate,
+            "validation_pass_rate": self.validation_pass_rate,
+            "override_rate": self.override_rate,
+            "stale_memory_incidents": self.stale_memory_incidents,
+            "tool_failure_rate": self.tool_failure_rate,
+            "validation_checks_total": self.validation_checks_total,
+            "validation_checks_failed": self.validation_checks_failed,
+            "permission_events_total": self.permission_events_total,
+            "permission_overrides": self.permission_overrides,
+            "tool_invocations_total": self.tool_invocations_total,
+            "tool_failures_total": self.tool_failures_total,
+            "readiness_grade": self.readiness_grade,
+            "readiness_reasons": list(self.readiness_reasons),
+        }
+
+
 def score_headless_result(result: object) -> ReadinessScore:
     if isinstance(result, dict):
         return score_persisted_result(result)
@@ -92,6 +130,80 @@ def score_persisted_result(payload: dict[str, Any]) -> ReadinessScore:
     else:
         has_mutation = any(_value(event, "kind") == EventKind.MUTATION_CREATED.value for event in timeline)
     return _score_from_checks(validation_passed, has_checkpoint, has_review, has_memory, has_mutation)
+
+
+def _safe_ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(numerator / denominator, 3)
+
+
+def _to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
+def build_run_metrics_report(payload: dict[str, Any]) -> MetricsReport:
+    """Build FR10-style evaluation metrics for a persisted run payload."""
+    readiness = score_persisted_result(payload)
+    task = payload.get("task", {}) if isinstance(payload.get("task"), dict) else {}
+    run = payload.get("run", {}) if isinstance(payload.get("run"), dict) else {}
+    timeline = payload.get("timeline", []) if isinstance(payload.get("timeline"), list) else []
+    validation = payload.get("validation", {}) if isinstance(payload.get("validation"), dict) else {}
+    validation_results = [item for item in validation.get("results", []) if isinstance(item, dict)]
+    mutation = payload.get("mutation_result", {}) if isinstance(payload.get("mutation_result"), dict) else {}
+
+    validation_checks_total = len(validation_results)
+    validation_checks_failed = sum(1 for item in validation_results if _to_text(item.get("status")) != "passed")
+    if validation_checks_total:
+        validation_pass_rate = _safe_ratio(validation_checks_total - validation_checks_failed, validation_checks_total)
+    else:
+        validation_pass_rate = 1.0 if readiness.validation_passed else 0.0
+
+    permission_events_total = 0
+    permission_overrides = 0
+    stale_memory_incidents = sum(1 for reason in readiness.reasons if "stale" in _to_text(reason))
+    for event in timeline:
+        if not isinstance(event, dict):
+            continue
+        kind = _to_text(event.get("kind"))
+        summary = _to_text(event.get("summary"))
+        if kind in {EventKind.PERMISSION_DECIDED.value, EventKind.PERMISSION_DENIED.value}:
+            permission_events_total += 1
+        if kind == EventKind.PERMISSION_DENIED.value or any(term in summary for term in ("denied", "rejected", "blocked", "override")):
+            permission_overrides += 1
+        if "stale" in summary:
+            stale_memory_incidents += 1
+
+    for result in validation_results:
+        if "stale" in _to_text(result.get("summary")):
+            stale_memory_incidents += 1
+
+    tool_invocations_total = validation_checks_total + (1 if mutation else 0)
+    tool_failures_total = validation_checks_failed
+    returncode = mutation.get("returncode") if isinstance(mutation, dict) else None
+    if isinstance(returncode, int) and returncode != 0:
+        tool_failures_total += 1
+    tool_failure_rate = _safe_ratio(tool_failures_total, tool_invocations_total)
+
+    return MetricsReport(
+        task_id=str(task.get("id")) if task.get("id") is not None else None,
+        run_id=str(run.get("id")) if run.get("id") is not None else None,
+        success_rate=1.0 if readiness.grade == "ready" else 0.0,
+        validation_pass_rate=validation_pass_rate,
+        override_rate=_safe_ratio(permission_overrides, permission_events_total),
+        stale_memory_incidents=stale_memory_incidents,
+        tool_failure_rate=tool_failure_rate,
+        validation_checks_total=validation_checks_total,
+        validation_checks_failed=validation_checks_failed,
+        permission_events_total=permission_events_total,
+        permission_overrides=permission_overrides,
+        tool_invocations_total=tool_invocations_total,
+        tool_failures_total=tool_failures_total,
+        readiness_grade=readiness.grade,
+        readiness_reasons=readiness.reasons,
+    )
 
 
 def score_spec10_lite(payload: dict[str, Any]) -> dict[str, Any]:

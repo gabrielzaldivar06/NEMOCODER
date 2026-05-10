@@ -28,6 +28,7 @@ class RuntimeState(StrEnum):
     READY = "ready"
     PLANNING = "planning"
     AWAITING_APPROVAL = "awaiting_approval"
+    BUILDING = "building"
     EXECUTING = "executing"
     REVIEWING = "reviewing"
     PAUSED = "paused"

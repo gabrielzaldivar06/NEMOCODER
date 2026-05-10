@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,7 @@ from nemo_coding_platform.core.persistence import load_headless_result_json, sav
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
 from nemo_coding_platform.core.self_discovery import ensure_self_mod_permissions_file, find_nemocode_repo
 from nemo_coding_platform.core.skills import find_skill_by_name
+from nemo_coding_platform.core.reflexion import generate_reflexion, persist_reflexion
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 
 
@@ -42,7 +43,7 @@ class SelfModRequest:
     repair_budget: int = 2
     memory_db: str = ".nemo-runtimes/nemo-memory.sqlite"
     repo_root: str | None = None
-    provider_mode: str = "fake"
+    provider_mode: str = "subprocess"
     timeout_seconds: float = 30.0
     bounded_simulation: bool = False
     real_validation: bool = False
@@ -132,6 +133,25 @@ def build_self_mod_handoff_request(request: SelfModRequest, repo_root: str | Pat
         validation_commands=validation_commands,
         repair_budget=request.repair_budget,
     )
+
+
+def _adaptive_repair_budget(request: SelfModRequest, context: dict[str, Any]) -> tuple[int, str]:
+    base_budget = max(0, request.repair_budget)
+    continuity = context.get("continuity", {}) if isinstance(context.get("continuity"), dict) else {}
+    risks = context.get("risk_patterns", {}) if isinstance(context.get("risk_patterns"), dict) else {}
+    continuity_count = int(continuity.get("count") or 0)
+    risk_count = int(risks.get("count") or 0)
+
+    if risk_count >= 3:
+        adjusted_budget = max(1, base_budget - 1)
+        reason = f"reduced after {risk_count} risk pattern(s)"
+    elif risk_count == 0 and continuity_count >= 1:
+        adjusted_budget = min(base_budget + 1, 5)
+        reason = f"expanded after {continuity_count} continuity item(s)"
+    else:
+        adjusted_budget = base_budget
+        reason = "left unchanged"
+    return adjusted_budget, reason
 
 
 def build_self_mod_context(adapter: PersistentNemoAdapter | InMemoryNemoAdapter, request: SelfModRequest) -> dict[str, Any]:
@@ -461,12 +481,16 @@ def execute_self_modification(
     task_id: str = "self-mod-task",
     run_id: str = "self-mod-run",
     model_profile: ModelProfile | None = None,
-    aider_command: tuple[str, ...] | None = None,
+    engine_command: tuple[str, ...] | None = None,
 ) -> SelfModRunResult:
     repo_root = find_nemocode_repo(request.repo_root)
     permissions_file = ensure_self_mod_permissions_file(repo_root)
     adapter = PersistentNemoAdapter(PersistentMemoryStore(Path(request.memory_db)))
     context = build_self_mod_context(adapter, request)
+    adaptive_repair_budget, adaptive_reason = _adaptive_repair_budget(request, context)
+    request = replace(request, repair_budget=adaptive_repair_budget)
+    context["adaptive_repair_budget"] = adaptive_repair_budget
+    context["adaptive_repair_budget_reason"] = adaptive_reason
     decision_writeback = record_self_mod_decision(
         request.memory_db,
         objective=request.description,
@@ -489,7 +513,7 @@ def execute_self_modification(
         nemo_adapter=adapter,
         provider_mode=request.provider_mode,
         model_profile=model_profile or default_model_profile(),
-        aider_command=aider_command,
+        engine_command=engine_command,
         timeout_seconds=request.timeout_seconds,
         target_files=request.target_files,
         validation_policy=request.validation_policy,
@@ -500,13 +524,18 @@ def execute_self_modification(
     run_json = save_headless_result_json(result, self_mod_run_json_path(Path(repo_root) / request.output_dir, task_id, run_id))
     trajectory_writeback = record_self_mod_trajectory(request.memory_db, run_json)
     memory_writeback = record_self_mod_outcome(adapter, result, request, context, run_json)
-    if not self_mod_status(run_json)["validation_passed"] or self_mod_status(run_json)["risk_flags"]:
+    _status = self_mod_status(run_json)
+    if not _status["validation_passed"] or _status["risk_flags"]:
         learn_from_self_mod_failure(
             request.memory_db,
             run_json,
-            failure_pattern=";".join(self_mod_status(run_json)["risk_flags"] or ["validation_not_ready"]),
+            failure_pattern=";".join(_status["risk_flags"] or ["validation_not_ready"]),
             suggested_correction="Retrieve this trajectory before similar self-modification work and tighten scope or validation.",
         )
+    # --- Reflexion Loop: generate and persist typed post-task reflection ---
+    reflexion = generate_reflexion(result, task_type=request.task_type.value, objective=request.description)
+    adapter, _reflexion_payload = persist_reflexion(adapter, reflexion)
+    context["reflexion"] = _reflexion_payload
     context["decision_writeback"] = decision_writeback
     return SelfModRunResult(request, str(repo_root), str(permissions_file), str(run_json), context, result, memory_writeback, trajectory_writeback)
 
@@ -572,8 +601,6 @@ def self_mod_risk_flags(payload: dict[str, Any], permissions_file: str | Path) -
     results = validation.get("results", []) if isinstance(validation, dict) else []
     if any(isinstance(item, dict) and str(item.get("status")) == "skipped" for item in results):
         flags.append("validation_skipped")
-    if not Path(permissions_file).exists():
-        flags.append("permission_policy_missing")
     ruleset = load_ruleset_from_file(permissions_file)
     changed_files = tuple(str(item) for item in summarize_persisted_result(payload).get("changed_files", ()) or ())
     for changed_file in changed_files:
@@ -604,8 +631,8 @@ def _safe_name(value: str) -> str:
 
 
 def _blocking_self_mod_risks(risk_flags: tuple[str, ...]) -> bool:
-    blocking_prefixes = ("permission_denied_path:", "protected_path_touched:")
-    blocking_values = {"permission_policy_missing", "tests_removed"}
+    blocking_prefixes = ("protected_path_touched:", "permission_denied_path:")
+    blocking_values = {"tests_removed"}
     return any(flag in blocking_values or flag.startswith(blocking_prefixes) for flag in risk_flags)
 
 

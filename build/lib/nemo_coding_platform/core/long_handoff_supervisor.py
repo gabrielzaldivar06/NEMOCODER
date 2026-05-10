@@ -15,14 +15,14 @@ from nemo_coding_platform.core.worktree_runtime import WorktreeRuntimeSpec, snap
 
 @dataclass(frozen=True, slots=True)
 class LongHandoffBudget:
-    max_runtime_minutes: int = 120
-    heartbeat_minutes: int = 15
-    max_heartbeats: int = 4
-    token_budget: int = 32_000
+    max_runtime_minutes: int = 240
+    heartbeat_minutes: int = 30
+    max_heartbeats: int = 8
+    token_budget: int = 64_000
     pause_after_minutes: int | None = None
-    plan_minutes: int = 30
-    execute_minutes: int = 60
-    review_minutes: int = 30
+    plan_minutes: int = 60
+    execute_minutes: int = 120
+    review_minutes: int = 60
 
     def validate(self) -> None:
         if self.max_runtime_minutes <= 0:

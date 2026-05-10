@@ -3,6 +3,16 @@ name: NEMO CODE CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      installer_mode:
+        description: "Enable installer transition checks"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  INSTALLER_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.installer_mode && 'true' || vars.INSTALLER_MODE || 'false' }}
 
 jobs:
   backend-tests:
@@ -27,12 +37,12 @@ jobs:
           PYTHONPATH: src
         run: python -m unittest discover -s tests
 
-      - name: Run release confidence E2E gate
+      - name: Run release confidence and RC readiness gates
         env:
           PYTHONPATH: src
         run: |
           mkdir -p artifacts
-          python -m unittest tests.test_release_confidence_e2e tests.test_global_mvp_gate > artifacts/release-confidence.txt
+          python -m unittest tests.test_release_confidence_e2e tests.test_global_mvp_gate tests.test_desktop_release_readiness_contract > artifacts/release-confidence.txt
           cat artifacts/release-confidence.txt
 
       - name: Generate release confidence evidence
@@ -41,6 +51,13 @@ jobs:
         run: |
           python -m tests.generate_release_confidence_evidence --json-out artifacts/release-confidence.json --md-out artifacts/release-confidence.md
           cat artifacts/release-confidence.md
+
+      - name: Generate release go/no-go dossier
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/generate-release-go-no-go.py --json-out artifacts/release-go-no-go.json --md-out artifacts/release-go-no-go.md --allow-missing-release-bundle
+          cat artifacts/release-go-no-go.md
 
       - name: Enforce benchmark regression gate evidence
         run: |
@@ -82,6 +99,118 @@ jobs:
             artifacts/release-confidence.txt
             artifacts/release-confidence.json
             artifacts/release-confidence.md
+            artifacts/release-go-no-go.json
+            artifacts/release-go-no-go.md
+
+  installer-preview:
+    name: Installer Preview
+    if: ${{ env.INSTALLER_MODE == 'true' }}
+    needs: backend-tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/nemo-desktop/package-lock.json
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download release dossier evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: release-confidence-evidence
+          path: artifacts
+
+      - name: Fail installer preview when release decision is no-go
+        shell: pwsh
+        run: |
+          $decisionFile = "artifacts/release-go-no-go.json"
+          if (-not (Test-Path $decisionFile)) {
+            throw "Missing required release decision file: $decisionFile"
+          }
+
+          $decisionPayload = Get-Content -Path $decisionFile -Raw | ConvertFrom-Json
+          if ($decisionPayload.decision -ne "go") {
+            throw "Installer preview blocked because release decision is '$($decisionPayload.decision)'"
+          }
+
+          Write-Host "Installer preview allowed by release decision: go"
+
+      - name: Install desktop dependencies
+        working-directory: apps/nemo-desktop
+        run: npm ci
+
+      - name: Build desktop installer
+        working-directory: apps/nemo-desktop
+        run: npm run tauri:build
+
+      - name: Validate first-run contract surface
+        run: python -m unittest tests.test_desktop_release_readiness_contract
+
+      - name: Generate installer evidence report
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts/installer -Force | Out-Null
+          $bundleRoot = "apps/nemo-desktop/src-tauri/target/release/bundle"
+          if (-not (Test-Path $bundleRoot)) {
+            throw "Installer bundle path not found: $bundleRoot"
+          }
+
+          $installers = Get-ChildItem -Path $bundleRoot -Recurse -File | Where-Object { $_.Extension -in @('.msi', '.exe') }
+          if (-not $installers -or $installers.Count -eq 0) {
+            throw "No installer artifacts (.msi/.exe) found under $bundleRoot"
+          }
+
+          $repoRoot = (Resolve-Path .).Path
+          $rows = @()
+          foreach ($installer in $installers) {
+            $hash = (Get-FileHash -Path $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $relativePath = [System.IO.Path]::GetRelativePath($repoRoot, $installer.FullName).Replace('\\', '/')
+            $rows += [ordered]@{
+              path = $relativePath
+              size_bytes = $installer.Length
+              sha256 = $hash
+            }
+          }
+
+          $payload = [ordered]@{
+            installer_mode = $env:INSTALLER_MODE
+            generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
+            artifacts = $rows
+          }
+          $payload | ConvertTo-Json -Depth 6 | Set-Content -Path artifacts/installer/installer-evidence.json -Encoding UTF8
+
+          $md = @(
+            "# Installer Build Evidence",
+            "",
+            "Installer mode: **$($env:INSTALLER_MODE)**",
+            "",
+            "## Artifacts"
+          )
+          foreach ($row in $rows) {
+            $md += "- $($row.path) ($($row.size_bytes) bytes, sha256=$($row.sha256))"
+          }
+          $md | Set-Content -Path artifacts/installer/installer-evidence.md -Encoding UTF8
+
+      - name: Upload installer transition evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-transition-evidence
+          path: |
+            artifacts/installer/installer-evidence.json
+            artifacts/installer/installer-evidence.md
+            apps/nemo-desktop/src-tauri/target/release/bundle
 
   mission-control:
     name: Mission Control

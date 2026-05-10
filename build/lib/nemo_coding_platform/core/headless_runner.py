@@ -1,12 +1,10 @@
 from __future__ import annotations
-
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from nemo_coding_platform.core.aider_interface import AiderProvider, MutationRequest, MutationResult, apply_mutation_request, create_aider_provider
-from nemo_coding_platform.core.checkpoint import build_checkpoint_markdown, restore_file_snapshot, save_execution_snapshot, snapshot_changed_files
+from nemo_coding_platform.core.engine_interface import EngineProvider, MutationRequest, MutationResult, apply_mutation_request, create_engine_provider
+from nemo_coding_platform.core.checkpoint import build_checkpoint_markdown, load_execution_snapshot, restore_file_snapshot, save_execution_snapshot, snapshot_changed_files
 from nemo_coding_platform.core.contracts import ExecutionPhase, RuntimeState
 from nemo_coding_platform.core.headless_handoff import HandoffRequest, build_handoff_plan, validate_handoff_request
 from nemo_coding_platform.core.memory import MemoryAtomType
@@ -28,14 +26,109 @@ from nemo_coding_platform.core.task_run import (
     EventKind,
     HandoffCompletionGuard,
     MemoryTrace,
+    NemoMemoryEvent,
     Run,
+    RunModelProfileLink,
     RunEvent,
     Task,
+    WorkflowRecipe,
 )
 from nemo_coding_platform.core.todo_guard import build_todo_reminder, extract_todos_from_plan
 from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
 from nemo_coding_platform.core.workspace import Workspace
 from nemo_coding_platform.core.worktree_runtime import snapshot_runtime_files, write_runtime_file
+
+
+_CONTEXT_OVERFLOW_MARKERS = (
+    "context size has been exceeded",
+    "maximum context length",
+    "context window",
+    "prompt is too long",
+    "token limit",
+    "midstreamfallbackerror",
+)
+_MAX_NEMO_CONTEXT_CHARS = 4000
+
+
+def _contains_context_overflow(text: str) -> bool:
+    normalized = text.lower()
+    return any(marker in normalized for marker in _CONTEXT_OVERFLOW_MARKERS)
+
+
+def _mutation_has_context_overflow(result: MutationResult) -> bool:
+    return _contains_context_overflow(result.stdout) or _contains_context_overflow(result.stderr)
+
+
+def _validation_is_simulated(validation: ValidationSuiteResult) -> bool:
+    for item in validation.results:
+        output = (item.output or "").lower()
+        if "simulated pass" in output or "simulated failure" in output:
+            return True
+    return False
+
+
+def _enforce_validation_integrity(
+    validation: ValidationSuiteResult,
+    *,
+    real_validation: bool,
+    mutation_result: MutationResult,
+) -> ValidationSuiteResult:
+    if not real_validation:
+        return validation
+
+    integrity_failures: list[ValidationResult] = []
+    if _validation_is_simulated(validation):
+        integrity_failures.append(
+            ValidationResult(
+                ValidationCommand("validation integrity guard"),
+                ValidationStatus.FAILED,
+                "simulated validation detected while real_validation=true",
+                None,
+            )
+        )
+    if _mutation_has_context_overflow(mutation_result):
+        integrity_failures.append(
+            ValidationResult(
+                ValidationCommand("mutation integrity guard"),
+                ValidationStatus.FAILED,
+                "context window exceeded during mutation output",
+                mutation_result.returncode,
+            )
+        )
+
+    if not integrity_failures:
+        return validation
+    return ValidationSuiteResult(validation.results + tuple(integrity_failures))
+
+
+def _should_retry_chunked(request: HandoffRequest, mutation_result: MutationResult) -> bool:
+    if not _mutation_has_context_overflow(mutation_result):
+        return False
+    objective = (request.objective_summary or request.prd).strip()
+    if len(objective) >= 180:
+        return True
+    lowered = objective.lower()
+    return "iteration" in lowered or "iteraciones" in lowered or "full log" in lowered
+
+
+def _chunked_retry_objective(request: HandoffRequest) -> str:
+    objective = (request.objective_summary or request.prd).strip()
+    guidance = (
+        "\n\nCHUNKED EXECUTION MODE (required due previous context overflow):\n"
+        "- Do not emit the full artifact inline in chat output.\n"
+        "- Write target files incrementally in small chunks (for example 5-10 sections per write).\n"
+        "- Keep each intermediate update compact and continue until all acceptance criteria are complete.\n"
+        "- Prioritize producing valid files over verbose reasoning text.\n"
+    )
+    return objective + guidance
+
+
+def _bounded_nemo_context(text: str, max_chars: int = _MAX_NEMO_CONTEXT_CHARS) -> str:
+    normalized = text.strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    clipped = normalized[:max_chars].rstrip()
+    return f"{clipped}\n\n[truncated_nemo_context chars={len(normalized)} limit={max_chars}]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +137,7 @@ class HeadlessRunResult:
     run: Run
     timeline: AppendOnlyTimeline
     artifacts: tuple[Artifact, ...]
-    memory_traces: tuple[MemoryTrace, ...]
+    memory_traces: tuple[MemoryTrace | NemoMemoryEvent, ...]
     validation: ValidationSuiteResult
     review_package: ReviewPackage
     nemo_results: tuple[NemoCallResult, ...] = ()
@@ -55,6 +148,7 @@ class HeadlessRunResult:
     mutation_result: MutationResult | None = None
     repair_result: RepairRunResult | None = None
     runtime_files: tuple[str, ...] = ()
+    workflow_recipe: WorkflowRecipe | None = None
 
     @property
     def effective_mutation_result(self) -> MutationResult | None:
@@ -132,11 +226,11 @@ def execute_headless_handoff(
     real_validation: bool = False,
     validation_cwd: str | Path = ".",
     nemo_adapter: InMemoryNemoAdapter | PersistentNemoAdapter | None = None,
-    mutation_provider: AiderProvider | None = None,
-    provider_mode: str = "fake",
+    mutation_provider: EngineProvider | None = None,
+    provider_mode: str = "subprocess",
     model_profile: ModelProfile | None = None,
-    aider_command: tuple[str, ...] | None = None,
-    timeout_seconds: float = 30.0,
+    engine_command: tuple[str, ...] | None = None,
+    timeout_seconds: float = 300.0,
     target_files: tuple[str, ...] = (),
     validation_python_scripts: tuple[str, ...] = (),
     validation_policy: str = "smoke",
@@ -213,7 +307,7 @@ def execute_headless_handoff(
             nemo_evidence_handles=list(nemo_evidence_handles),
             snapshot_runtime_path=str(runtime.worktree_path),
         )
-        payload = json.loads(Path(checkpoint_path).read_text(encoding="utf-8"))
+        payload = load_execution_snapshot(checkpoint_path)
         execution_snapshots[checkpoint_id] = payload
 
     def _nemo_handles() -> tuple[str, ...]:
@@ -231,16 +325,23 @@ def execute_headless_handoff(
     nemo_results: list[NemoCallResult] = []
     adapter, result = adapter.call(NemoLifecyclePhase.START, "prime_context", topic=task.title)
     nemo_results.append(result)
+    # Use the objective summary (or first 200 chars of the PRD) as the portfolio
+    # task query — a focused signal produces better semantic retrieval than the
+    # full PRD text, and the token budget scales with objective complexity.
+    _portfolio_query = (request.objective_summary or request.prd[:200]).strip()
+    # Budget heuristic: use query length in chars as a proxy for task complexity.
+    # Simple tasks (≤50 chars) get 300 tokens; longer objectives get up to 800.
+    _portfolio_budget = min(800, max(300, len(_portfolio_query) + 200))
     adapter, portfolio_result = adapter.call(
         NemoLifecyclePhase.BUILD,
         "build_context_portfolio",
-        task=request.prd,
+        task=_portfolio_query,
         topic=task.title,
         portfolio_phase=ExecutionPhase.EXECUTE.value,
-        token_budget=600,
+        token_budget=_portfolio_budget,
     )
     nemo_results.append(portfolio_result)
-    nemo_context = str(portfolio_result.payload.get("context", "")).strip()
+    nemo_context = _bounded_nemo_context(str(portfolio_result.payload.get("context", "")))
     if not nemo_context:
         search_query = f"{task.title}: {request.prd[:120]}"
         adapter, search_result = adapter.call(
@@ -251,8 +352,9 @@ def execute_headless_handoff(
             limit=5,
         )
         nemo_results.append(search_result)
-        nemo_context = str(search_result.payload.get("results", "")).strip()
-    platform = get_platform_info("aider")
+        nemo_context = _bounded_nemo_context(str(search_result.payload.get("results", "")))
+    platform = get_platform_info("nemo-code")
+    profile = model_profile or default_model_profile()
     run = Run(
         run_id,
         task.id,
@@ -263,10 +365,14 @@ def execute_headless_handoff(
         "local-model",
         "full-handoff",
         validation_policy,
+        model_profile_link=RunModelProfileLink(
+            model=profile.model,
+            base_url=profile.base_url,
+            provider_mode=provider_mode,
+        ),
     )
 
-    profile = model_profile or default_model_profile()
-    provider = mutation_provider or create_aider_provider(provider_mode, aider_command, cwd=Path("product/aider"))
+    provider = mutation_provider or create_engine_provider(provider_mode, engine_command, cwd=Path("product/nemo_code_runtime"))
     engine = QualityMutationEngine(Workspace.from_path(runtime.worktree_path))
 
     # --- Permission System (inspired by opencode) ---
@@ -311,6 +417,31 @@ def execute_headless_handoff(
         image_path=image_path,
     )
     mutation_result = apply_mutation_request(engine, provider, mutation_request)
+    if _should_retry_chunked(request, mutation_result):
+        retry_request = MutationRequest(
+            _chunked_retry_objective(request),
+            mutation_request.spec_path,
+            mutation_request.acceptance_criteria,
+            mutation_request.context,
+            mutation_request.provider_mode,
+            mutation_request.repo_path,
+            mutation_request.runtime_path,
+            mutation_request.target_files,
+            mutation_request.model_profile,
+            (
+                "Previous mutation failed due context overflow. "
+                "Retrying with chunked artifact generation instructions."
+            ),
+            mutation_request.timeout_seconds,
+            repair_attempt=1,
+            previous_diff=mutation_result.diff_artifact,
+            skill_prompt=mutation_request.skill_prompt,
+            image_path=mutation_request.image_path,
+            role=mutation_request.role,
+        )
+        retried_mutation = apply_mutation_request(engine, provider, retry_request)
+        if retried_mutation.changed_files or retried_mutation.applied_files:
+            mutation_result = retried_mutation
 
     resolved_validation_cwd: str | Path
     if validation_cwd == "runtime":
@@ -352,6 +483,11 @@ def execute_headless_handoff(
         )
     else:
         validation = simulate_validation(validation_commands, fail_validation)
+    validation = _enforce_validation_integrity(
+        validation,
+        real_validation=real_validation,
+        mutation_result=mutation_result,
+    )
     repair_result: RepairRunResult | None = None
     seeded_repair_cursor = max(0, int(resume_repair_cursor or 0))
     seeded_attempts = tuple(
@@ -408,6 +544,24 @@ def execute_headless_handoff(
             )
         else:
             validator = lambda: simulate_validation(validation_commands, fail_validation)
+
+        def _compress_repair_evidence(content: str, attempt_number: int) -> tuple[str, str | None]:
+            nonlocal adapter
+            adapter, compressed = adapter.call(
+                NemoLifecyclePhase.BUILD,
+                "compress_context_artifact",
+                content=content,
+                title=f"repair-validation-attempt-{attempt_number}",
+                token_budget=180,
+                source_id=run.id,
+                persist_evidence=True,
+            )
+            nemo_results.append(compressed)
+            payload = compressed.payload
+            claim = str(payload.get("compact_claim", "")).strip() or "Validation evidence compacted."
+            handle = str(payload.get("handle", "")).strip() or None
+            return claim, handle
+
         remaining_repair_attempts = max(0, request.repair_budget - seeded_repair_cursor)
         if remaining_repair_attempts <= 0:
             repair_result = RepairRunResult(
@@ -445,6 +599,7 @@ def execute_headless_handoff(
                 ),
                 token_budget=token_budget,
                 attempt_offset=seeded_repair_cursor,
+                evidence_compactor=_compress_repair_evidence,
             )
         merged_attempts = seeded_attempts + tuple(
             RepairAttempt(seeded_repair_cursor + index + 1, item.reason, item.action)
@@ -452,6 +607,51 @@ def execute_headless_handoff(
         )
         repair_plan = RepairPlan(RepairBudget(request.repair_budget), attempts=merged_attempts)
         validation = repair_result.validation
+        # --- Cognitive Learning: persist repair failure pattern to NEMO ---
+        # Every exhausted repair budget feeds the empirical risk map so future
+        # tasks can avoid the same file/command combinations.
+        if isinstance(adapter, PersistentNemoAdapter) and not validation.passed:
+            _failed_cmds = ", ".join(
+                r.command.command for r in validation.results if not r.passed
+            ) or "unknown"
+            _files_touched = ", ".join(
+                mutation_result.changed_files or mutation_result.applied_files or ()
+            ) or "unknown"
+            _task_desc = (request.objective_summary or request.prd)[:120]
+            adapter, _repair_failure_trace = adapter.call(
+                NemoLifecyclePhase.REVIEW,
+                "create_correction",
+                wrong_assumption=(
+                    f"task '{_task_desc}' would pass validation within "
+                    f"{request.repair_budget} repair attempts"
+                ),
+                correct_answer=(
+                    f"repair exhausted for task '{_task_desc}'; "
+                    f"stop_reason={repair_result.stop_reason}; "
+                    f"failed_commands=[{_failed_cmds}]; files_touched=[{_files_touched}]"
+                ),
+                context=(
+                    f"repair_budget={request.repair_budget} "
+                    f"attempts_used={len(repair_result.mutation_results)} "
+                    f"task={_task_desc}"
+                ),
+                topic="NEMOCODE self-modification",
+                tags=("repair_failure", "self-mod-risk", "nemocode-repair"),
+            )
+            nemo_results.append(_repair_failure_trace)
+            # --- Semantic Continuity Anchor: surface incomplete task in future sessions ---
+            adapter, _anchor_trace = adapter.call(
+                NemoLifecyclePhase.REVIEW,
+                "intent_anchor",
+                trigger_condition=f"starting a task similar to: {_task_desc}",
+                action=(
+                    f"review incomplete run task={task.id} run={run.id}; "
+                    f"repair stopped at {repair_result.stop_reason}; "
+                    f"files_in_progress=[{_files_touched}]"
+                ),
+                importance_level=7,
+            )
+            nemo_results.append(_anchor_trace)
     effective_mutation_result = mutation_result
     if repair_result and not (effective_mutation_result.changed_files or effective_mutation_result.applied_files):
         for repair_mutation in reversed(repair_result.mutation_results):
@@ -461,9 +661,15 @@ def execute_headless_handoff(
     adapter, result = adapter.call(NemoLifecyclePhase.BUILD, "record_context_feedback", was_useful=True)
     nemo_results.append(result)
     memory_traces = (
-        MemoryTrace("mem-1", run.id, "prime_context", "startup_context", "read_only", "Loaded startup context."),
-        MemoryTrace("mem-2", run.id, "build_context_portfolio", "context_economy", "read_only", f"Built context portfolio tokens={portfolio_result.payload.get('estimated_tokens', 0)}."),
-        MemoryTrace("mem-3", run.id, "store_conversation", "conversation", "memory_write", "Prepared final writeback."),
+        NemoMemoryEvent("mem-1", run.id, "prime_context", "startup_context", "read_only", "Loaded startup context."),
+        NemoMemoryEvent("mem-2", run.id, "build_context_portfolio", "context_economy", "read_only", f"Built context portfolio tokens={portfolio_result.payload.get('estimated_tokens', 0)}."),
+        NemoMemoryEvent("mem-3", run.id, "store_conversation", "conversation", "memory_write", "Prepared final writeback."),
+    )
+    workflow_recipe = WorkflowRecipe(
+        mode=request.spec_mode,
+        step_kinds=tuple(step.kind.value for step in plan.steps),
+        review_gate_required=plan.review_gate_required,
+        can_run_unattended=plan.can_run_unattended,
     )
     runtime_files = snapshot_runtime_files(runtime)
     permission_risks = tuple(f"permission_denied:{path}" for path in denied_files)
@@ -472,12 +678,14 @@ def execute_headless_handoff(
             None,
             (
                 "validation_failure" if not validation.passed else "",
+                "simulated_validation" if any("simulated " in (result.output or "").lower() for result in validation.results) else "",
+                "context_window_exceeded" if _mutation_has_context_overflow(mutation_result) else "",
                 "no_changed_files" if not effective_mutation_result.changed_files and not effective_mutation_result.applied_files else "",
                 *permission_risks,
             ),
         )
     )
-    aider_output = "\n".join(
+    engine_output = "\n".join(
         (
             f"provider={mutation_result.provider}",
             f"provider_mode={mutation_result.provider_mode}",
@@ -491,14 +699,14 @@ def execute_headless_handoff(
             mutation_result.stderr or "",
         )
     )
-    write_runtime_file(runtime, "aider-output.txt", aider_output)
+    write_runtime_file(runtime, "engine-output.txt", engine_output)
 
     checkpoint_inputs = (
         (
             "checkpoint-plan.md",
             ExecutionPhase.PLAN.value,
             (),
-            "Execute Aider mutation in isolated runtime.",
+            "Execute NEMO CODE mutation in isolated runtime.",
             (),
         ),
         (
@@ -563,7 +771,7 @@ def execute_headless_handoff(
                 tags=(task.id, run.id, checkpoint_phase, "checkpoint"),
                 atom_type=MemoryAtomType.ARTIFACT_STATE.value,
                 source_scope="handoff_runtime",
-                importance=7,
+                importance=3,
             )
             nemo_results.append(checkpoint_result)
 
@@ -575,7 +783,7 @@ def execute_headless_handoff(
             (ExecutionPhase.PLAN, EventKind.PLAN_CREATED, f"Created handoff plan with {len(plan.steps)} steps.", None),
             (ExecutionPhase.PLAN, EventKind.CHECKPOINT, "Created plan checkpoint.", "checkpoint-plan.md"),
             (ExecutionPhase.PLAN, EventKind.PERMISSION_DECIDED, "Full Handoff permissions preapproved in sandbox.", None),
-            (ExecutionPhase.EXECUTE, EventKind.MUTATION_CREATED, mutation_result.summary, "aider-output.txt"),
+            (ExecutionPhase.EXECUTE, EventKind.MUTATION_CREATED, mutation_result.summary, "engine-output.txt"),
             (ExecutionPhase.EXECUTE, EventKind.VALIDATION_RUN, validation.summary(), None),
             (ExecutionPhase.EXECUTE, EventKind.CHECKPOINT, "Created execute checkpoint.", "checkpoint-execute.md"),
             (ExecutionPhase.REVIEW, EventKind.REVIEW_PACKAGE_CREATED, "Created review package.", None),
@@ -588,7 +796,7 @@ def execute_headless_handoff(
             (ExecutionPhase.PLAN, EventKind.CONTEXT_BOOTSTRAPPED, "NEMO context portfolio bootstrapped.", None),
             (ExecutionPhase.PLAN, EventKind.PLAN_CREATED, f"Created handoff plan with {len(plan.steps)} steps.", None),
             (ExecutionPhase.PLAN, EventKind.PERMISSION_DECIDED, "Full Handoff permissions preapproved in sandbox.", None),
-            (ExecutionPhase.EXECUTE, EventKind.MUTATION_CREATED, mutation_result.summary, "aider-output.txt"),
+            (ExecutionPhase.EXECUTE, EventKind.MUTATION_CREATED, mutation_result.summary, "engine-output.txt"),
             (ExecutionPhase.EXECUTE, EventKind.VALIDATION_RUN, validation.summary(), None),
             (ExecutionPhase.EXECUTE, EventKind.CHECKPOINT, "Created unattended checkpoint.", "checkpoint.md"),
             (ExecutionPhase.REVIEW, EventKind.REVIEW_PACKAGE_CREATED, "Created review package.", None),
@@ -630,18 +838,31 @@ def execute_headless_handoff(
         Artifact.from_content("artifact-spec", run.id, ArtifactType.SPEC, "generated-spec.md", "Generated specs", spec_content),
         Artifact.from_content("artifact-test", run.id, ArtifactType.TEST, "generated-test.txt", "Generated tests", "\n".join(request.acceptance_criteria)),
         Artifact.from_content("artifact-patch", run.id, ArtifactType.PATCH, "patch.diff", f"Applied provider mutation files={len(effective_mutation_result.changed_files)}", patch_content),
-        Artifact.from_content("artifact-aider-output", run.id, ArtifactType.AIDER_OUTPUT, "aider-output.txt", f"Aider output returncode={mutation_result.returncode}", aider_output),
+        Artifact.from_content("artifact-engine-output", run.id, ArtifactType.ENGINE_OUTPUT, "engine-output.txt", f"Engine output returncode={mutation_result.returncode}", engine_output),
         Artifact.from_content("artifact-validation", run.id, ArtifactType.VALIDATION, "validation.txt", "Validation summary", format_validation_report(validation)),
         Artifact.from_content("artifact-memory", run.id, ArtifactType.MEMORY_SUMMARY, "memory.md", "Memory writeback", f"NEMO writeback prepared. runtime_files={','.join(runtime_files)}"),
     ) + checkpoint_artifacts
+    
+    # Determine repair success reason
+    repair_success_reason = ""
+    if repair_plan and len(repair_plan.attempts) > 0:
+        if validation.passed:
+            repair_success_reason = "validation_passed"
+        elif repair_plan.exhausted:
+            repair_success_reason = "repair_budget_exhausted"
+        else:
+            repair_success_reason = "repair_incomplete"
+    
     review = build_review_package(
         task,
         run,
-        f"Mutation prepared through {mutation_result.provider} and Aider Quality Core.",
+        f"Mutation prepared through {mutation_result.provider} and the NEMO CODE quality engine.",
         validation,
         memory_traces,
         mutation_result=effective_mutation_result,
         repair_attempts=len(repair_plan.attempts),
+        repair_plan=repair_plan,
+        repair_success_reason=repair_success_reason,
     )
     write_runtime_file(runtime, "validation.txt", format_validation_report(validation))
     write_runtime_file(runtime, "review-package.md", review.to_markdown())
@@ -688,4 +909,5 @@ def execute_headless_handoff(
         mutation_result=mutation_result,
         repair_result=repair_result,
         runtime_files=runtime_files,
+        workflow_recipe=workflow_recipe,
     )

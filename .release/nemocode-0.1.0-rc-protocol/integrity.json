@@ -1,0 +1,67 @@
+{
+  "bundle_version": "0.1.0-rc-protocol",
+  "generated_at_utc": "2026-05-09T21:42:13.6054829Z",
+  "file_count": 12,
+  "files": [
+    {
+      "path": "manifest.json",
+      "sha256": "9a1f03f7adf96f15706859adee6a97f8ab5564d8c5b8d8a35cc8a1933e3bf3bd",
+      "size_bytes": 537
+    },
+    {
+      "path": "backend/nemocode-0.1.0-py3-none-any.whl",
+      "sha256": "03a8846d8065cb9a545d7f3fabcd8b3931399a673ddbcd796b324c2eed560c3d",
+      "size_bytes": 169942
+    },
+    {
+      "path": "backend/nemocode-0.1.0.tar.gz",
+      "sha256": "824f159f2478724481a1dda3bf1b9bceb412c7d0c7ae1d70d57afd95f7384750",
+      "size_bytes": 226751
+    },
+    {
+      "path": "desktop-shell-web/index.html",
+      "sha256": "5834e11f857bc05003fe7d49402990920ec6e27e2cefaa6f3b4c94893892eac3",
+      "size_bytes": 469
+    },
+    {
+      "path": "desktop-shell-web/assets/index-a22e0dee.js",
+      "sha256": "90ac9e5c7a52e546e00693e87ae2260aea6b6c6fbfbac0fe8a825c4d1e74dae9",
+      "size_bytes": 154894
+    },
+    {
+      "path": "desktop-shell-web/assets/index-bac4b95f.css",
+      "sha256": "bac4b95f2ecc532e58da69a303af0b0c3ece5863f3b484e8940eb850c77e8fd2",
+      "size_bytes": 7399
+    },
+    {
+      "path": "mission-control-web/index.html",
+      "sha256": "e78d2240815edfb09f3bd94c592fb08297ab31dbfb68e409a2971a330455faf3",
+      "size_bytes": 415
+    },
+    {
+      "path": "mission-control-web/mission-control-state.sample.json",
+      "sha256": "c533a8440399b33fee5344750071dcf0d6e725553b6fc6463cb12685e21a7f13",
+      "size_bytes": 66381
+    },
+    {
+      "path": "mission-control-web/assets/index-BLfKyfMd.css",
+      "sha256": "f4fd2f8d0cfed58d6e3ef1316016e4c91bfb67a364423eba159a5c400247328c",
+      "size_bytes": 30715
+    },
+    {
+      "path": "mission-control-web/assets/index-BrWeqgzU.js",
+      "sha256": "9f87bd29f073dfcdb99ec24596ec94d0040d4080d0de055e3384b240a8a9178f",
+      "size_bytes": 274846
+    },
+    {
+      "path": "scripts/start-backend.ps1",
+      "sha256": "e5e98457254c272cc2857c96ed617fb775b3a46b0075e1687d9b791f9d3cadbc",
+      "size_bytes": 500
+    },
+    {
+      "path": "scripts/start-web-preview.ps1",
+      "sha256": "d7797554a944128856ad611bbb432be1da28cd23145792b4279d7a2915772405",
+      "size_bytes": 213
+    }
+  ]
+}

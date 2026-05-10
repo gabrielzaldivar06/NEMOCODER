@@ -391,6 +391,16 @@ body {
   margin-top: 0.2rem;
 }
 
+.quick-fixes {
+  gap: 0.7rem;
+}
+
+.quick-fix-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
 .error-pane h2 {
   font-size: 1.26rem;
 }

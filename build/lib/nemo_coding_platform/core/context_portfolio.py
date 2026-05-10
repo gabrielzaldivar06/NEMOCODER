@@ -53,7 +53,7 @@ TYPE_PRIORITY: dict[MemoryAtomType, int] = {
 
 PHASE_BONUS: dict[ExecutionPhase, set[MemoryAtomType]] = {
     ExecutionPhase.PLAN: {MemoryAtomType.CORRECTION, MemoryAtomType.PREFERENCE, MemoryAtomType.PROJECT_FACT, MemoryAtomType.OPEN_LOOP},
-    ExecutionPhase.EXECUTE: {MemoryAtomType.CORRECTION, MemoryAtomType.PROJECT_FACT, MemoryAtomType.DECISION, MemoryAtomType.ARTIFACT_STATE},
+    ExecutionPhase.EXECUTE: {MemoryAtomType.CORRECTION, MemoryAtomType.PROJECT_FACT, MemoryAtomType.DECISION},
     ExecutionPhase.REVIEW: {MemoryAtomType.CORRECTION, MemoryAtomType.PREFERENCE, MemoryAtomType.DECISION, MemoryAtomType.EVIDENCE},
 }
 
@@ -77,7 +77,7 @@ def _entry_payload(entry: PortfolioEntry) -> dict[str, object]:
 
 def default_atoms_for_task(task: str, topic: str) -> tuple[MemoryAtom, ...]:
     return (
-        MemoryAtom(MemoryAtomType.CORRECTION, "Aider is the active product base, not just a reference repository.", "project"),
+        MemoryAtom(MemoryAtomType.CORRECTION, "NEMO CODE is the active product base, not just a reference repository.", "project"),
         MemoryAtom(MemoryAtomType.PREFERENCE, "Use full NEMO MCP memory/tool plane, not portfolio-only memory.", "user"),
         MemoryAtom(MemoryAtomType.PROJECT_FACT, f"Current task: {task}", "session"),
         MemoryAtom(MemoryAtomType.PROJECT_FACT, f"Topic: {topic}", "session"),

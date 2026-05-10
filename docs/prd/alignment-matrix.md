@@ -53,6 +53,22 @@ Newly added to close identified roadmap gaps:
 - tests/test_nfr_contract.py
 - tests/test_data_model_contract.py
 
+## Global PRD Finalization Evidence (2026-05-09)
+
+Operationalization evidence added on top of aligned FR/NFR coverage:
+
+- RC packaging baseline defined and automated:
+	- `docs/release-packaging.md`
+	- `scripts/package-release.ps1`
+	- generated outputs include `manifest.json`, `integrity.json`, and `release-checklist.md` in `.release/nemocode-<bundle-version>/`
+- Blocking CI gate now enforces release confidence + RC readiness in one step:
+	- `.github/workflows/nemo-code-ci.yml`
+	- gate command includes `tests.test_release_confidence_e2e`, `tests.test_global_mvp_gate`, and `tests.test_desktop_release_readiness_contract`
+- Long handoff operational confidence batch produced explicit RC autonomy decision:
+	- `artifacts/long-handoff-operational-confidence.json`
+	- `artifacts/long-handoff-operational-confidence.md`
+	- decision: `rc_autonomy_ready`
+
 ## Definition Of Done By FR
 
 - FR2 ✅ COMPLETE
@@ -82,3 +98,5 @@ Newly added to close identified roadmap gaps:
 - `python -m unittest tests.test_mcp_server tests.test_mcp_adapter -v`
 - `python -m unittest tests.test_nfr_contract tests.test_data_model_contract -v`
 - `python -m unittest tests.test_desktop_release_readiness_contract -v`
+- `python -m unittest tests.test_release_confidence_e2e tests.test_global_mvp_gate tests.test_desktop_release_readiness_contract -v`
+- `./scripts/package-release.ps1 -Version "<rc-version>"`

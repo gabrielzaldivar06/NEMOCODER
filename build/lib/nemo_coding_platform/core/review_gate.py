@@ -253,6 +253,36 @@ def _resolve_plan_path(workspace: Workspace, relative_path: str) -> Path:
     return workspace.resolve_inside(relative_path)
 
 
+def _runtime_safety_risks(payload: dict[str, Any]) -> tuple[str, ...]:
+    validation = payload.get("validation") if isinstance(payload.get("validation"), dict) else {}
+    validation_results = validation.get("results") if isinstance(validation, dict) and isinstance(validation.get("results"), list) else []
+    mutation = payload.get("mutation_result") if isinstance(payload.get("mutation_result"), dict) else {}
+
+    risks: list[str] = []
+    for item in validation_results:
+        if not isinstance(item, dict):
+            continue
+        output = str(item.get("output") or "").lower()
+        if "simulated pass" in output or "simulated failure" in output:
+            risks.append("simulated_validation")
+
+    combined_output = "\n".join(
+        (
+            str(mutation.get("stdout") or ""),
+            str(mutation.get("stderr") or ""),
+        )
+    ).lower()
+    if (
+        "context size has been exceeded" in combined_output
+        or "maximum context length" in combined_output
+        or "context window" in combined_output
+        or "midstreamfallbackerror" in combined_output
+    ):
+        risks.append("context_window_exceeded")
+
+    return tuple(dict.fromkeys(risks))
+
+
 def build_merge_plan(payload: dict[str, Any]) -> MergePlan:
     summary = summarize_persisted_result(payload)
     task_id = str(summary.get("task_id") or _payload_value(payload, "task", "id"))
@@ -267,6 +297,7 @@ def build_merge_plan(payload: dict[str, Any]) -> MergePlan:
     if summary.get("grade") != "ready":
         risk_flags.append("run_not_ready")
     risk_flags.extend(str(reason) for reason in summary.get("reasons", []))
+    risk_flags.extend(_runtime_safety_risks(payload))
     if not changed_files:
         risk_flags.append("no_changed_files")
     for relative_path in changed_files:

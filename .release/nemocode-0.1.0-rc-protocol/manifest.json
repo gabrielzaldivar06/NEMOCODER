@@ -1,0 +1,16 @@
+{
+  "package": "nemocode",
+  "version": "0.1.0",
+  "bundle_version": "0.1.0-rc-protocol",
+  "generated_at_utc": "2026-05-09T21:42:12.5251436Z",
+  "release_mode": "rc_baseline",
+  "artifacts": [
+    "backend/*.whl",
+    "backend/*.tar.gz",
+    "mission-control-web/*",
+    "desktop-shell-web/*",
+    "scripts/start-backend.ps1",
+    "scripts/start-web-preview.ps1"
+  ],
+  "prd_alignment": "Global PRD Finalization RC baseline: backend + mission-control + desktop shell evidence. Installer target follows in next slice."
+}

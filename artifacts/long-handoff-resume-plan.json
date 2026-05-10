@@ -1,0 +1,33 @@
+{
+  "can_resume": true,
+  "checkpoint_refs": [
+    "checkpoint-plan.md",
+    "checkpoint-execute.md",
+    "checkpoint-review.md",
+    "checkpoint-execute.md",
+    "checkpoint-execute.md",
+    "checkpoint-execute.md",
+    "checkpoint-execute.md",
+    "checkpoint-execute.md",
+    "checkpoint-execute.md",
+    "checkpoint-execute.md",
+    "checkpoint-review.md"
+  ],
+  "latest_atomic_checkpoint": null,
+  "memory_writeback_handles": [],
+  "next_action": "Resume supervised handoff from minute 20 using checkpoint phase-boundary at repair_cursor=0.",
+  "objective": "RC operational confidence run",
+  "provider_mode": "fake",
+  "reasons": [],
+  "repair_cursor": 0,
+  "resume_minute": 20,
+  "resume_token": "task-1:run-1:minute-20",
+  "resume_validation_state": [],
+  "run_id": "run-1",
+  "snapshot_runtime_path": null,
+  "task_id": "task-1",
+  "validation_commands": [
+    "C:\\dev\\dev4\\.venv\\Scripts\\python.exe --version"
+  ],
+  "validation_policy": "smoke"
+}

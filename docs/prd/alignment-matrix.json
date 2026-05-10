@@ -305,5 +305,36 @@
       "denied actions return deterministic policy errors and are audit-traceable",
       "registry risk metadata is surfaced in MCP tool definitions"
     ]
+  },
+  "global_finalization_2026_05_09": {
+    "status": "aligned",
+    "packaging_rc_baseline": {
+      "docs": [
+        "docs/release-packaging.md"
+      ],
+      "automation": [
+        "scripts/package-release.ps1"
+      ],
+      "outputs": [
+        ".release/nemocode-<bundle-version>/manifest.json",
+        ".release/nemocode-<bundle-version>/integrity.json",
+        ".release/nemocode-<bundle-version>/release-checklist.md"
+      ]
+    },
+    "ci_release_gate": {
+      "workflow": ".github/workflows/nemo-code-ci.yml",
+      "tests": [
+        "tests.test_release_confidence_e2e",
+        "tests.test_global_mvp_gate",
+        "tests.test_desktop_release_readiness_contract"
+      ]
+    },
+    "long_handoff_operational_confidence": {
+      "decision": "rc_autonomy_ready",
+      "artifacts": [
+        "artifacts/long-handoff-operational-confidence.json",
+        "artifacts/long-handoff-operational-confidence.md"
+      ]
+    }
   }
 }

@@ -1,23 +1,27 @@
-# Packaging Guide (PRD-Aligned)
+# Packaging Guide (Global PRD Finalization)
 
-This project follows PRD sequencing:
+This guide defines the release-candidate packaging baseline used during Global PRD Finalization.
 
-1. Stabilize headless/backend contracts.
-2. Stabilize Mission Control web shell.
-3. Package desktop installer later (Slice 6+).
+## Packaging Stages
 
-## What to package now
+1. RC Baseline (current): reproducible release bundle with backend artifacts, Mission Control web, desktop shell build evidence, launcher scripts, manifest, integrity report, and release checklist.
+2. Installer Target (next): desktop installer output (`.msi`/`.exe`) with managed backend lifecycle and signed artifacts.
 
-Current packaging target is a local-first release bundle with:
+## RC Baseline Scope
 
-- Python backend package artifacts (`.whl`, `.tar.gz`)
+The current packaging target is a local-first release bundle containing:
+
+- Python backend artifacts (`.whl`, `.tar.gz`)
 - Built Mission Control frontend (`apps/mission-control/dist`)
+- Built desktop shell web artifacts (`apps/nemo-desktop/dist`) as release evidence
 - Startup scripts for backend and web preview
-- Manifest with artifact inventory
+- `manifest.json` with artifact inventory
+- `integrity.json` with SHA-256 hashes for every packaged file
+- `release-checklist.md` with machine-assisted verification points
 
-This matches the PRD direction: backend-first, then desktop shell.
+This baseline keeps delivery reproducible while installer automation is finalized.
 
-## One-command packaging
+## One-Command Packaging
 
 From repo root on Windows PowerShell:
 
@@ -36,7 +40,7 @@ Output:
 - Folder: `.release/nemocode-<bundle-version>/`
 - Zip: `.release/nemocode-<bundle-version>.zip`
 
-## Run from packaged bundle
+## Run from Packaged Bundle
 
 Inside the unzipped bundle:
 
@@ -50,13 +54,27 @@ In another shell:
 ./scripts/start-web-preview.ps1 -Port 5173
 ```
 
-## Desktop installer phase (next)
+## RC Verification Checklist
 
-When moving to Slice 6 desktop delivery, package target changes to:
+The generated `release-checklist.md` should confirm:
 
-- Tauri or Electron desktop binary installer (`.msi`/`.exe` on Windows)
-- Embedded or managed backend lifecycle
-- First-run setup for model endpoint and NEMO memory path
+1. Backend wheel and sdist exist.
+2. Mission Control and desktop shell builds are present.
+3. Launch scripts were generated.
+4. Integrity report was generated.
+5. Bundle zip exists.
+
+## Installer Target (Next)
+
+When moving to installer delivery, packaging must include:
+
+- Tauri desktop installer (`.msi`/`.exe` on Windows)
+- Backend lifecycle managed by the desktop app
+- First-run setup validation for model endpoint and NEMO path
 - Signed release artifacts
 
-Until then, use the `.zip` bundle above as the PRD-correct release artifact.
+Installer transition gating and first-run validation contract:
+
+- `docs/release-installer-transition.md`
+
+Until installer automation is stable in CI, the RC baseline bundle above is the required release artifact.

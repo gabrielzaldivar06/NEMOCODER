@@ -5,6 +5,8 @@ import json
 import logging
 import shlex
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from nemo_coding_platform.core.architecture import default_blueprint
@@ -13,6 +15,7 @@ from nemo_coding_platform.core.evals import score_headless_result
 from nemo_coding_platform.core.headless_handoff import HandoffRequest, build_handoff_plan
 from nemo_coding_platform.core.headless_runner import execute_headless_handoff, HeadlessRunResult
 from nemo_coding_platform.core.long_handoff_supervisor import LongHandoffBudget, build_long_handoff_resume_plan, execute_long_handoff_continuation, execute_long_handoff_supervisor
+from nemo_coding_platform.core.llm_benchmark import run_llm_benchmark, save_benchmark_report
 from nemo_coding_platform.core.memory import MemoryAtomType, nemo_tools_for_phase
 from nemo_coding_platform.core.mission_control import build_mission_control_state
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
@@ -21,7 +24,7 @@ from nemo_coding_platform.core.mutations import FileWrite, MutationPlan, Quality
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, NemoCallResult, PersistentNemoAdapter, McpNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
 from nemo_coding_platform.core.orchestrator import DEFAULT_WORKFLOW, ReviewDecision, SupervisedWorkflowRunner
-from nemo_coding_platform.core.persistence import build_long_handoff_lineage, build_replay_summary, evaluate_long_handoff_continuation_policy, evaluate_long_handoff_memory_policy, load_headless_result_json, save_headless_result_json, summarize_persisted_result
+from nemo_coding_platform.core.persistence import build_long_handoff_lineage, build_replay_summary, evaluate_long_handoff_continuation_policy, evaluate_long_handoff_memory_policy, export_run_metrics, load_headless_result_json, save_headless_result_json, summarize_persisted_result
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
 from nemo_coding_platform.core.self_modification import SelfModRequest, SelfModTaskType, execute_self_modification, self_mod_apply, self_mod_impact, self_mod_review, self_mod_rollback, self_mod_similar_runs, self_mod_status, self_mod_trajectory
 from nemo_coding_platform.core.skills import find_skill_by_name
@@ -69,18 +72,19 @@ def build_parser() -> argparse.ArgumentParser:
     headless_run.add_argument("--real-validation", action="store_true")
     headless_run.add_argument("--validation-cwd", default="runtime")
     headless_run.add_argument("--save-json")
-    headless_run.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
-    headless_run.add_argument("--aider-command")
+    headless_run.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    headless_run.add_argument("--engine-command", "--aider-command", dest="engine_command")
     headless_run.add_argument("--target-file", action="append", default=[])
     headless_run.add_argument("--model-profile", default=default_model_profile().model)
     headless_run.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
-    headless_run.add_argument("--timeout", type=float, default=30.0)
+    headless_run.add_argument("--timeout", type=float, default=300.0)
     headless_run.add_argument("--bounded-simulation", action="store_true")
     headless_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store")
     headless_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     headless_run.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
-    headless_run.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
-    headless_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Aider prompt")
+    headless_run.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    headless_run.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
+    headless_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the NEMO CODE engine prompt")
     headless_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
     headless_run.add_argument("--permissions-file", help="Path to .nemocode-permissions.json")
     headless_run.add_argument("--image", help="Path to a design reference image (Vision)")
@@ -93,11 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
     self_modify.add_argument("--validation", action="append")
     self_modify.add_argument("--validation-policy", choices=("none", "smoke", "targeted", "full"), default="smoke")
     self_modify.add_argument("--repair-budget", type=int, default=2)
-    self_modify.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
-    self_modify.add_argument("--aider-command")
+    self_modify.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    self_modify.add_argument("--engine-command", "--aider-command", dest="engine_command")
     self_modify.add_argument("--model-profile", default=default_model_profile().model)
     self_modify.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
-    self_modify.add_argument("--timeout", type=float, default=30.0)
+    self_modify.add_argument("--timeout", type=float, default=300.0)
     self_modify.add_argument("--bounded-simulation", action="store_true")
     self_modify.add_argument("--real-validation", action="store_true")
     self_modify.add_argument("--memory-db", default=DEFAULT_MEMORY_DB)
@@ -146,28 +150,29 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--real-validation", action="store_true")
     long_run.add_argument("--validation-cwd", default="runtime")
     long_run.add_argument("--save-json")
-    long_run.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
-    long_run.add_argument("--aider-command")
+    long_run.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    long_run.add_argument("--engine-command", "--aider-command", dest="engine_command")
     long_run.add_argument("--target-file", action="append", default=[])
     long_run.add_argument("--model-profile", default=default_model_profile().model)
     long_run.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
-    long_run.add_argument("--timeout", type=float, default=30.0)
-    long_run.add_argument("--max-runtime-minutes", type=int, default=120)
-    long_run.add_argument("--heartbeat-minutes", type=int, default=15)
-    long_run.add_argument("--max-heartbeats", type=int, default=4)
-    long_run.add_argument("--token-budget", type=int, default=32000)
+    long_run.add_argument("--timeout", type=float, default=300.0)
+    long_run.add_argument("--max-runtime-minutes", type=int, default=240)
+    long_run.add_argument("--heartbeat-minutes", type=int, default=30)
+    long_run.add_argument("--max-heartbeats", type=int, default=8)
+    long_run.add_argument("--token-budget", type=int, default=64000)
     long_run.add_argument("--pause-after-minutes", type=int)
-    long_run.add_argument("--plan-minutes", type=int, default=30)
-    long_run.add_argument("--execute-minutes", type=int, default=60)
-    long_run.add_argument("--review-minutes", type=int, default=30)
+    long_run.add_argument("--plan-minutes", type=int, default=60)
+    long_run.add_argument("--execute-minutes", type=int, default=120)
+    long_run.add_argument("--review-minutes", type=int, default=60)
     long_run.add_argument("--repair-time-limit-seconds", type=float)
     long_run.add_argument("--validation-time-budget-seconds", type=float)
     long_run.add_argument("--validation-escalation-mode", action="store_true")
     long_run.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store")
     long_run.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     long_run.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
-    long_run.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
-    long_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Aider prompt")
+    long_run.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    long_run.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
+    long_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the NEMO CODE engine prompt")
     long_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
     long_run.add_argument("--permissions-file", help="Path to .nemocode-permissions.json")
     long_run.add_argument("--image", help="Path to a design reference image (Vision)")
@@ -177,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     watch = subparsers.add_parser("watch", help="Watch for # ai! comments in the repository and trigger handoffs")
     watch.add_argument("--repo", default=".", help="Repository root to watch")
-    watch.add_argument("--provider", default="fake", choices=["fake", "subprocess"])
+    watch.add_argument("--provider", default="subprocess", choices=["fake", "subprocess"])
     watch.add_argument("--model-profile", default="nvidia.agentic.coder-4b")
     watch.add_argument("--lmstudio-base-url", default="http://localhost:1234/v1")
     show_run = subparsers.add_parser("show-run-json", help="Summarize a persisted headless run JSON file")
@@ -189,6 +194,9 @@ def build_parser() -> argparse.ArgumentParser:
     replay_run = subparsers.add_parser("replay-run-json", help="Build a replay summary for a persisted headless run JSON file")
     replay_run.add_argument("path")
     replay_run.add_argument("--json", action="store_true")
+    metrics_run = subparsers.add_parser("metrics-run-json", help="Export FR10 metrics for a persisted headless run JSON file")
+    metrics_run.add_argument("path")
+    metrics_run.add_argument("--json", action="store_true")
     review_run = subparsers.add_parser("review-run-json", help="Build a safe review-to-main merge plan from a persisted run JSON file")
     review_run.add_argument("path")
     review_run.add_argument("--save-plan", help="Write merge-plan.md to this path")
@@ -240,33 +248,59 @@ def build_parser() -> argparse.ArgumentParser:
     continue_long.add_argument("--real-validation", action="store_true")
     continue_long.add_argument("--validation-cwd", default="runtime")
     continue_long.add_argument("--save-json")
-    continue_long.add_argument("--provider", choices=("fake", "subprocess"), default="fake")
-    continue_long.add_argument("--aider-command")
+    continue_long.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    continue_long.add_argument("--engine-command", "--aider-command", dest="engine_command")
     continue_long.add_argument("--target-file", action="append", default=[])
     continue_long.add_argument("--model-profile", default=default_model_profile().model)
     continue_long.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
-    continue_long.add_argument("--timeout", type=float, default=30.0)
-    continue_long.add_argument("--max-runtime-minutes", type=int, default=30)
-    continue_long.add_argument("--heartbeat-minutes", type=int, default=10)
-    continue_long.add_argument("--max-heartbeats", type=int, default=1)
-    continue_long.add_argument("--token-budget", type=int, default=8000)
+    continue_long.add_argument("--timeout", type=float, default=300.0)
+    continue_long.add_argument("--max-runtime-minutes", type=int, default=240)
+    continue_long.add_argument("--heartbeat-minutes", type=int, default=30)
+    continue_long.add_argument("--max-heartbeats", type=int, default=8)
+    continue_long.add_argument("--token-budget", type=int, default=64000)
     continue_long.add_argument("--pause-after-minutes", type=int)
-    continue_long.add_argument("--plan-minutes", type=int, default=30)
-    continue_long.add_argument("--execute-minutes", type=int, default=60)
-    continue_long.add_argument("--review-minutes", type=int, default=30)
+    continue_long.add_argument("--plan-minutes", type=int, default=60)
+    continue_long.add_argument("--execute-minutes", type=int, default=120)
+    continue_long.add_argument("--review-minutes", type=int, default=60)
     continue_long.add_argument("--repair-time-limit-seconds", type=float)
     continue_long.add_argument("--validation-time-budget-seconds", type=float)
     continue_long.add_argument("--validation-escalation-mode", action="store_true")
     continue_long.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for this continuation")
     continue_long.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
     continue_long.add_argument("--mcp-url", help="Connect to a remote MCP server via SSE (e.g. http://localhost:8765/mcp/sse)")
-    continue_long.add_argument("--mcp-prefix", default="", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    continue_long.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    continue_long.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
     continue_long.add_argument("--lineage-context", action="append", default=[], help="Existing run JSON to use as autonomy lineage context")
     continue_long.add_argument("--allow-fork", action="store_true", help="Allow continuing a source run that already has a continuation")
     continue_long.add_argument("--json", action="store_true")
     lineage = subparsers.add_parser("long-handoff-lineage", help="Build a lineage summary from long handoff JSON files")
     lineage.add_argument("paths", nargs="+")
     lineage.add_argument("--json", action="store_true")
+    llm_benchmark = subparsers.add_parser("llm-benchmark", help="Benchmark LLM speed/efficiency for model comparison baselines")
+    llm_benchmark.add_argument("--repo", default=".")
+    llm_benchmark.add_argument("--provider", choices=("fake", "subprocess"), default="subprocess")
+    llm_benchmark.add_argument("--model-profile", default=default_model_profile().model)
+    llm_benchmark.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
+    llm_benchmark.add_argument("--engine-command", "--aider-command", dest="engine_command")
+    llm_benchmark.add_argument("--suite", choices=("quick", "quick-quality", "standard"), default="quick")
+    llm_benchmark.add_argument("--timeout", type=float, default=300.0)
+    llm_benchmark.add_argument("--repeats", type=int, default=3)
+    llm_benchmark.add_argument("--no-warmup", action="store_true")
+    llm_benchmark.add_argument("--memory-db", default=DEFAULT_MEMORY_DB, help="SQLite-backed NEMO memory store for benchmark runs")
+    llm_benchmark.add_argument("--no-memory-db", action="store_true", help="Use the lightweight in-memory NEMO adapter instead")
+    llm_benchmark.add_argument("--mcp-url", help="Connect benchmark runs to a remote MCP server via SSE")
+    llm_benchmark.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
+    llm_benchmark.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
+    llm_benchmark.add_argument("--save-json")
+    llm_benchmark.add_argument("--baseline-json", help="Optional previous benchmark JSON to compare against")
+    llm_benchmark.add_argument("--fail-on-regression", action="store_true", help="Exit with code 1 when baseline comparison breaches thresholds")
+    llm_benchmark.add_argument("--max-wall-time-regression-ms", type=float, help="Maximum allowed increase in avg wall time (ms)")
+    llm_benchmark.add_argument("--max-mutation-regression-ms", type=float, help="Maximum allowed increase in avg mutation duration (ms)")
+    llm_benchmark.add_argument("--min-success-rate-delta", type=float, default=0.0, help="Minimum allowed delta for success_rate (default: 0.0)")
+    llm_benchmark.add_argument("--min-validation-pass-rate-delta", type=float, default=0.0, help="Minimum allowed delta for validation_pass_rate (default: 0.0)")
+    llm_benchmark.add_argument("--min-repair-success-rate-delta", type=float, default=0.0, help="Minimum allowed delta for repair_success_rate (default: 0.0)")
+    llm_benchmark.add_argument("--max-noop-rate-delta", type=float, default=0.0, help="Maximum allowed delta for noop_rate (default: 0.0)")
+    llm_benchmark.add_argument("--json", action="store_true")
     return parser
 
 
@@ -276,6 +310,41 @@ def _persistent_nemo_adapter(db_path: str, no_memory_db: bool, mcp_url: str | No
     if no_memory_db:
         return InMemoryNemoAdapter()
     return PersistentNemoAdapter(PersistentMemoryStore(Path(db_path)))
+
+
+def _probe_mcp_sse(mcp_url: str, timeout_seconds: float = 3.0) -> None:
+    request = urllib.request.Request(mcp_url, headers={"Accept": "text/event-stream"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            status = int(response.getcode() or 0)
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+            if status < 200 or status >= 300:
+                raise ValueError(f"MCP SSE endpoint returned HTTP {status}")
+            if "text/event-stream" not in content_type and status != 200:
+                raise ValueError(f"MCP endpoint did not return SSE content-type (got '{content_type or 'unknown'}')")
+    except urllib.error.HTTPError as error:
+        raise ValueError(f"MCP SSE endpoint returned HTTP {error.code}") from error
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise ValueError(f"MCP SSE endpoint is unreachable: {error}") from error
+
+
+def _enforce_remote_mcp_policy(
+    *,
+    command_name: str,
+    provider_mode: str,
+    mcp_url: str | None,
+    mcp_prefix: str | None,
+    allow_non_mcp: bool,
+) -> None:
+    if allow_non_mcp or provider_mode != "subprocess":
+        return
+    normalized_url = str(mcp_url or "").strip()
+    if not normalized_url:
+        raise ValueError(f"{command_name} requires --mcp-url for subprocess mode (NEMO MCP remote is mandatory)")
+    normalized_prefix = str(mcp_prefix or "").strip()
+    if not normalized_prefix:
+        raise ValueError(f"{command_name} requires --mcp-prefix for subprocess mode (use 'nemo.')")
+    _probe_mcp_sse(normalized_url)
 
 
 def _nemo_memory_summaries(memory_db: str | None, no_memory_db: bool = False) -> list[str]:
@@ -329,6 +398,90 @@ def _write_apply_memory(applied: object, memory_db: str | None, no_memory_db: bo
         source_scope="review_gate",
         importance=9,
     )
+
+
+def _benchmark_delta(current: dict[str, object], baseline: dict[str, object]) -> dict[str, float]:
+    current_summary = current.get("summary", {}) if isinstance(current.get("summary"), dict) else {}
+    baseline_summary = baseline.get("summary", {}) if isinstance(baseline.get("summary"), dict) else {}
+
+    def _metric(name: str) -> float:
+        current_value = float(current_summary.get(name, 0.0) or 0.0)
+        baseline_value = float(baseline_summary.get(name, 0.0) or 0.0)
+        return round(current_value - baseline_value, 4)
+
+    return {
+        "delta_avg_wall_time_ms": _metric("avg_wall_time_ms"),
+        "delta_avg_mutation_duration_ms": _metric("avg_mutation_duration_ms"),
+        "delta_avg_tokens_per_second": _metric("avg_tokens_per_second"),
+        "delta_success_rate": _metric("success_rate"),
+        "delta_noop_rate": _metric("noop_rate"),
+        "delta_validation_pass_rate": _metric("validation_pass_rate"),
+        "delta_first_pass_rate": _metric("first_pass_rate"),
+        "delta_repair_success_rate": _metric("repair_success_rate"),
+        "delta_avg_repair_attempts": _metric("avg_repair_attempts"),
+    }
+
+
+def _benchmark_regression_gate(
+    delta: dict[str, float],
+    *,
+    max_wall_time_regression_ms: float | None,
+    max_mutation_regression_ms: float | None,
+    min_success_rate_delta: float,
+    min_validation_pass_rate_delta: float,
+    min_repair_success_rate_delta: float,
+    max_noop_rate_delta: float,
+) -> dict[str, object]:
+    violations: list[str] = []
+
+    if max_wall_time_regression_ms is not None and delta.get("delta_avg_wall_time_ms", 0.0) > max_wall_time_regression_ms:
+        violations.append(
+            "avg_wall_time_ms regression exceeded "
+            f"(delta={delta.get('delta_avg_wall_time_ms')} > {max_wall_time_regression_ms})"
+        )
+
+    if max_mutation_regression_ms is not None and delta.get("delta_avg_mutation_duration_ms", 0.0) > max_mutation_regression_ms:
+        violations.append(
+            "avg_mutation_duration_ms regression exceeded "
+            f"(delta={delta.get('delta_avg_mutation_duration_ms')} > {max_mutation_regression_ms})"
+        )
+
+    if delta.get("delta_success_rate", 0.0) < min_success_rate_delta:
+        violations.append(
+            "success_rate regression exceeded "
+            f"(delta={delta.get('delta_success_rate')} < {min_success_rate_delta})"
+        )
+
+    if delta.get("delta_validation_pass_rate", 0.0) < min_validation_pass_rate_delta:
+        violations.append(
+            "validation_pass_rate regression exceeded "
+            f"(delta={delta.get('delta_validation_pass_rate')} < {min_validation_pass_rate_delta})"
+        )
+
+    if delta.get("delta_repair_success_rate", 0.0) < min_repair_success_rate_delta:
+        violations.append(
+            "repair_success_rate regression exceeded "
+            f"(delta={delta.get('delta_repair_success_rate')} < {min_repair_success_rate_delta})"
+        )
+
+    if delta.get("delta_noop_rate", 0.0) > max_noop_rate_delta:
+        violations.append(
+            "noop_rate regression exceeded "
+            f"(delta={delta.get('delta_noop_rate')} > {max_noop_rate_delta})"
+        )
+
+    return {
+        "passed": len(violations) == 0,
+        "violations": violations,
+        "thresholds": {
+            "max_wall_time_regression_ms": max_wall_time_regression_ms,
+            "max_mutation_regression_ms": max_mutation_regression_ms,
+            "min_success_rate_delta": min_success_rate_delta,
+            "min_validation_pass_rate_delta": min_validation_pass_rate_delta,
+            "min_repair_success_rate_delta": min_repair_success_rate_delta,
+            "max_noop_rate_delta": max_noop_rate_delta,
+        },
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -390,6 +543,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"- {step.kind}: {step.summary}")
         return 0
     if args.command == "headless-run":
+        try:
+            _enforce_remote_mcp_policy(
+                command_name="headless-run",
+                provider_mode=args.provider,
+                mcp_url=args.mcp_url,
+                mcp_prefix=args.mcp_prefix,
+                allow_non_mcp=bool(args.allow_non_mcp),
+            )
+        except ValueError as error:
+            print(f"error={error}")
+            return 1
         request = HandoffRequest(
             prd=args.objective,
             repo_path=args.repo,
@@ -404,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
             validation_cwd=args.validation_cwd,
             provider_mode=args.provider,
             model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
-            aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+            engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
             timeout_seconds=args.timeout,
             target_files=tuple(args.target_file),
             validation_python_scripts=tuple(args.validation_python),
@@ -449,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
             task_id=args.task_id,
             run_id=args.run_id,
             model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
-            aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+            engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
         )
         payload = result.to_summary_dict()
         if args.json:
@@ -545,6 +709,17 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"- {run['id']}: {run['content']}")
         return 0
     if args.command == "long-handoff-run":
+        try:
+            _enforce_remote_mcp_policy(
+                command_name="long-handoff-run",
+                provider_mode=args.provider,
+                mcp_url=args.mcp_url,
+                mcp_prefix=args.mcp_prefix,
+                allow_non_mcp=bool(args.allow_non_mcp),
+            )
+        except ValueError as error:
+            print(f"error={error}")
+            return 1
         request = HandoffRequest(
             prd=args.prd_text or args.objective,
             repo_path=args.repo,
@@ -572,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
             validation_cwd=args.validation_cwd,
             provider_mode=args.provider,
             model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
-            aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+            engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
             timeout_seconds=args.timeout,
             target_files=tuple(args.target_file),
             validation_python_scripts=tuple(args.validation_python),
@@ -632,6 +807,25 @@ def main(argv: list[str] | None = None) -> int:
             for event in replay["events"]:
                 payload_ref = f" payload={event['payload_ref']}" if event.get("payload_ref") else ""
                 print(f"{event['sequence']}. {event['phase']}/{event['kind']}: {event['summary']}{payload_ref}")
+        return 0
+    if args.command == "metrics-run-json":
+        metrics = export_run_metrics(load_headless_result_json(args.path))
+        if args.json:
+            print(json.dumps(metrics, sort_keys=True))
+        else:
+            print(
+                " ".join(
+                    (
+                        f"task={metrics['task_id']}",
+                        f"run={metrics['run_id']}",
+                        f"success_rate={metrics['success_rate']}",
+                        f"validation_pass_rate={metrics['validation_pass_rate']}",
+                        f"override_rate={metrics['override_rate']}",
+                        f"stale_memory_incidents={metrics['stale_memory_incidents']}",
+                        f"tool_failure_rate={metrics['tool_failure_rate']}",
+                    )
+                )
+            )
         return 0
     if args.command == "review-run-json":
         plan = build_merge_plan(load_headless_result_json(args.path))
@@ -755,6 +949,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"next_action={resume['next_action']}")
         return 0
     if args.command == "long-handoff-continue":
+        try:
+            _enforce_remote_mcp_policy(
+                command_name="long-handoff-continue",
+                provider_mode=args.provider,
+                mcp_url=args.mcp_url,
+                mcp_prefix=args.mcp_prefix,
+                allow_non_mcp=bool(args.allow_non_mcp),
+            )
+        except ValueError as error:
+            print(f"error={error}")
+            return 1
         source_payload = load_headless_result_json(args.path)
         if args.lineage_context:
             lineage_payloads = [load_headless_result_json(path) for path in args.lineage_context]
@@ -785,7 +990,7 @@ def main(argv: list[str] | None = None) -> int:
                 validation_cwd=args.validation_cwd,
                 provider_mode=args.provider,
                 model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
-                aider_command=tuple(shlex.split(args.aider_command)) if args.aider_command else None,
+                engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
                 timeout_seconds=args.timeout,
                 target_files=tuple(args.target_file),
                 validation_python_scripts=tuple(args.validation_python),
@@ -829,6 +1034,104 @@ def main(argv: list[str] | None = None) -> int:
             print(f"nodes={lineage['node_count']} links={lineage['link_count']} complete={lineage['complete']} ready={lineage['ready']}")
             for link in lineage["links"]:
                 print(f"{link['source_run']} -> {link['continuation_run']} token={link['resume_token']}")
+        return 0
+    if args.command == "llm-benchmark":
+        try:
+            _enforce_remote_mcp_policy(
+                command_name="llm-benchmark",
+                provider_mode=args.provider,
+                mcp_url=args.mcp_url,
+                mcp_prefix=args.mcp_prefix,
+                allow_non_mcp=bool(args.allow_non_mcp),
+            )
+        except ValueError as error:
+            print(f"error={error}")
+            return 1
+        report = run_llm_benchmark(
+            repo_path=args.repo,
+            model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
+            provider_mode=args.provider,
+            engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
+            timeout_seconds=args.timeout,
+            repeats=args.repeats,
+            warmup=not args.no_warmup,
+            suite=args.suite,
+            nemo_adapter=_persistent_nemo_adapter(args.memory_db, args.no_memory_db, args.mcp_url, args.mcp_prefix),
+        )
+        payload = report.to_dict()
+        should_fail_for_regression = False
+        if args.baseline_json:
+            baseline_payload = load_headless_result_json(args.baseline_json)
+            if isinstance(baseline_payload, dict):
+                delta = _benchmark_delta(payload, baseline_payload)
+                payload["baseline_delta"] = delta
+                payload["regression_gate"] = _benchmark_regression_gate(
+                    delta,
+                    max_wall_time_regression_ms=args.max_wall_time_regression_ms,
+                    max_mutation_regression_ms=args.max_mutation_regression_ms,
+                    min_success_rate_delta=args.min_success_rate_delta,
+                    min_validation_pass_rate_delta=args.min_validation_pass_rate_delta,
+                    min_repair_success_rate_delta=args.min_repair_success_rate_delta,
+                    max_noop_rate_delta=args.max_noop_rate_delta,
+                )
+                if args.fail_on_regression and not bool(payload["regression_gate"].get("passed", True)):
+                    should_fail_for_regression = True
+        if args.save_json:
+            save_benchmark_report(report, args.save_json)
+            payload["saved_json"] = args.save_json
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            summary = payload.get("summary", {})
+            print(
+                " ".join(
+                    (
+                        f"model={payload.get('model')}",
+                        f"provider={payload.get('provider')}",
+                        f"count={summary.get('count')}",
+                        f"success_rate={summary.get('success_rate')}",
+                        f"avg_wall_time_ms={summary.get('avg_wall_time_ms')}",
+                        f"avg_tokens_per_second={summary.get('avg_tokens_per_second')}",
+                        f"validation_pass_rate={summary.get('validation_pass_rate')}",
+                        f"first_pass_rate={summary.get('first_pass_rate')}",
+                        f"repair_success_rate={summary.get('repair_success_rate')}",
+                        f"noop_rate={summary.get('noop_rate')}",
+                    )
+                )
+            )
+            if "baseline_delta" in payload:
+                delta = payload["baseline_delta"]
+                print(
+                    "baseline_delta "
+                    + " ".join(
+                        (
+                            f"wall_ms={delta.get('delta_avg_wall_time_ms')}",
+                            f"mutation_ms={delta.get('delta_avg_mutation_duration_ms')}",
+                            f"tokens_per_s={delta.get('delta_avg_tokens_per_second')}",
+                            f"success={delta.get('delta_success_rate')}",
+                            f"validation={delta.get('delta_validation_pass_rate')}",
+                            f"first_pass={delta.get('delta_first_pass_rate')}",
+                            f"repair_success={delta.get('delta_repair_success_rate')}",
+                            f"repair_attempts={delta.get('delta_avg_repair_attempts')}",
+                            f"noop={delta.get('delta_noop_rate')}",
+                        )
+                    )
+                )
+            if "regression_gate" in payload:
+                gate = payload["regression_gate"]
+                print(
+                    "regression_gate "
+                    + " ".join(
+                        (
+                            f"passed={gate.get('passed')}",
+                            f"violations={len(gate.get('violations', []))}",
+                        )
+                    )
+                )
+                for violation in gate.get("violations", []):
+                    print(f"regression_violation={violation}")
+        if should_fail_for_regression:
+            return 1
         return 0
     parser.error(f"unknown command: {args.command}")
     return 2

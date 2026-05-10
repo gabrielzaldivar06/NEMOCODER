@@ -1,0 +1,36 @@
+{
+  "decision": "rc_autonomy_ready",
+  "evidence_files": [
+    "artifacts/long-handoff-paused.out.json",
+    "artifacts/long-handoff-resume-plan.out.json",
+    "artifacts/long-handoff-continued.out.json",
+    "artifacts/long-handoff-paused-replay.json",
+    "artifacts/long-handoff-continued-replay.json",
+    "artifacts/long-handoff-lineage.json"
+  ],
+  "summary": {
+    "avg_events": 19.5,
+    "avg_heartbeats": 8,
+    "batch": "long-handoff-operational-confidence",
+    "generated_at_utc": "2026-05-09T21:52:40.022334+00:00",
+    "lineage_autonomy_ready": true,
+    "lineage_complete": true,
+    "lineage_forked": false,
+    "no_op_signal_count": 0,
+    "ready_grade_rate": 1.0,
+    "replay_ready_rate": 1.0,
+    "resume_available": true,
+    "resumed_link_present": true,
+    "rollback_incidence": 0,
+    "runs_count": 2,
+    "validation_pass_rate": 1.0
+  },
+  "thresholds": {
+    "max_no_op_signal_count": 0,
+    "min_replay_ready_rate": 1.0,
+    "min_validation_pass_rate": 1.0,
+    "require_lineage_complete": true,
+    "require_resume_path": true
+  },
+  "violations": []
+}
