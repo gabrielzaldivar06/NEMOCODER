@@ -45,9 +45,20 @@ DEFAULT_JOB_SNAPSHOTS = ".nemo-runtimes/mission-control/jobs"
 JOB_LOG_LIMIT = 10_000
 DECISION_LOG_LIMIT = 200
 NEMO_TOOL_SCAN_TTL_SECONDS = 30
+URL_SOURCE_CACHE_TTL_SECONDS = 300
+SOURCE_ANALYTICS_MAX_EVENTS = 400
 JOB_HEARTBEAT_SECONDS = 20.0
 JOB_STALL_HEARTBEATS = 8
 _NEMO_TOOL_SCAN_CACHE: dict[str, object] = {"at": 0.0, "verified_read_only": (), "declared_write_or_destructive": ()}
+_URL_SOURCE_CACHE: dict[str, dict[str, object]] = {}
+_DEFAULT_SESSION_NEMO_TOOLS: tuple[str, ...] = (
+    "prime_context",
+    "build_context_portfolio",
+    "search_memories",
+    "anticipate",
+    "store_conversation",
+    "cognitive_ingest",
+)
 
 
 @dataclass(slots=True)
@@ -695,6 +706,8 @@ def _default_settings(config: MissionControlServerConfig) -> dict[str, object]:
         "browser_history": [],
         "browser_search_query": "",
         "browser_search_history": [],
+        "source_analytics": [],
+        "chat_metrics": [],
         "extensions": [
             {"name": "git", "enabled": True, "version": "builtin"},
             {"name": "terminal", "enabled": True, "version": "builtin"},
@@ -915,6 +928,278 @@ def _message(payload: dict[str, object]) -> str:
     if not isinstance(message, str) or not message.strip():
         raise _bad_request("message is required", error_code="missing_message")
     return message.strip()
+
+
+def _route_chat_mode(message: str, source_json: object) -> str:
+    text = message.lower()
+    execution_terms = (
+        "apply", "aplicar", "rollback", "merge", "diff", "patch", "run", "runs", "review", "revisa", "revisar",
+        "hunk", "sandbox", "fix", "arregla", "corrige", "commit",
+    )
+    research_terms = (
+        "investiga", "investigar", "research", "analyze", "analiza", "analizar", "buscar", "busca", "web", "fuentes", "sources",
+        "compare", "comparar", "benchmark", "deep",
+    )
+    if isinstance(source_json, str) and source_json.strip():
+        return "execution"
+    if any(term in text for term in execution_terms):
+        return "execution"
+    if any(term in text for term in research_terms):
+        return "research"
+    return "chat"
+
+
+def _chat_mode(payload: dict[str, object], message: str, source_json: object) -> str:
+    value = payload.get("chat_mode")
+    if value is None:
+        return _route_chat_mode(message, source_json)
+    if not isinstance(value, str) or not value.strip():
+        raise _bad_request("chat_mode must be chat, research, deep-research, or execution", error_code="invalid_chat_mode")
+    mode = value.strip().lower()
+    if mode == "deep-research":
+        return "research"
+    if mode not in {"chat", "research", "execution"}:
+        raise _bad_request("chat_mode must be chat, research, deep-research, or execution", error_code="invalid_chat_mode")
+    return mode
+
+
+def _chat_mode_profile(mode: str) -> dict[str, int]:
+    if mode == "execution":
+        return {"portfolio_budget": 760, "search_limit": 4, "anticipate_limit": 4, "context_chars": 1900}
+    if mode == "research":
+        return {"portfolio_budget": 1300, "search_limit": 8, "anticipate_limit": 7, "context_chars": 3400}
+    return {"portfolio_budget": 900, "search_limit": 5, "anticipate_limit": 5, "context_chars": 2400}
+
+
+def _selected_nemo_tools(payload: dict[str, object]) -> set[str]:
+    raw = payload.get("selected_nemo_tools")
+    if not isinstance(raw, list):
+        return set(_DEFAULT_SESSION_NEMO_TOOLS)
+    selected = {
+        str(item).strip()
+        for item in raw
+        if isinstance(item, str) and str(item).strip()
+    }
+    return selected or set(_DEFAULT_SESSION_NEMO_TOOLS)
+
+
+def _extract_http_urls(text: str, *, limit: int = 3) -> list[str]:
+    pattern = re.compile(r"https?://[^\s)\]>\"']+", re.IGNORECASE)
+    found = [item.rstrip(".,;:!?") for item in pattern.findall(text)]
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in found:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
+def _strip_html_text(html: str) -> str:
+    cleaned = re.sub(r"<script\b[^>]*>.*?</script>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<style\b[^>]*>.*?</style>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _read_url_source(url: str, *, timeout_seconds: int = 8, max_chars: int = 3000) -> dict[str, str]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("invalid URL")
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "NEMO-Mission-Control/1.0 (+local)"
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        content_type = str(response.headers.get("Content-Type") or "").lower()
+        raw = response.read(max(1024, max_chars * 3))
+
+    text = raw.decode("utf-8", errors="replace")
+    if "html" in content_type or "<html" in text.lower():
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
+        title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else (parsed.netloc or url)
+        body = _strip_html_text(text)
+    else:
+        title = parsed.netloc or url
+        body = re.sub(r"\s+", " ", text).strip()
+
+    if len(body) > max_chars:
+        body = body[:max_chars].rsplit(" ", 1)[0] + "..."
+
+    return {
+        "url": url,
+        "title": title or url,
+        "content": body,
+    }
+
+
+def _read_url_source_cached(url: str, *, timeout_seconds: int = 8, max_chars: int = 3000) -> tuple[dict[str, str], bool]:
+    key = url.strip().lower()
+    now = time.time()
+    cached = _URL_SOURCE_CACHE.get(key)
+    if isinstance(cached, dict):
+        cached_at = float(cached.get("at") or 0.0)
+        payload = cached.get("payload")
+        if now - cached_at <= URL_SOURCE_CACHE_TTL_SECONDS and isinstance(payload, dict):
+            return {str(k): str(v) for k, v in payload.items()}, True
+    source = _read_url_source(url, timeout_seconds=timeout_seconds, max_chars=max_chars)
+    _URL_SOURCE_CACHE[key] = {"at": now, "payload": dict(source)}
+    return source, False
+
+
+def _source_analytics_events(raw: object) -> list[dict[str, object]]:
+    if not isinstance(raw, list):
+        return []
+    events: list[dict[str, object]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        events.append(
+            {
+                "ts": str(item.get("ts") or datetime.now(timezone.utc).isoformat()),
+                "url": url.strip(),
+                "title": str(item.get("title") or url.strip()),
+                "chat_mode": str(item.get("chat_mode") or "chat"),
+                "cached": bool(item.get("cached", False)),
+                "snippet_chars": int(item.get("snippet_chars") or 0),
+            }
+        )
+    return events[-SOURCE_ANALYTICS_MAX_EVENTS:]
+
+
+def _record_source_analytics(config: MissionControlServerConfig, *, chat_mode: str, source_items: list[dict[str, object]]) -> None:
+    if not source_items:
+        return
+    settings = _load_settings(config)
+    existing = _source_analytics_events(settings.get("source_analytics"))
+    now = datetime.now(timezone.utc).isoformat()
+    for item in source_items:
+        url = item.get("url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        snippet = str(item.get("snippet") or "")
+        existing.append(
+            {
+                "ts": now,
+                "url": url.strip(),
+                "title": str(item.get("title") or url.strip()),
+                "chat_mode": chat_mode,
+                "cached": bool(item.get("cached", False)),
+                "snippet_chars": len(snippet),
+            }
+        )
+    settings["source_analytics"] = existing[-SOURCE_ANALYTICS_MAX_EVENTS:]
+    _save_settings(config, settings)
+
+
+def _source_analytics_summary(raw: object) -> dict[str, object]:
+    events = _source_analytics_events(raw)
+    total_reads = len(events)
+    cache_hits = sum(1 for event in events if bool(event.get("cached")))
+    by_url: dict[str, dict[str, object]] = {}
+    by_mode: dict[str, int] = {}
+    for event in events:
+        url = str(event.get("url") or "").strip()
+        if not url:
+            continue
+        title = str(event.get("title") or url)
+        mode = str(event.get("chat_mode") or "chat")
+        by_mode[mode] = by_mode.get(mode, 0) + 1
+        bucket = by_url.get(url)
+        if bucket is None:
+            bucket = {
+                "url": url,
+                "title": title,
+                "reads": 0,
+                "cache_hits": 0,
+                "snippet_sum": 0,
+            }
+            by_url[url] = bucket
+        bucket["reads"] = int(bucket["reads"]) + 1
+        if bool(event.get("cached")):
+            bucket["cache_hits"] = int(bucket["cache_hits"]) + 1
+        bucket["snippet_sum"] = int(bucket["snippet_sum"]) + int(event.get("snippet_chars") or 0)
+
+    ranked = sorted(
+        by_url.values(),
+        key=lambda entry: (int(entry["reads"]), int(entry["cache_hits"])),
+        reverse=True,
+    )
+    top_sources: list[dict[str, object]] = []
+    for entry in ranked[:5]:
+        reads = int(entry["reads"])
+        cache = int(entry["cache_hits"])
+        snippet_sum = int(entry["snippet_sum"])
+        top_sources.append(
+            {
+                "url": str(entry["url"]),
+                "title": str(entry["title"]),
+                "reads": reads,
+                "cache_hits": cache,
+                "cache_hit_rate": (cache / reads) if reads else 0.0,
+                "snippet_chars_avg": int(snippet_sum / reads) if reads else 0,
+                "rank_score": round(reads + (cache * 0.25), 3),
+            }
+        )
+
+    return {
+        "total_reads": total_reads,
+        "unique_urls": len(by_url),
+        "cache_hits": cache_hits,
+        "cache_hit_rate": (cache_hits / total_reads) if total_reads else 0.0,
+        "by_mode": by_mode,
+        "top_sources": top_sources,
+    }
+
+
+def _trim_context_summary(context_summary: str, *, max_chars: int) -> str:
+    text = context_summary.strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return text[:max_chars]
+
+    def _priority(line: str) -> int:
+        lowered = line.lower()
+        if line.startswith(("Selected task:", "Objective:", "Mergeable:", "Changed files:", "Risk flags:")):
+            return 0
+        if "correction" in lowered or "preferen" in lowered:
+            return 1
+        if line.startswith(("NEMO context:", "Cognitive preload")):
+            return 2
+        return 3
+
+    ranked = sorted(enumerate(lines), key=lambda item: (_priority(item[1]), item[0]))
+    kept: list[str] = []
+    used = 0
+    for _, line in ranked:
+        extra = len(line) + (1 if kept else 0)
+        if used + extra > max_chars:
+            continue
+        kept.append(line)
+        used += extra
+    if not kept:
+        kept.append(text[: max_chars - 24])
+    kept = sorted(kept, key=lambda line: lines.index(line))
+    omitted = max(0, len(lines) - len(kept))
+    if omitted > 0:
+        kept.append(f"[context trimmed: omitted {omitted} line(s)]")
+    return "\n".join(kept)
 
 
 def _require_nemo_mcp_url(payload: dict[str, object]) -> str:
@@ -1238,6 +1523,8 @@ def _agent_context_summary(
     risk_flags: tuple[str, ...],
     mergeable: bool,
     cognitive_preload: str = "",
+    *,
+    max_context_chars: int = 2400,
 ) -> str:
     if not selected:
         base = "No run is selected. Answer the user's chat request and propose a safe next action."
@@ -1245,8 +1532,8 @@ def _agent_context_summary(
     task = selected.get("task", {}) if isinstance(selected.get("task"), dict) else {}
     run = selected.get("run", {}) if isinstance(selected.get("run"), dict) else {}
     portfolio = selected.get("portfolio", {}) if isinstance(selected.get("portfolio"), dict) else {}
-    context = str(portfolio.get("context") or "")[:2400]
-    return "\n".join(
+    context = str(portfolio.get("context") or "")[: max_context_chars * 2]
+    summary = "\n".join(
         line for line in (
             f"Selected task: {task.get('id', 'unknown')} / {run.get('id', 'unknown')}",
             f"Objective: {task.get('objective') or task.get('title') or 'Untitled'}",
@@ -1257,6 +1544,7 @@ def _agent_context_summary(
             f"Cognitive preload (reflexions + continuity):\n{cognitive_preload}" if cognitive_preload else "",
         ) if line
     )
+    return _trim_context_summary(summary, max_chars=max_context_chars)
 
 
 def _verified_nemo_tool_list() -> str:
@@ -1360,6 +1648,9 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                 "role": "system",
                 "content": (
                     "You are the Mission Control coding agent for the local-first NEMO CODE platform. "
+                    "NEMO CODE is the software-engineering product (planning, coding, testing, review, apply). "
+                    "NEMO MCP is the memory/context plane used by this product; it is not the product itself. "
+                    "Do not describe yourself as a generic messaging system. "
                     "Answer in the user's language. Be concise, direct, and operational — never ask for confirmation before acting. "
                     "IMPORTANT: The Mission Control server already executed all NEMO MCP tool calls (prime_context, store_conversation, "
                     "build_context_portfolio, anticipate, search_memories) before calling you. "
@@ -2516,9 +2807,13 @@ def api_nemo_mcp_status(config: MissionControlServerConfig, payload: dict[str, o
     else:
         mcp_url = str(settings.get("nemo_mcp_url") or "").strip()
     probe = _probe_nemo_mcp_sse(mcp_url)
+    selected_tools = _selected_nemo_tools(payload_data)
+    available_tools = sorted(contract.name for contract in NEMO_TOOL_REGISTRY)
     return {
         "ok": True,
         **probe,
+        "available_tools": available_tools,
+        "selected_tools": sorted(selected_tools),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -2964,11 +3259,34 @@ def _nemo_chat_tool_call(
     *,
     lifecycle_phase: str | None = None,
     nemo_mcp_url: str | None = None,
+    allowed_tools: set[str] | None = None,
     **arguments: Any,
 ) -> dict[str, Any]:
-    display_name = f"nemocode.{tool_name}"
+    canonical_name = f"nemo_memory.{tool_name}"
+    alias_name = f"nemocode.{tool_name}"
+    if isinstance(allowed_tools, set) and tool_name not in allowed_tools:
+        tool_calls.append(
+            {
+                "id": f"tool-{uuid4().hex[:8]}",
+                "name": canonical_name,
+                "tool_name": tool_name,
+                "alias_name": alias_name,
+                "status": "skipped",
+                "summary": "Tool disabled for this chat session by MCP tool selector.",
+            }
+        )
+        return {}
     if config.memory_db is None:
-        tool_calls.append({"id": f"tool-{uuid4().hex[:8]}", "name": display_name, "status": "skipped", "summary": "NEMO memory database is disabled for this Mission Control session."})
+        tool_calls.append(
+            {
+                "id": f"tool-{uuid4().hex[:8]}",
+                "name": canonical_name,
+                "tool_name": tool_name,
+                "alias_name": alias_name,
+                "status": "skipped",
+                "summary": "NEMO memory database is disabled for this Mission Control session.",
+            }
+        )
         return {}
     result = mcp_call_nemo_tool(
         tool_name,
@@ -2983,7 +3301,9 @@ def _nemo_chat_tool_call(
     tool_calls.append(
         {
             "id": f"tool-{uuid4().hex[:8]}",
-            "name": display_name,
+            "name": canonical_name,
+            "tool_name": tool_name,
+            "alias_name": alias_name,
             "status": "completed" if ok else "failed",
             "summary": _nemo_tool_summary(tool_name, payload if ok else result),
         }
@@ -3007,6 +3327,67 @@ def _nemo_tool_summary(tool_name: str, payload: dict[str, Any]) -> str:
     if "error" in payload:
         return str(payload.get("error"))
     return "NEMO tool completed."
+
+
+def _build_agent_trace_event(
+    *,
+    step: int,
+    kind: str,
+    label: str,
+    status: str,
+    detail: str = "",
+    tool_name: str | None = None,
+    source: str = "server",
+    duration_ms: int | None = None,
+) -> dict[str, object]:
+    event: dict[str, object] = {
+        "id": f"trace-{uuid4().hex[:10]}",
+        "step": step,
+        "kind": kind,
+        "label": label,
+        "status": status,
+        "detail": detail,
+        "source": source,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    if tool_name:
+        event["tool_name"] = tool_name
+    if duration_ms is not None:
+        event["duration_ms"] = duration_ms
+    return event
+
+
+def _append_agent_trace_from_tool_calls(
+    trace: list[dict[str, object]],
+    tool_calls: list[dict[str, object]],
+    *,
+    start_index: int,
+    step_counter: int,
+) -> tuple[int, int]:
+    index = start_index
+    step = step_counter
+    while index < len(tool_calls):
+        tool = tool_calls[index]
+        name = str(tool.get("name") or "tool")
+        alias_name = str(tool.get("alias_name") or "").strip()
+        status = str(tool.get("status") or "completed")
+        summary = str(tool.get("summary") or "")
+        label = f"tool: {name}"
+        if alias_name and alias_name != name:
+            label = f"{label} (alias {alias_name})"
+        trace.append(
+            _build_agent_trace_event(
+                step=step,
+                kind="tool_result",
+                label=label,
+                status=status,
+                detail=summary,
+                tool_name=name,
+            )
+        )
+        step += 1
+        index += 1
+    return index, step
 
 
 def _mission_control_ui_targets(repo_path: Path) -> list[str]:
@@ -3265,16 +3646,127 @@ def _run_or_handoff_actions(message: str, payload: dict[str, object], selected_o
 
 
 def api_agent_message(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    request_started = time.perf_counter()
     payload = {**_load_settings(config), **payload}
     message = _message(payload)
     provider = _provider_mode(payload)
     nemo_mcp_url = _require_nemo_mcp_url(payload)
     source_json = payload.get("source_json")
+    chat_mode = _chat_mode(payload, message, source_json)
+    mode_profile = _chat_mode_profile(chat_mode)
+    payload_budget = payload.get("token_budget")
+    budget_override = int(payload_budget) if isinstance(payload_budget, (int, float)) else None
+    portfolio_budget = max(256, budget_override or mode_profile["portfolio_budget"])
     tool_calls: list[dict[str, object]] = []
-    _nemo_chat_tool_call(config, tool_calls, "prime_context", lifecycle_phase="start", topic="Mission Control conversation", limit=8, nemo_mcp_url=nemo_mcp_url)
-    _nemo_chat_tool_call(config, tool_calls, "build_context_portfolio", lifecycle_phase="plan", task=message, topic="Mission Control conversation", token_budget=900, limit=40, nemo_mcp_url=nemo_mcp_url)
-    _nemo_chat_tool_call(config, tool_calls, "search_memories", lifecycle_phase="review", query=message, topic="NEMOCODE self-modification", limit=5, nemo_mcp_url=nemo_mcp_url)
-    anticipate_payload = _nemo_chat_tool_call(config, tool_calls, "anticipate", lifecycle_phase="plan", task=message, limit=5, nemo_mcp_url=nemo_mcp_url)
+    agent_trace: list[dict[str, object]] = []
+    selected_nemo_tools = _selected_nemo_tools(payload)
+    tool_trace_index = 0
+    trace_step = 1
+
+    def _trace_tool_call(name: str, detail: str = "") -> None:
+        nonlocal trace_step
+        agent_trace.append(
+            _build_agent_trace_event(
+                step=trace_step,
+                kind="tool_call",
+                label=f"tool_call: {name}",
+                status="running",
+                detail=detail,
+                tool_name=name,
+            )
+        )
+        trace_step += 1
+
+    def _call_nemo(tool_name: str, lifecycle_phase: str, **arguments: Any) -> dict[str, Any]:
+        _trace_tool_call(f"nemo_memory.{tool_name}", detail=f"phase={lifecycle_phase}")
+        return _nemo_chat_tool_call(
+            config,
+            tool_calls,
+            tool_name,
+            lifecycle_phase=lifecycle_phase,
+            nemo_mcp_url=nemo_mcp_url,
+            allowed_tools=selected_nemo_tools,
+            **arguments,
+        )
+
+    agent_trace.append(
+        _build_agent_trace_event(
+            step=trace_step,
+            kind="status",
+            label="status",
+            status="running",
+            detail="Agent chat execution started.",
+        )
+    )
+    trace_step += 1
+
+    agent_trace.append(
+        _build_agent_trace_event(
+            step=trace_step,
+            kind="phase",
+            label="request_received",
+            status="completed",
+            detail="Agent request accepted and context build started.",
+        )
+    )
+    trace_step += 1
+    agent_trace.append(
+        _build_agent_trace_event(
+            step=trace_step,
+            kind="phase",
+            label="mode_selected",
+            status="completed",
+            detail=f"mode={chat_mode} portfolio_budget={portfolio_budget}",
+        )
+    )
+    trace_step += 1
+
+    _call_nemo("prime_context", "start", topic="Mission Control conversation", limit=8)
+    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    _call_nemo("build_context_portfolio", "plan", task=message, topic="Mission Control conversation", token_budget=portfolio_budget, limit=40)
+    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    _call_nemo("search_memories", "review", query=message, topic="NEMOCODE self-modification", limit=mode_profile["search_limit"])
+    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    anticipate_payload = _call_nemo("anticipate", "plan", task=message, limit=mode_profile["anticipate_limit"])
+    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    source_notes: list[str] = []
+    source_items: list[dict[str, object]] = []
+    source_urls = _extract_http_urls(message)
+    for source_url in source_urls:
+        try:
+            source, cache_hit = _read_url_source_cached(source_url, timeout_seconds=8, max_chars=2200)
+            snippet = str(source.get("content") or "").strip()
+            title = str(source.get("title") or source_url).strip()
+            source_items.append({"title": title, "url": source_url, "snippet": snippet[:320], "cached": cache_hit})
+            source_notes.append(f"[{title}] {source_url}\n{snippet[:360]}")
+            tool_calls.append(
+                {
+                    "id": f"tool-{uuid4().hex[:8]}",
+                    "name": "mission_control.read_url",
+                    "status": "completed",
+                    "summary": f"Read source: {title}{' (cache)' if cache_hit else ''}",
+                }
+            )
+            tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+            _call_nemo(
+                "cognitive_ingest",
+                "review",
+                content=f"Source note from user URL: {title} ({source_url})\n{snippet[:1200]}",
+                memory_type="evidence",
+                tags=("mission-control", "source", "url", "agent-chat"),
+                context="URL source extracted by Mission Control chat reader",
+            )
+            tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+        except Exception as error:  # noqa: BLE001
+            tool_calls.append(
+                {
+                    "id": f"tool-{uuid4().hex[:8]}",
+                    "name": "mission_control.read_url",
+                    "status": "failed",
+                    "summary": f"Failed to read {source_url}: {error}",
+                }
+            )
+            tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     actions: list[dict[str, object]] = []
     selected: dict[str, Any] | None = None
     mergeable = False
@@ -3292,6 +3784,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 "summary": f"Selected {summary.get('id', 'task')} / {run_payload.get('id', 'run')}.",
             }
         )
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
         plan = build_merge_plan(selected)
         mergeable = plan.mergeable
         risk_flags = plan.risk_flags
@@ -3304,6 +3797,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 "summary": f"Mergeable={str(mergeable).lower()} files={len(plan.files)} risks={','.join(risk_flags) or 'none'}.",
             }
         )
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
         if mergeable:
             actions.append(
                 {
@@ -3392,12 +3886,9 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 },
             }
         )
-    _nemo_chat_tool_call(
-        config,
-        tool_calls,
+    _call_nemo(
         "store_conversation",
-        lifecycle_phase="review",
-        nemo_mcp_url=nemo_mcp_url,
+        "review",
         summary=f"Mission Control chat user request: {message}",
         topic="Mission Control conversation",
         tags=("mission-control", "agent-chat"),
@@ -3405,19 +3896,18 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         source_scope="mission_control_chat",
         importance=8 if actions else 6,
     )
+    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     # Proactively persist user data when they ask to save/remember something
     if _is_memory_store_request(message):
-        _nemo_chat_tool_call(
-            config,
-            tool_calls,
+        _call_nemo(
             "cognitive_ingest",
-            lifecycle_phase="review",
-            nemo_mcp_url=nemo_mcp_url,
+            "review",
             content=message,
             memory_type="preference",
             tags=("mission-control", "user-data", "agent-chat"),
             context="User explicitly asked to store this in NEMO memory from Mission Control chat",
         )
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
     # --- Cognitive preload: merge anticipate results + self-mod continuity ---
     _cognitive_parts: list[str] = []
@@ -3430,6 +3920,8 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         )
         if _cog_items:
             _cognitive_parts.append(f"Reflexions/risks retrieved for this task: {_cog_items}")
+    if source_notes:
+        _cognitive_parts.append("Sources read from user-provided URLs:\n" + "\n\n".join(source_notes[:2]))
     if config.memory_db is not None:
         try:
             _continuity = get_self_mod_continuity(config.memory_db, task_objective=message, limit=3)
@@ -3443,7 +3935,14 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         except Exception:  # noqa: BLE001 — best-effort, never block the chat
             pass
     cognitive_preload = "\n".join(_cognitive_parts)
-    context_summary = _agent_context_summary(selected, changed_files, risk_flags, mergeable, cognitive_preload=cognitive_preload)
+    context_summary = _agent_context_summary(
+        selected,
+        changed_files,
+        risk_flags,
+        mergeable,
+        cognitive_preload=cognitive_preload,
+        max_context_chars=mode_profile["context_chars"],
+    )
     if provider == "fake":
         response = (
             "[fake planner] Built an operational response using local Mission Control context. "
@@ -3457,7 +3956,18 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 "summary": "Skipped real model call because provider=fake.",
             }
         )
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     else:
+        agent_trace.append(
+            _build_agent_trace_event(
+                step=trace_step,
+                kind="phase",
+                label="model_generation",
+                status="running",
+                detail="Generating response with configured LM Studio model.",
+            )
+        )
+        trace_step += 1
         try:
             response = _lmstudio_chat_completion(payload, message, context_summary)
             tool_calls.append(
@@ -3468,6 +3978,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                     "summary": f"Model={_chat_model(payload)} base_url={_chat_base_url(payload)}.",
                 }
             )
+            tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
         except ValueError as error:
             tool_calls.append(
                 {
@@ -3477,10 +3988,60 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                     "summary": str(error),
                 }
             )
+            tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
             response = (
                 "[real-mode fallback] LM Studio is unavailable right now. "
                 "I prepared safe next actions from Mission Control state so you can continue without blocking."
             )
+    agent_trace.append(
+        _build_agent_trace_event(
+            step=trace_step,
+            kind="phase",
+            label="response_ready",
+            status="completed",
+            detail="Assistant response assembled with actions and tool outputs.",
+        )
+    )
+    trace_step += 1
+    elapsed_ms = int((time.perf_counter() - request_started) * 1000)
+    agent_trace.append(
+        _build_agent_trace_event(
+            step=trace_step,
+            kind="finalize",
+            label="finalize",
+            status="completed",
+            detail="Trace finalized for this response.",
+            duration_ms=elapsed_ms,
+        )
+    )
+    trace_step += 1
+    agent_trace.append(
+        _build_agent_trace_event(
+            step=trace_step,
+            kind="status",
+            label="status",
+            status="completed",
+            detail="Agent chat execution completed.",
+            duration_ms=elapsed_ms,
+        )
+    )
+
+    chat_failures = sum(1 for item in tool_calls if str(item.get("status") or "") == "failed")
+    chat_tool_fail_rate = (chat_failures / len(tool_calls)) if tool_calls else 0.0
+    settings_for_chat_metrics = _load_settings(config)
+    metrics = settings_for_chat_metrics.get("chat_metrics")
+    history = metrics if isinstance(metrics, list) else []
+    history.append(
+        {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": elapsed_ms,
+            "tool_fail_rate": round(chat_tool_fail_rate, 4),
+            "trace_events_count": len(agent_trace),
+        }
+    )
+    settings_for_chat_metrics["chat_metrics"] = history[-300:]
+    _save_settings(config, settings_for_chat_metrics)
+    _record_source_analytics(config, chat_mode=chat_mode, source_items=source_items)
     return {
         "ok": True,
         "message": {
@@ -3488,6 +4049,8 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
             "role": "assistant",
             "content": f"{response}{risk_note}",
             "tool_calls": tool_calls,
+            "sources": source_items,
+            "agent_trace": agent_trace,
             "actions": actions,
         },
     }
@@ -3658,6 +4221,13 @@ def api_stats(config: MissionControlServerConfig, jobs: HandoffJobManager | None
     job_count = len(jobs.jobs) if jobs else 0
     active_jobs = sum(1 for job in (jobs.jobs.values() if jobs else []) if job.status in ("running", "paused"))
     completed_jobs = sum(1 for job in (jobs.jobs.values() if jobs else []) if job.status in ("completed", "failed"))
+    settings = _load_settings(config)
+    source_stats = _source_analytics_summary(settings.get("source_analytics"))
+    raw_chat_metrics = settings.get("chat_metrics")
+    chat_metrics = [item for item in raw_chat_metrics if isinstance(item, dict)] if isinstance(raw_chat_metrics, list) else []
+    avg_chat_latency = round(sum(float(item.get("duration_ms") or 0.0) for item in chat_metrics) / len(chat_metrics), 1) if chat_metrics else 0.0
+    avg_tool_fail_rate = round(sum(float(item.get("tool_fail_rate") or 0.0) for item in chat_metrics) / len(chat_metrics), 4) if chat_metrics else 0.0
+    avg_trace_events = round(sum(float(item.get("trace_events_count") or 0.0) for item in chat_metrics) / len(chat_metrics), 2) if chat_metrics else 0.0
     
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -3675,7 +4245,11 @@ def api_stats(config: MissionControlServerConfig, jobs: HandoffJobManager | None
             "avg_job_duration_seconds": 0.0,
             "avg_mutation_duration_ms": 0,
             "avg_validation_duration_ms": 0,
+            "avg_agent_chat_latency_ms": avg_chat_latency,
+            "avg_agent_tool_fail_rate": avg_tool_fail_rate,
+            "avg_agent_trace_events": avg_trace_events,
         },
+        "sources": source_stats,
     }
 
 

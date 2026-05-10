@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import nemo_coding_platform.mission_control_server as mission_control_server
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
-from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_self_modify_start, api_settings, api_state, api_terminal_run
+from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_nemo_mcp_status, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_self_modify_start, api_settings, api_state, api_stats, api_terminal_run
 from tests.test_review_gate_cli import write_ready_run
 
 
@@ -740,6 +741,9 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertTrue(any(action["kind"] == "continue" for action in message["actions"]))
         self.assertTrue(any(action["kind"] == "revise" for action in message["actions"]))
         self.assertTrue(any(action["kind"] == "apply" for action in message["actions"]))
+        self.assertTrue(isinstance(message.get("agent_trace"), list))
+        self.assertTrue(any(event.get("kind") == "tool_result" for event in message["agent_trace"]))
+        self.assertTrue(any(event.get("label") == "response_ready" for event in message["agent_trace"]))
         self.assertIn("[fake planner]", message["content"])
 
     def test_agent_message_subprocess_falls_back_without_raising(self) -> None:
@@ -771,10 +775,201 @@ class MissionControlServerTests(unittest.TestCase):
             payload = api_agent_message(config, {"message": "busca contexto de automejora", "provider": "fake", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         tool_names = {tool["name"] for tool in payload["message"]["tool_calls"]}
-        self.assertIn("nemocode.prime_context", tool_names)
-        self.assertIn("nemocode.build_context_portfolio", tool_names)
-        self.assertIn("nemocode.search_memories", tool_names)
-        self.assertIn("nemocode.store_conversation", tool_names)
+        self.assertIn("nemo_memory.prime_context", tool_names)
+        self.assertIn("nemo_memory.build_context_portfolio", tool_names)
+        self.assertIn("nemo_memory.search_memories", tool_names)
+        self.assertIn("nemo_memory.store_conversation", tool_names)
+        prime_tool = next(tool for tool in payload["message"]["tool_calls"] if tool["name"] == "nemo_memory.prime_context")
+        self.assertEqual(prime_tool.get("tool_name"), "prime_context")
+        self.assertEqual(prime_tool.get("alias_name"), "nemocode.prime_context")
+        trace_labels = {event.get("label") for event in payload["message"].get("agent_trace", [])}
+        self.assertIn("tool: nemo_memory.prime_context (alias nemocode.prime_context)", trace_labels)
+        trace_kinds = {event.get("kind") for event in payload["message"].get("agent_trace", [])}
+        self.assertIn("tool_call", trace_kinds)
+        self.assertIn("tool_result", trace_kinds)
+        self.assertIn("finalize", trace_kinds)
+        self.assertIn("status", trace_kinds)
+        self.assertIn("response_ready", trace_labels)
+
+    def test_agent_message_respects_selected_nemo_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            payload = api_agent_message(
+                config,
+                {
+                    "message": "consulta contexto y guarda resultado",
+                    "provider": "fake",
+                    "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                    "selected_nemo_tools": ["prime_context", "store_conversation"],
+                },
+            )
+
+        search_tool = next(tool for tool in payload["message"]["tool_calls"] if tool["name"] == "nemo_memory.search_memories")
+        self.assertEqual(search_tool["status"], "skipped")
+        self.assertIn("disabled", search_tool["summary"].lower())
+
+    def test_nemo_mcp_status_includes_available_and_selected_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            payload = api_nemo_mcp_status(config, {"selected_nemo_tools": ["prime_context", "search_memories"]})
+
+        self.assertTrue(isinstance(payload.get("available_tools"), list))
+        self.assertIn("prime_context", payload.get("available_tools") or [])
+        self.assertEqual(payload.get("selected_tools"), ["prime_context", "search_memories"])
+
+    def test_agent_message_invalid_chat_mode_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", memory_db=None)
+
+            with self.assertRaises(ApiRequestError) as raised:
+                api_agent_message(config, {"message": "hola", "provider": "fake", "chat_mode": "invalid", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        self.assertEqual(raised.exception.error_code, "invalid_chat_mode")
+
+    def test_trim_context_summary_prioritizes_corrections_and_preferences(self) -> None:
+        summary = "\n".join([
+            "Selected task: task-1 / run-1",
+            "Objective: keep memory quality high",
+            "NEMO context:",
+            "ordinary context line A",
+            "ordinary context line B",
+            "critical correction: never skip prime context",
+            "durable preference: use nemo proactively",
+            "ordinary context line C",
+        ])
+        trimmed = mission_control_server._trim_context_summary(summary, max_chars=180)
+        self.assertIn("critical correction", trimmed)
+        self.assertIn("durable preference", trimmed)
+        self.assertIn("[context trimmed:", trimmed)
+
+    def test_extract_http_urls_deduplicates_and_limits(self) -> None:
+        message = "Read https://example.com/a and https://example.com/a and https://example.com/b plus https://example.com/c"
+        urls = mission_control_server._extract_http_urls(message, limit=2)
+        self.assertEqual(urls, ["https://example.com/a", "https://example.com/b"])
+
+    def test_agent_message_reads_user_url_and_emits_trace(self) -> None:
+        mission_control_server._URL_SOURCE_CACHE.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            with patch(
+                "nemo_coding_platform.mission_control_server._read_url_source",
+                return_value={
+                    "url": "https://example.com/docs",
+                    "title": "Example Docs",
+                    "content": "Useful technical source content.",
+                },
+            ):
+                payload = api_agent_message(
+                    config,
+                    {
+                        "message": "analiza esta fuente https://example.com/docs",
+                        "provider": "fake",
+                        "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                    },
+                )
+
+        tool_names = {tool["name"] for tool in payload["message"]["tool_calls"]}
+        self.assertIn("mission_control.read_url", tool_names)
+        sources = payload["message"].get("sources") or []
+        self.assertTrue(len(sources) >= 1)
+        self.assertEqual(sources[0]["url"], "https://example.com/docs")
+        self.assertFalse(bool(sources[0].get("cached")))
+        trace_labels = {event.get("label") for event in payload["message"].get("agent_trace", [])}
+        self.assertIn("tool: mission_control.read_url", trace_labels)
+
+    def test_read_url_source_cached_reuses_recent_result(self) -> None:
+        mission_control_server._URL_SOURCE_CACHE.clear()
+        with patch(
+            "nemo_coding_platform.mission_control_server._read_url_source",
+            return_value={
+                "url": "https://example.com/cache",
+                "title": "Cache",
+                "content": "cached content",
+            },
+        ) as mocked:
+            first_payload, first_cached = mission_control_server._read_url_source_cached("https://example.com/cache")
+            second_payload, second_cached = mission_control_server._read_url_source_cached("https://example.com/cache")
+
+        self.assertEqual(mocked.call_count, 1)
+        self.assertFalse(first_cached)
+        self.assertTrue(second_cached)
+        self.assertEqual(first_payload["url"], second_payload["url"])
+
+    def test_api_stats_includes_source_analytics_summary(self) -> None:
+        mission_control_server._URL_SOURCE_CACHE.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            with patch(
+                "nemo_coding_platform.mission_control_server._read_url_source",
+                return_value={
+                    "url": "https://example.com/docs",
+                    "title": "Example Docs",
+                    "content": "Useful technical source content.",
+                },
+            ):
+                api_agent_message(
+                    config,
+                    {
+                        "message": "analiza esta fuente https://example.com/docs",
+                        "provider": "fake",
+                        "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                    },
+                )
+                api_agent_message(
+                    config,
+                    {
+                        "message": "re-lee https://example.com/docs para comparar",
+                        "provider": "fake",
+                        "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                    },
+                )
+
+            stats_payload = api_stats(config)
+
+        sources = stats_payload.get("sources")
+        self.assertIsInstance(sources, dict)
+        self.assertEqual(sources.get("total_reads"), 2)
+        self.assertEqual(sources.get("unique_urls"), 1)
+        self.assertEqual(sources.get("cache_hits"), 1)
+        self.assertTrue((sources.get("cache_hit_rate") or 0.0) > 0.0)
+        top_sources = sources.get("top_sources")
+        self.assertIsInstance(top_sources, list)
+        self.assertTrue(len(top_sources) >= 1)
+        self.assertEqual(top_sources[0].get("url"), "https://example.com/docs")
+        self.assertEqual(top_sources[0].get("reads"), 2)
 
     def test_agent_message_routes_interface_color_request_to_self_mod_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

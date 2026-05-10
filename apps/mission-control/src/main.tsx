@@ -120,8 +120,27 @@ type HandoffJobResult = { job: HandoffJob; state?: MissionState };
 type AgentToolCall = {
   id: string;
   name: string;
+  tool_name?: string;
+  alias_name?: string;
   status: string;
   summary: string;
+};
+type AgentTraceEvent = {
+  id: string;
+  step: number;
+  kind: string;
+  label: string;
+  status: string;
+  detail?: string;
+  tool_name?: string;
+  source?: string;
+  ts?: string;
+};
+type AgentSourceRef = {
+  title: string;
+  url: string;
+  snippet?: string;
+  cached?: boolean;
 };
 type RenderedToolCall = AgentToolCall & {
   source: "payload" | "inline";
@@ -138,6 +157,8 @@ type AgentMessage = {
   role: "user" | "assistant";
   content: string;
   tool_calls?: AgentToolCall[];
+  sources?: AgentSourceRef[];
+  agent_trace?: AgentTraceEvent[];
   actions?: AgentAction[];
 };
 type AutonomyMode = "manual" | "trusted" | "aggressive";
@@ -228,6 +249,8 @@ type NemoMcpWatcherState = {
   active: boolean;
   status: string;
   url: string;
+  available_tools?: string[];
+  selected_tools?: string[];
   latency_ms?: number;
   http_status?: number;
   error?: string;
@@ -295,6 +318,31 @@ type CognitiveStatsState = {
     portfolio_tokens: number | null;
     portfolio_budget: number | null;
     portfolio_utilization: number | null;
+  };
+};
+
+type SourceStatItem = {
+  url: string;
+  title: string;
+  reads: number;
+  cache_hits: number;
+  cache_hit_rate: number;
+  snippet_chars_avg: number;
+  rank_score: number;
+};
+
+type MissionStatsState = {
+  timestamp: string;
+  jobs: { total: number; active: number; completed: number };
+  repair: { total_attempts: number; avg_attempts_per_repair: number; repair_success_rate: number };
+  performance: { avg_job_duration_seconds: number; avg_mutation_duration_ms: number; avg_validation_duration_ms: number };
+  sources?: {
+    total_reads: number;
+    unique_urls: number;
+    cache_hits: number;
+    cache_hit_rate: number;
+    by_mode: Record<string, number>;
+    top_sources: SourceStatItem[];
   };
 };
 
@@ -446,6 +494,24 @@ const initialState: MissionState = {
     quality_core: "product/nemo_code_runtime",
     recent_repos: ["c:/dev/dev4"],
   },
+};
+
+const CHAT_SESSION_STORAGE_KEY = "mission-control-chat-session-v1";
+const DEFAULT_SESSION_NEMO_TOOLS = [
+  "prime_context",
+  "build_context_portfolio",
+  "search_memories",
+  "anticipate",
+  "store_conversation",
+  "cognitive_ingest",
+];
+
+type ChatSessionSnapshot = {
+  version: 1;
+  agentMessages: AgentMessage[];
+  queuedAgentPrompts: string[];
+  missionStats: MissionStatsState | null;
+  selectedNemoTools: string[];
 };
 
 function statusLabel(status: string): string {
@@ -665,6 +731,8 @@ export function App() {
   const [selfInsights, setSelfInsights] = useState<SelfModInsights | null>(null);
   const [riskMap, setRiskMap] = useState<RiskMapState | null>(null);
   const [cognitiveStats, setCognitiveStats] = useState<CognitiveStatsState | null>(null);
+  const [missionStats, setMissionStats] = useState<MissionStatsState | null>(null);
+  const [selectedNemoTools, setSelectedNemoTools] = useState<string[]>(DEFAULT_SESSION_NEMO_TOOLS);
   const [settingsDraft, setSettingsDraft] = useState<MissionState["settings"]>(initialState.settings);
   const [repoDraft, setRepoDraft] = useState<string>(initialState.repo_path);
   const [cloneDraft, setCloneDraft] = useState({ url: "", destination: "" });
@@ -916,8 +984,13 @@ export function App() {
   };
 
   const loadNemoMcpStatus = () => {
-    postJson<NemoMcpWatcherState>("/api/nemo/mcp-status", { nemo_mcp_url: settingsDraft.nemo_mcp_url || "" })
-      .then((payload) => setNemoMcpStatus(payload))
+    postJson<NemoMcpWatcherState>("/api/nemo/mcp-status", { nemo_mcp_url: settingsDraft.nemo_mcp_url || "", selected_nemo_tools: selectedNemoTools })
+      .then((payload) => {
+        setNemoMcpStatus(payload);
+        if (Array.isArray(payload.selected_tools) && payload.selected_tools.length > 0) {
+          setSelectedNemoTools(payload.selected_tools);
+        }
+      })
       .catch(() => setNemoMcpStatus(null));
   };
 
@@ -968,6 +1041,16 @@ export function App() {
           portfolio_utilization: null,
         },
       }));
+  };
+
+  const loadMissionStats = () => {
+    fetch("/api/stats", { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Stats endpoint failed (${response.status})`);
+        return response.json();
+      })
+      .then((payload: MissionStatsState) => setMissionStats(payload))
+      .catch(() => setMissionStats(null));
   };
 
   const selectRun = (run: MissionRun) => {
@@ -1179,16 +1262,20 @@ export function App() {
       return postJson<AgentMessageResult>("/api/agent/message", {
         message: enrichedMessage,
         source_json: shouldAttachRunContextToMessage(content) ? selectedRun?.source_json : undefined,
+        chat_mode: routeChatMode(content, Boolean(selectedRun?.source_json)),
+        selected_nemo_tools: selectedNemoTools,
         provider: settingsDraft.provider,
         model_base_url: settingsDraft.model_base_url,
         default_model: settingsDraft.default_model,
         timeout_seconds: handoffDraft.timeoutSeconds,
+        token_budget: settingsDraft.token_budget,
       }, { signal: controller.signal });
     };
 
     sendRequest()
       .then((payload) => {
         setAgentMessages((current) => [...current, payload.message]);
+        loadMissionStats();
         if (planState.objective && !planState.currentPlan) {
           const parsed = parsePlanStepsFromMessage(payload.message.content || "");
           if (parsed) {
@@ -1203,6 +1290,11 @@ export function App() {
       .catch((error: Error) => {
         if (error.name === "AbortError") {
           setStatus("Agent response stopped");
+          return;
+        }
+        if (error.message.toLowerCase().includes("too many requests") || error.message.toLowerCase().includes("rate_limited") || error.message.includes("429")) {
+          setStatus("Backpressure activo (429). Mensaje encolado; reintentando en cuanto se libere la ventana.");
+          enqueueAgentPrompt(content, { highPriority: true });
           return;
         }
         setStatus(error.message);
@@ -1883,7 +1975,45 @@ export function App() {
     loadExtensions();
     loadNemoMcpStatus();
     loadRiskMap();
+    loadMissionStats();
+
+    try {
+      const raw = window.localStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<ChatSessionSnapshot>;
+      if (Array.isArray(parsed.agentMessages) && parsed.agentMessages.length > 0) {
+        setAgentMessages(parsed.agentMessages.filter((item): item is AgentMessage => Boolean(item && typeof item === "object" && item.id && item.role && item.content)));
+      }
+      if (Array.isArray(parsed.queuedAgentPrompts)) {
+        const nextQueue = parsed.queuedAgentPrompts.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+        queuedAgentPromptsRef.current = nextQueue;
+        setQueuedAgentPrompts(nextQueue);
+      }
+      if (parsed.missionStats && typeof parsed.missionStats === "object") {
+        setMissionStats(parsed.missionStats as MissionStatsState);
+      }
+      if (Array.isArray(parsed.selectedNemoTools) && parsed.selectedNemoTools.length > 0) {
+        setSelectedNemoTools(parsed.selectedNemoTools.filter((item): item is string => typeof item === "string"));
+      }
+    } catch {
+      // Ignore corrupted local session snapshot.
+    }
   }, []);
+
+  useEffect(() => {
+    const snapshot: ChatSessionSnapshot = {
+      version: 1,
+      agentMessages,
+      queuedAgentPrompts,
+      missionStats,
+      selectedNemoTools,
+    };
+    try {
+      window.localStorage.setItem(CHAT_SESSION_STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {
+      // Ignore quota issues and keep app running.
+    }
+  }, [agentMessages, queuedAgentPrompts, missionStats, selectedNemoTools]);
 
   useEffect(() => {
     if (activeSection !== "versioning") return;
@@ -1917,7 +2047,13 @@ export function App() {
     const intervalMs = settingsDraft.nemo_mcp_url?.trim() ? 6000 : 15000;
     const timer = window.setInterval(() => loadNemoMcpStatus(), intervalMs);
     return () => window.clearInterval(timer);
-  }, [settingsDraft.nemo_mcp_url]);
+  }, [settingsDraft.nemo_mcp_url, selectedNemoTools.join("|")]);
+
+  useEffect(() => {
+    loadMissionStats();
+    const timer = window.setInterval(() => loadMissionStats(), 8000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   return (
     <main className="ide-shell">
@@ -2006,6 +2142,8 @@ export function App() {
           nemoState={nemoState}
           cognitiveStats={cognitiveStats}
           onRefreshCognitiveStats={() => loadCognitiveStats(selectedRun)}
+          missionStats={missionStats}
+          onRefreshMissionStats={loadMissionStats}
           status={status}
           draft={homeAgentDraft}
           provider={settingsDraft.provider}
@@ -2190,6 +2328,16 @@ export function App() {
             onCleanupOrphans={cleanupOrphanJobs}
             mcpWatcher={nemoMcpStatus}
             onRefreshMcpWatcher={loadNemoMcpStatus}
+            selectedNemoTools={selectedNemoTools}
+            onToggleNemoTool={(toolName) => {
+              setSelectedNemoTools((current) => {
+                if (current.includes(toolName)) {
+                  const next = current.filter((item) => item !== toolName);
+                  return next.length > 0 ? next : current;
+                }
+                return [...current, toolName];
+              });
+            }}
           />
         </div>}
 
@@ -2215,7 +2363,7 @@ export function App() {
   );
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onSelectRun: (run: MissionRun) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onSelectRun: (run: MissionRun) => void }) {
   const recentRuns = state.runs.slice(0, 4);
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
   const [blockedListCollapsed, setBlockedListCollapsed] = useState<boolean>(false);
@@ -2233,6 +2381,11 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const queueCount = state.approval_queue.length;
   const runKpis = cognitiveStats?.run_kpis;
   const memoryKpis = cognitiveStats?.memory_kpis;
+  const sourceStats = missionStats?.sources;
+  const sourceReads = sourceStats?.total_reads ?? 0;
+  const sourceUrls = sourceStats?.unique_urls ?? 0;
+  const sourceCacheHitRate = sourceStats && sourceStats.total_reads > 0 ? Math.round((sourceStats.cache_hit_rate ?? 0) * 100) : 0;
+  const topSources = sourceStats?.top_sources ?? [];
   const providerLabel = modelName.trim() ? `LM Studio: ${modelName}` : "LM Studio real";
   const canSendDraft = draft.trim().length > 0;
   const visibleQueue = state.approval_queue.filter((run) => !dismissedQueueItems[run.source_json]);
@@ -2435,6 +2588,34 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
           <div className="mini-list">
             <span>Estado: {blockedRuns > 0 ? "requiere atencion" : "estable"}</span>
             <span>Mensaje: {status}</span>
+          </div>
+        </InsightSection>
+
+        <InsightSection title="Fuentes web" summary={`${sourceReads} lecturas / ${sourceUrls} URLs / cache ${sourceCacheHitRate}%`} open={false}>
+          <div className="panel-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Globe size={16} /> Source Analytics</span>
+            <button onClick={onRefreshMissionStats} title="Reload source analytics" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><RefreshCw size={13} /></button>
+          </div>
+          <div className="metric-grid">
+            <Metric icon={<Globe size={16} />} label="Reads" value={sourceReads} />
+            <Metric icon={<Database size={16} />} label="URLs" value={sourceUrls} />
+            <Metric icon={<CheckCircle2 size={16} />} label="Cache hit" value={`${sourceCacheHitRate}%`} />
+            <Metric icon={<Target size={16} />} label="Top listed" value={topSources.length} />
+          </div>
+          <div className="mini-list">
+            {sourceStats ? Object.entries(sourceStats.by_mode || {}).map(([mode, count]) => <span key={mode}>{mode}: {count}</span>) : <span>Esperando muestras de fuentes desde el chat del agente.</span>}
+          </div>
+          <div className="recent-card">
+            <strong>Top fuentes</strong>
+            {topSources.length === 0 ? <span className="empty-inline">Sin fuentes registradas todavía.</span> : topSources.slice(0, 5).map((item) => {
+              const itemCacheRate = item.reads > 0 ? Math.round((item.cache_hit_rate || 0) * 100) : 0;
+              return (
+                <div className="recent-run" key={item.url}>
+                  <span>{item.title || item.url}</span>
+                  <small>{item.reads} lecturas · cache {itemCacheRate}% · rank {item.rank_score}</small>
+                </div>
+              );
+            })}
           </div>
         </InsightSection>
 
@@ -3545,7 +3726,7 @@ function ApplyHistoryPanel({ applies }: { applies: ApplyHistoryItem[] }) {
   );
 }
 
-function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, mcpWatcher, onRefreshMcpWatcher }: { state: MissionState; settings: MissionState["settings"]; onSettingsChange: (settings: MissionState["settings"]) => void; onSaveSettings: () => void; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; cloneDraft: { url: string; destination: string }; onCloneDraftChange: (draft: { url: string; destination: string }) => void; onCloneRepo: () => void; cleanupResult: CleanupResult | null; onCleanup: (dryRun: boolean) => void; orphanCleanupResult: OrphanCleanupResult | null; onCleanupOrphans: (dryRun: boolean) => void; mcpWatcher: NemoMcpWatcherState | null; onRefreshMcpWatcher: () => void }) {
+function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, mcpWatcher, onRefreshMcpWatcher, selectedNemoTools = DEFAULT_SESSION_NEMO_TOOLS, onToggleNemoTool }: { state: MissionState; settings: MissionState["settings"]; onSettingsChange: (settings: MissionState["settings"]) => void; onSaveSettings: () => void; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; cloneDraft: { url: string; destination: string }; onCloneDraftChange: (draft: { url: string; destination: string }) => void; onCloneRepo: () => void; cleanupResult: CleanupResult | null; onCleanup: (dryRun: boolean) => void; orphanCleanupResult: OrphanCleanupResult | null; onCleanupOrphans: (dryRun: boolean) => void; mcpWatcher: NemoMcpWatcherState | null; onRefreshMcpWatcher: () => void; selectedNemoTools?: string[]; onToggleNemoTool?: (toolName: string) => void }) {
   const update = (key: keyof MissionState["settings"], value: string | number | boolean | string[]) => onSettingsChange({ ...settings, [key]: value });
   const watcherTone = mcpWatcher?.active ? "ready" : "blocked";
   const watcherLabel = mcpWatcher?.status ?? "loading";
@@ -3564,6 +3745,21 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
           {mcpWatcher?.error && <small>{mcpWatcher.error}</small>}
         </div>
         <button onClick={onRefreshMcpWatcher}><RefreshCw size={14} /> Comprobar</button>
+      </div>
+      <div className="repo-picker">
+        <strong>Selector de tools MCP por sesion</strong>
+        <div className="mini-list">
+          {(mcpWatcher?.available_tools && mcpWatcher.available_tools.length > 0 ? mcpWatcher.available_tools : DEFAULT_SESSION_NEMO_TOOLS).map((toolName) => (
+            <label key={toolName} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="checkbox"
+                checked={selectedNemoTools.includes(toolName)}
+                onChange={() => onToggleNemoTool?.(toolName)}
+              />
+              <span>{toolName}</span>
+            </label>
+          ))}
+        </div>
       </div>
       <label>Carpeta runtime<input value={settings.runtime_path} onChange={(event) => update("runtime_path", event.target.value)} /></label>
       <label>Nivel de validacion<select value={settings.validation_policy} onChange={(event) => update("validation_policy", event.target.value)}><option value="none">ninguna</option><option value="smoke">rapida</option><option value="targeted">dirigida</option><option value="full">completa</option></select></label>
@@ -3735,8 +3931,33 @@ function parseAgentMessageDecorations(content: string): { cleanedContent: string
   return { cleanedContent: cleaned || (inlineTools.length ? "Tool executed." : ""), risks, inlineTools };
 }
 
-function _normalizeToolDisplayName(name: string): string {
+const _LEGACY_MEMORY_TOOL_NAMES = new Set([
+  "prime_context",
+  "build_context_portfolio",
+  "search_memories",
+  "anticipate",
+  "store_conversation",
+  "cognitive_ingest",
+  "create_correction",
+  "record_context_feedback",
+  "expand_context_evidence",
+  "get_context_portfolio_stats",
+  "refresh_context_portfolio",
+  "compare_context_strategies",
+  "compress_context_artifact",
+]);
+
+function _canonicalizeToolName(name: string): string {
   const trimmed = name.trim();
+  if (!trimmed) return "tool";
+  if (!trimmed.startsWith("nemocode.")) return trimmed;
+  const leaf = trimmed.slice("nemocode.".length);
+  if (_LEGACY_MEMORY_TOOL_NAMES.has(leaf)) return `nemo_memory.${leaf}`;
+  return trimmed;
+}
+
+function _normalizeToolDisplayName(name: string): string {
+  const trimmed = _canonicalizeToolName(name);
   if (!trimmed) return "tool";
   const parts = trimmed.split(".").filter(Boolean);
   if (parts.length >= 2) return `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
@@ -3750,11 +3971,11 @@ function _collectRecentToolNames(messages: AgentMessage[]): string[] {
     if (message.role !== "assistant") continue;
     const payloadTools = message.tool_calls ?? [];
     for (const tool of payloadTools) {
-      if (tool?.name) collected.push(String(tool.name));
+      if (tool?.name) collected.push(_canonicalizeToolName(String(tool.name)));
     }
     const inlineTools = parseInlineToolCall(message.content);
     for (const tool of inlineTools) {
-      if (tool?.name) collected.push(String(tool.name));
+      if (tool?.name) collected.push(_canonicalizeToolName(String(tool.name)));
     }
     if (collected.length >= 8) break;
   }
@@ -3824,14 +4045,28 @@ function shouldAttachRunContextToMessage(content: string): boolean {
   return runIntentPattern.test(normalized);
 }
 
+function routeChatMode(content: string, hasSelectedRun: boolean): "chat" | "deep-research" | "execution" {
+  if (hasSelectedRun) return "execution";
+  const normalized = content.toLowerCase();
+  const executionPattern = /\b(run|runs|diff|patch|hunk|review|revisar|aplicar|apply|rollback|merge|sandbox|fix|corrige|arregla|commit)\b/;
+  const researchPattern = /\b(investiga|investigar|research|analiza|analizar|analyze|buscar|busca|web|fuentes|sources|benchmark|comparar|compare|deep)\b/;
+  if (executionPattern.test(normalized)) return "execution";
+  if (researchPattern.test(normalized)) return "deep-research";
+  return "chat";
+}
+
 function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onRunAction: (action: AgentAction) => void }) {
   const parsed = parseAgentMessageDecorations(message.content);
   const payloadTools = message.tool_calls ?? [];
+  const sources = message.sources ?? [];
+  const traceEvents = message.agent_trace ?? [];
   const mergedTools: RenderedToolCall[] = [
     ...payloadTools.map((tool) => ({ ...tool, source: "payload" as const })),
     ...parsed.inlineTools.map((tool, index) => ({
       id: `inline-${message.id}-${index}`,
       name: tool.name,
+      tool_name: tool.name,
+      alias_name: undefined,
       status: tool.status,
       summary: tool.summary,
       source: "inline" as const,
@@ -3845,13 +4080,39 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
       <div className="message-meta-row">
         <span className="message-meta-pill">~{estimateTokens(message.content)} tok</span>
         {mergedTools.length > 0 && <span className="message-meta-pill">tools {mergedTools.length}</span>}
+        {sources.length > 0 && <span className="message-meta-pill">sources {sources.length}</span>}
+        {traceEvents.length > 0 && <span className="message-meta-pill">trace {traceEvents.length}</span>}
       </div>
+      {sources.length > 0 && <div className="message-sources">
+        {sources.map((source, index) => (
+          <a key={`${source.url}-${index}`} className="message-source-item" href={source.url} target="_blank" rel="noreferrer">
+            <div className="message-source-head">
+              <strong>{source.title || source.url}</strong>
+              {source.cached && <em className="message-source-badge">cache</em>}
+            </div>
+            <span>{source.url}</span>
+            {source.snippet && <small>{source.snippet}</small>}
+          </a>
+        ))}
+      </div>}
+      {traceEvents.length > 0 && <div className="agent-trace-list">
+        {traceEvents.map((event) => (
+          <div className={`agent-trace-item status-${event.status}`} key={event.id}>
+            <span className="agent-trace-step">{event.step}</span>
+            <div className="agent-trace-copy">
+              <strong>{event.label}</strong>
+              <span>{event.detail || event.status}</span>
+            </div>
+          </div>
+        ))}
+      </div>}
       {mergedTools.length > 0 && <div className="tool-call-list">
         {mergedTools.map((tool) => (
           <div className="tool-call" key={tool.id}>
             <Wrench size={13} />
             <div>
-              <strong>{tool.name}{tool.source === "inline" ? " (detected)" : ""}</strong>
+              <strong>{_canonicalizeToolName(tool.name)}{tool.source === "inline" ? " (detected)" : ""}</strong>
+              {(tool.alias_name || (tool.name.startsWith("nemocode.") ? tool.name : "")) && <small>legacy alias: {tool.alias_name || tool.name}</small>}
               <span>{tool.status} / {tool.summary}</span>
             </div>
           </div>
