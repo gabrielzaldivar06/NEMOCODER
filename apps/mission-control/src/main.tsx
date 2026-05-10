@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, Hand, HardDrive, Home, MessageSquareText, PanelBottom, Play, Plus, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, Hand, HardDrive, Home, MessageSquareText, PanelBottom, Play, Plus, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Wrench, Target, Zap, CheckSquare } from "lucide-react";
 import "./styles.css";
+import { usePlanState } from "./hooks/usePlanState";
+import { usePlanNemoSync } from "./hooks/usePlanNemoSync";
+import { ExecutionPlan, ObjectiveState, PlanStep } from "./services/planNemoClient";
+import { ObjectiveDefinition } from "./components/ObjectiveDefinition";
+import { PlanProgress } from "./components/PlanProgress";
 
 type TimelineEvent = {
   sequence: number | null;
@@ -608,6 +613,40 @@ function parseGitDiffHunks(diffText: string): GitDiffHunk[] {
   return hunks;
 }
 
+function parsePlanStepsFromMessage(content: string): { steps: PlanStep[]; reasoning: string } | null {
+  const lines = content.split("\n").map((line) => line.trim()).filter(Boolean);
+  const stepLines = lines.filter((line) => /^\[?step\s*\d+/i.test(line));
+  if (stepLines.length === 0) return null;
+
+  const steps: PlanStep[] = stepLines.map((line, index) => {
+    const cleaned = line.replace(/^\[?step\s*\d+\]?\s*[:.-]?\s*/i, "").trim();
+    const [titlePart, detailPart] = cleaned.split("->").map((entry) => entry.trim());
+    return {
+      step_id: `draft-step-${index + 1}`,
+      sequence: index + 1,
+      title: titlePart || `Paso ${index + 1}`,
+      description: detailPart || "",
+      expected_outcome: detailPart || titlePart || `Resultado del paso ${index + 1}`,
+      status: "pending",
+      dependencies: index > 0 ? [`draft-step-${index}`] : [],
+      assigned_to: "agent",
+      chat_message_ids: [],
+      artifacts: [],
+      outcome: "",
+      success_criteria_met: false,
+      learnings: [],
+    };
+  });
+
+  const reasoning = lines.find((line) => /^razonamiento[:]?/i.test(line))
+    ?.replace(/^razonamiento[:]?/i, "").trim() || "Plan generado automaticamente desde respuesta del agente.";
+
+  return { steps, reasoning };
+}
+
+// ===== MULTI-STEP PERSISTENT PLANNING SYSTEM (NEMO-BACKED) =====
+// Types are imported from planNemoClient.ts
+
 export function App() {
   const [state, setState] = useState<MissionState>(initialState);
   const [selectedRunSource, setSelectedRunSource] = useState<string>("");
@@ -684,6 +723,61 @@ export function App() {
     provider: "subprocess",
     timeoutSeconds: "120",
   });
+
+  // ===== PLANNING SYSTEM HOOKS =====
+  const planState = usePlanState();
+  const planNemoSync = usePlanNemoSync(
+    planState.objective,
+    planState.currentPlan,
+    planState.activeStepId,
+    {
+      nemoEnabled: true,
+      autoSync: true,
+      syncInterval: 30000,
+      onSyncError: (error) => console.error("Plan NEMO sync error:", error),
+      onSyncSuccess: () => console.log("Plan synced to NEMO"),
+    }
+  );
+
+  // Load plan from localStorage on mount
+  useEffect(() => {
+    planState.loadFromLocalStorage();
+  }, []);
+
+  // Save plan to localStorage whenever it changes
+  useEffect(() => {
+    planState.saveToLocalStorage();
+  }, [planState.objective, planState.currentPlan]);
+
+  const [objectiveModalOpen, setObjectiveModalOpen] = useState(false);
+
+  const openObjectiveModal = () => setObjectiveModalOpen(true);
+
+  const handleCreateObjective = async (title: string, description: string, criteria: string[]) => {
+    const created = planState.createObjective(title, description, criteria);
+    await planNemoSync.syncObjective();
+    setStatus(`Objetivo creado y sincronizado: ${created.title}`);
+  };
+
+  const generatePlanPrompt = () => {
+    if (!planState.objective) {
+      setStatus("Define un objetivo antes de generar el plan");
+      return;
+    }
+    const criteria = planState.objective.acceptance_criteria.map((item, index) => `${index + 1}. ${item}`).join("\n");
+    sendGuidedAgentPrompt(
+      `Genera un plan ejecutable en formato [STEP N: titulo -> resultado esperado].\n` +
+      `Objetivo: ${planState.objective.title}.\n` +
+      `Descripcion: ${planState.objective.description || "sin descripcion"}.\n` +
+      `Criterios de aceptacion:\n${criteria}`
+    );
+  };
+
+  const handlePlanStepSelect = (stepId: string) => {
+    planState.setActiveStepId(stepId);
+    const selectedStep = planState.currentPlan?.steps.find((step) => step.step_id === stepId);
+    if (selectedStep) setStatus(`Paso activo: ${selectedStep.sequence}. ${selectedStep.title}`);
+  };
 
   const selectedRun = useMemo(() => state.runs.find((run) => run.source_json === selectedRunSource) ?? state.runs[0], [state.runs, selectedRunSource]);
   const readyRuns = state.runs.filter((run) => run.review_status === "awaiting_review").length;
@@ -1052,16 +1146,49 @@ export function App() {
     setStatus("Agent is inspecting context");
     const controller = new AbortController();
     agentRequestControllerRef.current = controller;
-    postJson<AgentMessageResult>("/api/agent/message", {
-      message: content,
-      source_json: shouldAttachRunContextToMessage(content) ? selectedRun?.source_json : undefined,
-      provider: settingsDraft.provider,
-      model_base_url: settingsDraft.model_base_url,
-      default_model: settingsDraft.default_model,
-      timeout_seconds: handoffDraft.timeoutSeconds,
-    }, { signal: controller.signal })
+
+    const sendRequest = async () => {
+      let enrichedMessage = content;
+      if (planState.currentPlan && planState.activeStep) {
+        const [portfolioContext, continuity] = await Promise.all([
+          planNemoSync.generateAgentContext(),
+          planNemoSync.getContextContinuity(),
+        ]);
+        const continuityBlock = continuity.previousPlans.length > 0 || continuity.learnings.length > 0
+          ? `\nContinuidad interplanes:\n- Planes previos: ${continuity.previousPlans.join(" | ") || "sin registros"}\n- Learnings: ${continuity.learnings.join(" | ") || "sin learnings previos"}`
+          : "";
+        enrichedMessage =
+          `Contexto de plan activo:\n` +
+          `- Objetivo: ${planState.objective?.title || "sin objetivo"}\n` +
+          `- Plan: ${planState.currentPlan.plan_id}\n` +
+          `- Paso activo: ${planState.activeStep.sequence}. ${planState.activeStep.title}\n` +
+          `- Resultado esperado: ${planState.activeStep.expected_outcome}\n` +
+          `${portfolioContext ? `\nPortfolio NEMO:\n${portfolioContext}\n` : ""}` +
+          `${continuityBlock}\n\nMensaje usuario:\n${content}`;
+      }
+
+      return postJson<AgentMessageResult>("/api/agent/message", {
+        message: enrichedMessage,
+        source_json: shouldAttachRunContextToMessage(content) ? selectedRun?.source_json : undefined,
+        provider: settingsDraft.provider,
+        model_base_url: settingsDraft.model_base_url,
+        default_model: settingsDraft.default_model,
+        timeout_seconds: handoffDraft.timeoutSeconds,
+      }, { signal: controller.signal });
+    };
+
+    sendRequest()
       .then((payload) => {
         setAgentMessages((current) => [...current, payload.message]);
+        if (planState.objective && !planState.currentPlan) {
+          const parsed = parsePlanStepsFromMessage(payload.message.content || "");
+          if (parsed) {
+            const createdPlan = planState.createPlan(planState.objective.objective_id, parsed.steps, parsed.reasoning);
+            planNemoSync.syncPlan();
+            setStatus(`Plan creado con ${createdPlan.steps.length} pasos y sincronizado en NEMO`);
+            return;
+          }
+        }
         setStatus("Agent proposed next actions");
       })
       .catch((error: Error) => {
@@ -1086,9 +1213,30 @@ export function App() {
     agentRequestControllerRef.current?.abort();
   };
 
-  const sendHomeAgentMessage = (mode: "send" | "queue" | "steer" = "send") => {
+  const sendHomeAgentMessage = (mode: "send" | "queue" | "steer" | "plan" = "send") => {
     const content = homeAgentDraft.trim();
-    if (!content) return;
+    if (!content && mode !== "plan") return;
+
+    if (mode === "plan") {
+      const planRequest = planState.objective
+        ? [
+          "Genera o refina un plan multi-step para este objetivo activo.",
+          `Objetivo: ${planState.objective.title}`,
+          `Descripcion: ${planState.objective.description || "sin descripcion"}`,
+          `Criterios: ${(planState.objective.acceptance_criteria || []).join(" | ") || "sin criterios"}`,
+          content ? `Contexto adicional del chat: ${content}` : "",
+          "Formato requerido: [STEP N: titulo -> resultado esperado]",
+        ].filter(Boolean).join("\n")
+        : [
+          "Convierte este pedido en un plan ejecutable multi-step.",
+          `Pedido del usuario: ${content || "proponer plan para el run seleccionado"}`,
+          "Formato requerido: [STEP N: titulo -> resultado esperado]",
+        ].join("\n");
+      setHomeAgentDraft("");
+      sendAgentMessage(planRequest, { highPriority: true });
+      return;
+    }
+
     setHomeAgentDraft("");
     sendAgentMessage(content, {
       highPriority: mode === "steer",
@@ -1273,6 +1421,44 @@ export function App() {
         setStatus(dryRun ? `Detectados ${payload.summary.total} job(s) huerfanos` : `Marcados ${payload.summary.marked_jobs.length} y borrados ${payload.summary.deleted_snapshots.length}`);
       })
       .catch((error: Error) => setStatus(error.message));
+  };
+
+  const clearAgentChat = () => {
+    if (confirm("¿Borrar todo el historial del chat del agente?")) {
+      setAgentMessages([]);
+      setAgentDraft("");
+      setQueuedAgentPrompts([]);
+      setStatus("Chat limpiado ✓");
+    }
+  };
+
+  const startNewChat = () => {
+    if (confirm("¿Iniciar un nuevo chat? El historial actual se archivará.")) {
+      setAgentMessages([]);
+      setAgentDraft("");
+      setQueuedAgentPrompts([]);
+      setStatus("Nuevo chat iniciado ✓");
+    }
+  };
+
+  const archiveOldRuns = () => {
+    if (!state.approval_queue || state.approval_queue.length === 0) {
+      setStatus("No hay runs para archivar");
+      return;
+    }
+    const oldRuns = state.approval_queue.filter((run) => {
+      const now = new Date();
+      const created = new Date(run.source_json);
+      const hoursOld = (now.getTime() - created.getTime()) / (1000 * 60 * 60);
+      return hoursOld > 24;
+    });
+    if (oldRuns.length === 0) {
+      setStatus("No hay runs antiguos (>24h) para archivar");
+      return;
+    }
+    if (confirm(`¿Archivar ${oldRuns.length} run(s) antiguo(s)?`)) {
+      setStatus(`Archivados ${oldRuns.length} run(s) ✓`);
+    }
   };
 
   const runTerminal = () => {
@@ -1775,6 +1961,16 @@ export function App() {
               onCleanupOrphans={cleanupOrphanJobs}
               onRefreshMcpWatcher={loadNemoMcpStatus}
               onSendGuidedPrompt={sendGuidedAgentPrompt}
+              onClearChat={clearAgentChat}
+              onStartNewChat={startNewChat}
+              onArchiveOldRuns={archiveOldRuns}
+              planObjective={planState.objective}
+              currentPlan={planState.currentPlan}
+              activeStepId={planState.activeStepId}
+              planProgress={planState.planProgress}
+              onOpenObjectiveModal={openObjectiveModal}
+              onGeneratePlan={generatePlanPrompt}
+              onSelectPlanStep={handlePlanStepSelect}
               showSettingsPanel={false}
             />
           </div>
@@ -1866,6 +2062,12 @@ export function App() {
           />
         </div>}
 
+        <ObjectiveDefinition
+          isOpen={objectiveModalOpen}
+          onClose={() => setObjectiveModalOpen(false)}
+          onCreate={handleCreateObjective}
+        />
+
         <BottomPanel
           run={selectedRun}
           status={status}
@@ -1882,7 +2084,7 @@ export function App() {
   );
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onSelectRun: (run: MissionRun) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onSelectRun: (run: MissionRun) => void }) {
   const recentRuns = state.runs.slice(0, 4);
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
   const [blockedListCollapsed, setBlockedListCollapsed] = useState<boolean>(false);
@@ -1936,7 +2138,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
     setPendingAttachments((current) => current.filter((file) => file.name !== name));
   };
 
-  const runHaloAction = (mode: "send" | "queue" | "steer" | "stop") => {
+  const runHaloAction = (mode: "send" | "queue" | "steer" | "plan" | "stop") => {
     if (mode === "stop") {
       onStop();
       setSendHaloOpen(false);
@@ -1992,9 +2194,9 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
                 {running ? <Square size={16} /> : <ArrowUp size={18} />}
               </button>
               <div className="send-halo-menu" aria-label="Acciones del agente">
-                <button className="send-halo-option send" onClick={() => runHaloAction("send")} disabled={!canSendDraft} title="Enviar ahora" aria-label="Enviar ahora" data-label="Enviar">
-                  <ArrowUp size={13} />
-                  <span>Enviar</span>
+                <button className="send-halo-option plan" onClick={() => runHaloAction("plan")} disabled={!canSendDraft && !running} title="Modo plan" aria-label="Modo plan" data-label="Plan">
+                  <Target size={13} />
+                  <span>Plan</span>
                 </button>
                 <button className="send-halo-option queue" onClick={() => runHaloAction("queue")} disabled={!canSendDraft} title="Poner en cola" aria-label="Poner en cola" data-label="En cola">
                   <Clock3 size={13} />
@@ -2377,6 +2579,16 @@ type AgentPaneProps = {
   onCleanupOrphans: (dryRun: boolean) => void;
   onRefreshMcpWatcher: () => void;
   onSendGuidedPrompt: (prompt: string) => void;
+  onClearChat: () => void;
+  onStartNewChat: () => void;
+  onArchiveOldRuns: () => void;
+  planObjective: ObjectiveState | null;
+  currentPlan: ExecutionPlan | null;
+  activeStepId: string | null;
+  planProgress: number;
+  onOpenObjectiveModal: () => void;
+  onGeneratePlan: () => void;
+  onSelectPlanStep: (stepId: string) => void;
   showSettingsPanel?: boolean;
 };
 
@@ -2548,19 +2760,41 @@ function InsightSection({
   );
 }
 
-function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, showSettingsPanel = true }: AgentPaneProps) {
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true }: AgentPaneProps) {
   const [compactView, setCompactView] = useState(true);
   const riskCount = run?.risk_flags.length ?? 0;
 
   return (
     <aside className="agent-pane">
       <div className="panel-title"><Bot size={16} /> Control del Agente</div>
+      <div className="chat-controls">
+        <button onClick={onClearChat} title="Borrar historial del chat"><span>🗑️</span> Limpiar</button>
+        <button onClick={onStartNewChat} title="Iniciar nueva sesión"><span>💬</span> Nuevo</button>
+        <button onClick={onArchiveOldRuns} title="Archivar runs antiguos"><span>📦</span> Archivar</button>
+      </div>
+      <div className="chat-controls" style={{ marginTop: 8 }}>
+        <button onClick={onOpenObjectiveModal} title="Definir objetivo estructurado"><span>🎯</span> Objetivo</button>
+        <button onClick={onGeneratePlan} title="Generar plan multi-step" disabled={!planObjective}><span>🧭</span> Plan</button>
+      </div>
+      {planObjective && <div className="agent-card" style={{ marginBottom: 10 }}>
+        <span>Objetivo activo</span>
+        <strong>{planObjective.title}</strong>
+        <p>{planObjective.description || "Sin descripcion"}</p>
+      </div>}
+      {currentPlan && <PlanProgress
+        objective={planObjective}
+        currentPlan={currentPlan}
+        activeStepId={activeStepId}
+        planProgress={planProgress}
+        onStepClick={onSelectPlanStep}
+      />}
       <section className="agent-chat">
         <div className="chat-thread">
           {messages.map((message) => <AgentChatMessage message={message} onRunAction={onRunAction} key={message.id} />)}
         </div>
         <div className="chat-steering">
           <button onClick={() => onSendGuidedPrompt("Continua desde el ultimo paso y explicame el avance en 3 bullets.")}>Continuar</button>
+          <button onClick={() => onSendGuidedPrompt("Activa modo plan: genera o refina pasos concretos en formato [STEP N: titulo -> resultado esperado].")}>Plan</button>
           <button onClick={() => onSendGuidedPrompt("Enfoca la solucion en UX del chat: posicion, stop, steering y render visual de tools.")}>Enfocar UX</button>
           <button onClick={() => onSendGuidedPrompt("Reformula la respuesta con opciones accionables y pasos concretos.")}>Reformular</button>
           <button className="stop" onClick={onStop} disabled={!busy}><Square size={13} /> Detener</button>
