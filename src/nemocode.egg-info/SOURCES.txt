@@ -67,6 +67,7 @@ tests/test_aider_interface.py
 tests/test_autonomy_gate.py
 tests/test_autonomy_policy_contract.py
 tests/test_checkpoint.py
+tests/test_ci_workflow_contract.py
 tests/test_cli_headless.py
 tests/test_cognitive_cycle_e2e.py
 tests/test_context_compaction.py

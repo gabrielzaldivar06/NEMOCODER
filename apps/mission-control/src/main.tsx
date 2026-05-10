@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, HardDrive, Home, MessageSquareText, PanelBottom, Play, Plus, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, TerminalSquare, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, Hand, HardDrive, Home, MessageSquareText, PanelBottom, Play, Plus, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Wrench } from "lucide-react";
 import "./styles.css";
 
 type TimelineEvent = {
@@ -110,6 +110,9 @@ type AgentToolCall = {
   name: string;
   status: string;
   summary: string;
+};
+type RenderedToolCall = AgentToolCall & {
+  source: "payload" | "inline";
 };
 type AgentAction = {
   id: string;
@@ -443,6 +446,144 @@ function statusTone(status: string): string {
   return "quiet";
 }
 
+function describeRun(run: MissionRun): string {
+  const fileCount = run.changed_files.length;
+  const riskCount = run.risk_flags.length;
+  if (run.review_status === "running") return `Trabajando ahora en ${fileCount} archivo(s)`;
+  if (run.review_status === "blocked") return `${riskCount} riesgo(s) bloquean la decision`;
+  if (run.review_status === "awaiting_review") return `Listo para revisar cambios en ${fileCount} archivo(s)`;
+  return `${fileCount} archivo(s) cambiados y ${riskCount} riesgo(s) detectados`;
+}
+
+function summarizePhase(run: MissionRun): string {
+  if (run.execution_phase) return run.execution_phase.replaceAll("_", " ");
+  if (run.runtime_state) return run.runtime_state.replaceAll("_", " ");
+  return "fase sin reportar";
+}
+
+function reviewDecisionLabel(run: MissionRun): string {
+  if (!run.mergeable) return "requiere cambios";
+  if (run.review_status === "awaiting_review") return "listo para decidir";
+  if (run.review_status === "running") return "en ejecucion";
+  return "seguimiento";
+}
+
+function toQueueBucket(status: string): "blocked" | "queued" | "ready" {
+  if (status === "blocked") return "blocked";
+  if (status === "awaiting_review") return "ready";
+  return "queued";
+}
+
+function queueBucketLabel(bucket: "blocked" | "queued" | "ready"): string {
+  if (bucket === "blocked") return "Bloqueado";
+  if (bucket === "ready") return "Listo";
+  return "En cola";
+}
+
+type QueueRiskNarrative = {
+  title: string;
+  reason: string;
+  impact: string;
+  nextStep: string;
+};
+
+function humanizeRiskFlag(flag: string): string {
+  const normalized = flag.toLowerCase();
+  if (normalized.includes("permission") || normalized.includes("approval")) return "Falta validacion humana para continuar";
+  if (normalized.includes("validation") || normalized.includes("test")) return "La validacion fallo y necesita correccion";
+  if (normalized.includes("merge") || normalized.includes("conflict") || normalized.includes("drift")) return "Hay conflicto de cambios y requiere revision";
+  if (normalized.includes("missing") || normalized.includes("path") || normalized.includes("not_found")) return "Falta contexto de archivos o referencias";
+  if (normalized.includes("policy") || normalized.includes("guard") || normalized.includes("safety")) return "El gate de seguridad exige decision humana";
+  return flag.replaceAll("_", " ");
+}
+
+function queueRiskNarrative(flag: string): QueueRiskNarrative {
+  const normalized = flag.toLowerCase();
+  if (normalized.includes("permission") || normalized.includes("approval")) {
+    return {
+      title: "Validacion humana",
+      reason: "El sistema detecto una accion sensible y espera tu decision.",
+      impact: "El run no avanza hasta que revises el cambio.",
+      nextStep: "Abre el diff y confirma si se puede continuar.",
+    };
+  }
+  if (normalized.includes("validation") || normalized.includes("test")) {
+    return {
+      title: "Fallo de validacion",
+      reason: "La comprobacion automatica no paso correctamente.",
+      impact: "Aplicar ahora podria introducir regresiones.",
+      nextStep: "Revisa errores y solicita una nueva iteracion.",
+    };
+  }
+  if (normalized.includes("merge") || normalized.includes("conflict") || normalized.includes("drift")) {
+    return {
+      title: "Conflicto de cambios",
+      reason: "Hay diferencias entre ramas o archivos base.",
+      impact: "No es seguro aplicar sin revisar contexto.",
+      nextStep: "Abre el diff completo y decide continuar o descartar.",
+    };
+  }
+  if (normalized.includes("missing") || normalized.includes("path") || normalized.includes("not_found")) {
+    return {
+      title: "Contexto incompleto",
+      reason: "Faltan rutas, archivos o referencias necesarias.",
+      impact: "La propuesta puede quedar incompleta o romper flujo.",
+      nextStep: "Completa el contexto y vuelve a ejecutar.",
+    };
+  }
+  if (normalized.includes("policy") || normalized.includes("guard") || normalized.includes("safety")) {
+    return {
+      title: "Gate de seguridad",
+      reason: "Una politica de seguridad marco este cambio.",
+      impact: "El sistema protege la rama hasta tu aprobacion.",
+      nextStep: "Evalua riesgo y decide revisar o descartar.",
+    };
+  }
+  return {
+    title: "Riesgo detectado",
+    reason: humanizeRiskFlag(flag),
+    impact: "Puede afectar estabilidad si se aplica sin revision.",
+    nextStep: "Revisa el diff antes de continuar.",
+  };
+}
+
+function queueRunNarratives(run: MissionRun): QueueRiskNarrative[] {
+  if (run.risk_flags.length > 0) return run.risk_flags.map(queueRiskNarrative);
+  if (run.review_status === "awaiting_review") {
+    return [{
+      title: "Listo para decision",
+      reason: "No se detectaron bloqueos criticos en este punto.",
+      impact: "Puedes cerrar este item rapido si el diff esta bien.",
+      nextStep: "Haz una revision corta y continua.",
+    }];
+  }
+  if (run.review_status === "running") {
+    return [{
+      title: "Ejecucion en progreso",
+      reason: "El agente sigue procesando cambios en sandbox.",
+      impact: "Aun no hay salida final para aprobar.",
+      nextStep: "Espera resultado o prioriza otro item.",
+    }];
+  }
+  return [{
+    title: "Pendiente de contexto",
+    reason: "Quedo en cola sin senales claras de bloqueo.",
+    impact: "Puede retrasar runs que si estan listos.",
+    nextStep: "Abre el item y decide continuar o descartar.",
+  }];
+}
+
+function queuePrimaryReason(run: MissionRun): string {
+  const primary = queueRunNarratives(run)[0];
+  return `${primary.title}: ${primary.reason}`;
+}
+
+function shortenObjective(value: string, maxLength = 78): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
 function parseGitDiffHunks(diffText: string): GitDiffHunk[] {
   if (!diffText.trim()) return [];
   const lines = diffText.split("\n");
@@ -502,6 +643,9 @@ export function App() {
   const [agentDraft, setAgentDraft] = useState<string>("");
   const [homeAgentDraft, setHomeAgentDraft] = useState<string>("");
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
+  const [queuedAgentPrompts, setQueuedAgentPrompts] = useState<string[]>([]);
+  const [runTreeCollapsed, setRunTreeCollapsed] = useState<boolean>(false);
+  const [expandedRunSources, setExpandedRunSources] = useState<Record<string, boolean>>({});
   const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("trusted");
   const [activeSection, setActiveSection] = useState<AppSection>("home");
   const [repoBusy, setRepoBusy] = useState<boolean>(false);
@@ -529,6 +673,8 @@ export function App() {
   const [gitSelectedHunks, setGitSelectedHunks] = useState<Record<string, boolean>>({});
   const [gitCommitMessage, setGitCommitMessage] = useState<string>("");
   const [gitBranchDraft, setGitBranchDraft] = useState<string>("");
+  const agentRequestControllerRef = useRef<AbortController | null>(null);
+  const queuedAgentPromptsRef = useRef<string[]>([]);
   const [handoffDraft, setHandoffDraft] = useState({
     objective: "",
     acceptance: "passes validation",
@@ -543,11 +689,50 @@ export function App() {
   const readyRuns = state.runs.filter((run) => run.review_status === "awaiting_review").length;
   const blockedRuns = state.runs.filter((run) => run.review_status === "blocked").length;
   const activeFile = selectedFile || selectedRun?.changed_files[0] || "";
+  const queuedAgentPrompt = queuedAgentPrompts[0] ?? null;
 
-  const postJson = <T extends object,>(path: string, body: object): Promise<T> => fetch(path, {
+  const syncQueuedPrompts = (nextQueue: string[]) => {
+    queuedAgentPromptsRef.current = nextQueue;
+    setQueuedAgentPrompts(nextQueue);
+  };
+
+  const enqueueAgentPrompt = (content: string, options?: { highPriority?: boolean }) => {
+    const normalized = content.trim();
+    if (!normalized) return;
+    const highPriority = Boolean(options?.highPriority);
+    const withoutDuplicate = queuedAgentPromptsRef.current.filter((item) => item !== normalized);
+    const nextQueue = highPriority ? [normalized, ...withoutDuplicate] : [...withoutDuplicate, normalized];
+    const boundedQueue = nextQueue.slice(0, 8);
+    syncQueuedPrompts(boundedQueue);
+    setStatus(highPriority ? "High-priority steering queued" : `Agent busy: queued message (${boundedQueue.length})`);
+  };
+
+  const popQueuedAgentPrompt = () => {
+    const [nextPrompt, ...rest] = queuedAgentPromptsRef.current;
+    syncQueuedPrompts(rest);
+    return nextPrompt;
+  };
+
+  const removeQueuedAgentPrompt = (index: number) => {
+    if (index < 0 || index >= queuedAgentPromptsRef.current.length) return;
+    const nextQueue = queuedAgentPromptsRef.current.filter((_, entryIndex) => entryIndex !== index);
+    syncQueuedPrompts(nextQueue);
+    setStatus("Removed queued message");
+  };
+
+  const prioritizeQueuedAgentPrompt = (index: number) => {
+    if (index <= 0 || index >= queuedAgentPromptsRef.current.length) return;
+    const picked = queuedAgentPromptsRef.current[index];
+    const rest = queuedAgentPromptsRef.current.filter((_, entryIndex) => entryIndex !== index);
+    syncQueuedPrompts([picked, ...rest]);
+    setStatus("Moved queued message to front");
+  };
+
+  const postJson = <T extends object,>(path: string, body: object, init?: RequestInit): Promise<T> => fetch(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     body: JSON.stringify(body),
+    ...init,
   }).then(async (response) => {
     const rawText = await response.text();
     let payload: (T | ApiError | null) = null;
@@ -686,6 +871,7 @@ export function App() {
     const nextFile = run.changed_files[0] ?? "";
     setSelectedRunSource(run.source_json);
     setSelectedFile(nextFile);
+    setExpandedRunSources((current) => ({ ...current, [run.source_json]: true }));
     loadFilePreview(run, nextFile);
     loadNemoState(run);
     loadSelfInsights(run);
@@ -851,35 +1037,63 @@ export function App() {
       .catch((error: Error) => setStatus(error.message));
   };
 
-  const sendAgentMessage = (contentOverride?: string) => {
+  const sendAgentMessage = (contentOverride?: string, options?: { highPriority?: boolean; forceQueue?: boolean }) => {
     const content = (contentOverride ?? agentDraft).trim();
-    if (!content || agentBusy) return;
+    if (!content) return;
+    if (agentBusy || options?.forceQueue) {
+      enqueueAgentPrompt(content, options);
+      if (contentOverride === undefined) setAgentDraft("");
+      return;
+    }
     const userMessage: AgentMessage = { id: `user-${Date.now()}`, role: "user", content };
     setAgentMessages((current) => [...current, userMessage]);
     if (contentOverride === undefined) setAgentDraft("");
     setAgentBusy(true);
     setStatus("Agent is inspecting context");
+    const controller = new AbortController();
+    agentRequestControllerRef.current = controller;
     postJson<AgentMessageResult>("/api/agent/message", {
       message: content,
-      source_json: selectedRun?.source_json,
+      source_json: shouldAttachRunContextToMessage(content) ? selectedRun?.source_json : undefined,
       provider: settingsDraft.provider,
       model_base_url: settingsDraft.model_base_url,
       default_model: settingsDraft.default_model,
       timeout_seconds: handoffDraft.timeoutSeconds,
-    })
+    }, { signal: controller.signal })
       .then((payload) => {
         setAgentMessages((current) => [...current, payload.message]);
         setStatus("Agent proposed next actions");
       })
-      .catch((error: Error) => setStatus(error.message))
-      .finally(() => setAgentBusy(false));
+      .catch((error: Error) => {
+        if (error.name === "AbortError") {
+          setStatus("Agent response stopped");
+          return;
+        }
+        setStatus(error.message);
+      })
+      .finally(() => {
+        setAgentBusy(false);
+        agentRequestControllerRef.current = null;
+        const queued = popQueuedAgentPrompt();
+        if (queued) {
+          setTimeout(() => sendAgentMessage(queued), 0);
+        }
+      });
   };
 
-  const sendHomeAgentMessage = () => {
+  const stopAgentMessage = () => {
+    if (!agentBusy) return;
+    agentRequestControllerRef.current?.abort();
+  };
+
+  const sendHomeAgentMessage = (mode: "send" | "queue" | "steer" = "send") => {
     const content = homeAgentDraft.trim();
-    if (!content || agentBusy) return;
+    if (!content) return;
     setHomeAgentDraft("");
-    sendAgentMessage(content);
+    sendAgentMessage(content, {
+      highPriority: mode === "steer",
+      forceQueue: mode === "queue",
+    });
   };
 
   const openMemorySection = () => {
@@ -888,9 +1102,8 @@ export function App() {
   };
 
   const sendGuidedAgentPrompt = (prompt: string) => {
-    if (!prompt.trim() || agentBusy) return;
-    setAgentDraft(prompt);
-    sendAgentMessage(prompt);
+    if (!prompt.trim()) return;
+    sendAgentMessage(prompt, { highPriority: true });
   };
 
   const runAgentAction = (action: AgentAction) => {
@@ -1001,6 +1214,24 @@ export function App() {
         setStatus(error.message);
       })
       .finally(() => setRepoBusy(false));
+  };
+
+  const browseRepoFolder = async (): Promise<string | null> => {
+    setStatus("Opening folder picker");
+    try {
+      const payload = await postJson<{ ok: boolean; path?: string | null }>("/api/repo/pick-folder", {});
+      const picked = (payload.path ?? "").trim();
+      if (!picked) {
+        setStatus("Folder picker canceled");
+        return null;
+      }
+      setStatus(`Folder selected: ${picked}`);
+      return picked;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "folder picker unavailable";
+      setStatus(message);
+      return null;
+    }
   };
 
   const cloneRepo = () => {
@@ -1405,43 +1636,57 @@ export function App() {
           repoDraft={repoDraft}
           onRepoDraftChange={setRepoDraft}
           onOpenRepo={openRepo}
+          onBrowseFolder={browseRepoFolder}
           busy={repoBusy}
           error={repoError}
           activeRepo={state.repo_path}
         />
 
-        <section className="run-tree">
-          <div className="section-heading"><ChevronDown size={14} /> Agent Runs</div>
-          {state.runs.length === 0 ? <EmptyState /> : state.runs.map((run) => (
-            <div className={`tree-run ${selectedRun?.source_json === run.source_json ? "selected" : ""}`} key={run.source_json}>
-              <button className="tree-run-button" onClick={() => selectRun(run)}>
-                <Circle size={9} className={statusTone(run.review_status)} />
-                <span>{run.objective}</span>
-              </button>
-              {selectedRun?.source_json === run.source_json && <div className="file-tree">
-                {run.changed_files.length === 0 ? <span className="tree-empty">No changed files</span> : run.changed_files.map((file) => (
-                  <button className={activeFile === file ? "active" : ""} key={file} onClick={() => selectFile(file)}>
-                    <FileCode2 size={14} /> {file}
+        <section className={`run-tree ${runTreeCollapsed ? "collapsed" : ""}`}>
+          <button className={`section-heading section-toggle ${runTreeCollapsed ? "collapsed" : ""}`} onClick={() => setRunTreeCollapsed((value) => !value)} title={runTreeCollapsed ? "Expandir agent runs" : "Colapsar agent runs"}>
+            <ChevronDown size={14} /> Agent Runs
+          </button>
+          <div className={`run-tree-body ${runTreeCollapsed ? "collapsed" : "expanded"}`}>
+            {state.runs.length === 0 ? <EmptyState /> : <div className="run-tree-list">{state.runs.map((run) => {
+              const isSelected = selectedRun?.source_json === run.source_json;
+              const isExpanded = expandedRunSources[run.source_json] ?? isSelected;
+              return (
+                <article className={`tree-run-card ${isSelected ? "selected" : ""}`} key={run.source_json}>
+                  <button className="tree-run-button" onClick={() => selectRun(run)}>
+                    <span className={`tree-run-dot ${statusTone(run.review_status)}`} />
+                    <div className="tree-run-copy">
+                      <strong>{run.objective}</strong>
+                      <small>{describeRun(run)}</small>
+                    </div>
+                    <span className={`pill ${statusTone(run.review_status)}`}>{statusLabel(run.review_status)}</span>
                   </button>
-                ))}
-              </div>}
-            </div>
-          ))}
+                  <div className="tree-run-meta">
+                    <span>Decision: {reviewDecisionLabel(run)}</span>
+                    <span>Fase: {summarizePhase(run)}</span>
+                    <span>{run.changed_files.length} archivo(s)</span>
+                    <span>{run.risk_flags.length} riesgo(s)</span>
+                    <button className={`tree-expand-toggle ${isExpanded ? "open" : ""}`} onClick={() => setExpandedRunSources((current) => ({ ...current, [run.source_json]: !isExpanded }))}>
+                      <ChevronDown size={12} /> {isExpanded ? "Ocultar archivos" : "Abrir archivos"}
+                    </button>
+                  </div>
+                  <div className={`file-tree ${isExpanded ? "expanded" : "collapsed"}`}>
+                    <div className="file-tree-inner">
+                      {run.changed_files.length === 0 ? <span className="tree-empty">No changed files</span> : run.changed_files.map((file) => (
+                        <button className={activeFile === file ? "active" : ""} key={file} onClick={() => { setSelectedRunSource(run.source_json); setSelectedFile(file); setExpandedRunSources((current) => ({ ...current, [run.source_json]: true })); loadFilePreview(run, file); loadNemoState(run); loadSelfInsights(run); }}>
+                          <FileCode2 size={14} />
+                          <span>{file}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}</div>}
+          </div>
         </section>
       </aside>
 
       <section className="workbench">
-        <header className="command-bar">
-          <div className="command-title">
-            <Code2 size={18} />
-            <span>{activeSection === "home" ? "Consola de Mision" : activeSection === "runs" ? (selectedRun?.objective ?? "No run selected") : activeSection === "versioning" ? "Control de Versionado" : activeSection === "terminal" ? "Terminal" : activeSection === "browser" ? "Browser" : activeSection === "extensions" ? "Extensions" : activeSection === "memory" ? "NEMO Memory" : "Ajustes"}</span>
-          </div>
-          <div className="command-actions">
-            <button onClick={refreshState} title="Refresh state"><RefreshCw size={16} /> Refresh</button>
-            <button onClick={() => setComposerOpen((open) => !open)} title="Start handoff"><Play size={16} /> New Handoff</button>
-          </div>
-        </header>
-
         {composerOpen && <HandoffComposer draft={handoffDraft} onChange={setHandoffDraft} onSubmit={startHandoff} onClose={() => setComposerOpen(false)} running={handoffRunning} />}
 
         {activeSection === "home" && <MissionHome
@@ -1454,13 +1699,17 @@ export function App() {
           status={status}
           draft={homeAgentDraft}
           provider={settingsDraft.provider}
+          modelName={settingsDraft.default_model}
           messages={agentMessages}
           onDraftChange={setHomeAgentDraft}
           onSubmit={sendHomeAgentMessage}
+          onStop={stopAgentMessage}
           onProviderChange={setProviderMode}
           onOpenComposer={() => setComposerOpen(true)}
           onOpenMemory={openMemorySection}
           running={agentBusy}
+          queuedPrompt={queuedAgentPrompt}
+          queuedPrompts={queuedAgentPrompts}
           onSelectRun={(run) => { selectRun(run); setActiveSection("runs"); }}
         />}
 
@@ -1496,8 +1745,13 @@ export function App() {
               messages={agentMessages}
               draft={agentDraft}
               busy={agentBusy}
+              queuedPrompt={queuedAgentPrompt}
+              queuedPrompts={queuedAgentPrompts}
               onDraftChange={setAgentDraft}
               onSend={sendAgentMessage}
+              onStop={stopAgentMessage}
+              onRemoveQueued={removeQueuedAgentPrompt}
+              onPrioritizeQueued={prioritizeQueuedAgentPrompt}
               onRunAction={runAgentAction}
               nemoState={nemoState}
               mcpWatcher={nemoMcpStatus}
@@ -1612,15 +1866,32 @@ export function App() {
           />
         </div>}
 
-        <BottomPanel run={selectedRun} status={status} job={activeJob} onControl={controlJob} />
+        <BottomPanel
+          run={selectedRun}
+          status={status}
+          job={activeJob}
+          onControl={controlJob}
+          terminalCommand={terminalDraft}
+          terminalRunning={terminalRunning}
+          terminalResult={terminalResult}
+          onTerminalCommandChange={setTerminalDraft}
+          onTerminalRun={runTerminal}
+        />
       </section>
     </main>
   );
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, status, draft, provider, messages, onDraftChange, onSubmit, onProviderChange, onOpenComposer, onOpenMemory, running, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; status: string; draft: string; provider: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; onSelectRun: (run: MissionRun) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onSelectRun: (run: MissionRun) => void }) {
   const recentRuns = state.runs.slice(0, 4);
-  const visibleMessages = messages.slice(-4);
+  const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
+  const [blockedListCollapsed, setBlockedListCollapsed] = useState<boolean>(false);
+  const [sendHaloOpen, setSendHaloOpen] = useState<boolean>(false);
+  const [expandedQueueItems, setExpandedQueueItems] = useState<Record<string, boolean>>({});
+  const [dismissedQueueItems, setDismissedQueueItems] = useState<Record<string, boolean>>({});
+  const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const visibleMessages = messages.slice(-8);
   const atomCount = nemoState?.health.atom_count ?? 0;
   const evidenceCount = nemoState?.health.evidence_count ?? 0;
   const feedbackCount = nemoState?.health.feedback_count ?? 0;
@@ -1629,6 +1900,60 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const queueCount = state.approval_queue.length;
   const runKpis = cognitiveStats?.run_kpis;
   const memoryKpis = cognitiveStats?.memory_kpis;
+  const providerLabel = modelName.trim() ? `LM Studio: ${modelName}` : "LM Studio real";
+  const canSendDraft = draft.trim().length > 0;
+  const visibleQueue = state.approval_queue.filter((run) => !dismissedQueueItems[run.source_json]);
+  const queueByBucket = {
+    blocked: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "blocked"),
+    queued: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "queued"),
+    ready: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "ready"),
+  };
+  const queueSummary = `${visibleQueue.length} pendientes, ${queueByBucket.ready.length} por validacion, ${queueByBucket.queued.length} por contexto`;
+
+  const openAttachmentPicker = () => {
+    attachmentInputRef.current?.click();
+  };
+
+  const attachMedia = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const nextFiles = Array.from(event.target.files ?? []);
+    if (nextFiles.length === 0) return;
+    setPendingAttachments((current) => {
+      const seen = new Set(current.map((file) => `${file.name}-${file.size}-${file.type}`));
+      const merged = [...current];
+      for (const file of nextFiles) {
+        const key = `${file.name}-${file.size}-${file.type}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(file);
+        }
+      }
+      return merged;
+    });
+    event.target.value = "";
+  };
+
+  const removeAttachment = (name: string) => {
+    setPendingAttachments((current) => current.filter((file) => file.name !== name));
+  };
+
+  const runHaloAction = (mode: "send" | "queue" | "steer" | "stop") => {
+    if (mode === "stop") {
+      onStop();
+      setSendHaloOpen(false);
+      return;
+    }
+    onSubmit(mode);
+    setSendHaloOpen(false);
+  };
+
+  const toggleQueueItem = (run: MissionRun) => {
+    setExpandedQueueItems((current) => ({ ...current, [run.source_json]: !current[run.source_json] }));
+  };
+
+  const dismissQueueItem = (run: MissionRun) => {
+    setDismissedQueueItems((current) => ({ ...current, [run.source_json]: true }));
+  };
+
   return (
     <section className="mission-home">
       <div className="home-main">
@@ -1636,6 +1961,14 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
         <h2>Hola, Nemo</h2>
         <p>Describe la tarea, deja que los agentes trabajen en sandbox y revisa el diff con memoria operativa al lado.</p>
         <div className="home-prompt">
+          <input
+            ref={attachmentInputRef}
+            type="file"
+            accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.md,.json"
+            multiple
+            className="hidden-file-input"
+            onChange={attachMedia}
+          />
           <textarea
             value={draft}
             onChange={(event) => onDraftChange(event.target.value)}
@@ -1645,23 +1978,78 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
             placeholder="Habla con el agente..."
           />
           <div className="prompt-actions">
-            <button onClick={onOpenComposer} title="Configurar handoff"><Plus size={16} /></button>
+            <button onClick={openAttachmentPicker} title="Adjuntar imagenes, documentos o multimedia"><Plus size={16} /></button>
+            <button onClick={onOpenComposer} title="Configurar handoff"><Hand size={16} /></button>
             <label className="provider-switch real" title="Modo del agente">
               <Bot size={15} />
               <select value={provider} onChange={(event) => onProviderChange(event.target.value)}>
-                <option value="subprocess">LM Studio real</option>
+                <option value="subprocess">{providerLabel}</option>
               </select>
             </label>
             <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
-            <button className="send-intent" onClick={onSubmit} disabled={running || !draft.trim()} title="Enviar al agente"><ArrowUp size={18} /></button>
+            <div className={`send-halo ${sendHaloOpen ? "open" : ""}`} onMouseLeave={() => setSendHaloOpen(false)}>
+              <button className="send-intent" onClick={() => running ? runHaloAction("stop") : runHaloAction("send")} disabled={!running && !canSendDraft} onMouseEnter={() => setSendHaloOpen(true)} onFocus={() => setSendHaloOpen(true)} title={running ? "Detener respuesta del agente" : "Enviar al agente"}>
+                {running ? <Square size={16} /> : <ArrowUp size={18} />}
+              </button>
+              <div className="send-halo-menu" aria-label="Acciones del agente">
+                <button className="send-halo-option send" onClick={() => runHaloAction("send")} disabled={!canSendDraft} title="Enviar ahora" aria-label="Enviar ahora" data-label="Enviar">
+                  <ArrowUp size={13} />
+                  <span>Enviar</span>
+                </button>
+                <button className="send-halo-option queue" onClick={() => runHaloAction("queue")} disabled={!canSendDraft} title="Poner en cola" aria-label="Poner en cola" data-label="En cola">
+                  <Clock3 size={13} />
+                  <span>En cola</span>
+                </button>
+                <button className="send-halo-option steer" onClick={() => runHaloAction("steer")} disabled={!canSendDraft} title="Steer prioritario" aria-label="Steer prioritario" data-label="Steer">
+                  <Wrench size={13} />
+                  <span>Steer</span>
+                </button>
+                <button className="send-halo-option stop" onClick={() => runHaloAction("stop")} disabled={!running} title="Detener" aria-label="Detener" data-label="Stop">
+                  <Square size={13} />
+                  <span>Stop</span>
+                </button>
+              </div>
+            </div>
           </div>
+          {pendingAttachments.length > 0 && <div className="attachment-strip" aria-label="Adjuntos preparados">
+            {pendingAttachments.map((file) => (
+              <button key={`${file.name}-${file.size}`} className="attachment-chip" onClick={() => removeAttachment(file.name)} title={`Quitar adjunto: ${file.name}`}>
+                <Files size={12} />
+                <span>{file.name}</span>
+              </button>
+            ))}
+          </div>}
+          {pendingAttachments.length > 0 && <div className="home-queue-note">Adjuntos preparados para modelos multimodales. Falta conectarlos al envio del agente.</div>}
+          {running && <div className="home-queue-note">El agente esta respondiendo. Puedes seguir enviando mensajes; se encolan automaticamente.</div>}
+          {queuedPrompt && <div className="home-queue-note pending">En cola: {queuedPrompt}</div>}
+          {queuedPrompts.length > 1 && <div className="home-queue-note">Pendientes: {queuedPrompts.length}</div>}
         </div>
-        <div className="home-chat-preview" aria-label="Conversacion con agente">
-          {visibleMessages.map((message) => <article className={message.role} key={message.id}>
-            <span>{message.role === "assistant" ? "agent" : "you"}</span>
-            <MessageRichText content={message.content} animate={false} compact />
-          </article>)}
-        </div>
+        <section className="home-conversation-stage" aria-label="Conversacion con agente">
+          <div className="home-conversation-header">
+            <MessageSquareText size={16} aria-hidden="true" />
+            <span className="home-conversation-count" aria-label={`${visibleMessages.length} mensajes recientes`}>
+              {visibleMessages.length}
+            </span>
+          </div>
+          <div className="home-chat-preview">
+            {visibleMessages.length === 0 ? <span className="empty-inline">Sin mensajes recientes.</span> : visibleMessages.map((message) => {
+              const renderedContent = message.role === "assistant" ? parseAgentMessageDecorations(message.content).cleanedContent : message.content;
+              return <article className={message.role} key={message.id}>
+                <span>{message.role === "assistant" ? "agent" : "you"}</span>
+                <MessageRichText content={renderedContent} animate={false} />
+              </article>;
+            })}
+          </div>
+        </section>
+        <InsightSection title="Memoria y contexto" summary={`${atomCount} atoms / ${evidenceCount} evidence / ${feedbackCount} feedback`} open={false}>
+          <CognitiveStatsPanel cognitiveStats={cognitiveStats} onRefresh={onRefreshCognitiveStats} />
+          <div className="mini-list">
+            <span>Portfolio: {nemoState?.context_portfolio?.estimated_tokens ?? "-"} token(s)</span>
+            <span>Atoms: {memoryKpis?.atom_count ?? atomCount} / Corrections: {memoryKpis?.correction_count ?? 0}</span>
+            <span>Apply success: {runKpis ? `${Math.round(runKpis.apply_success_rate * 100)}%` : "-"}</span>
+            <span>Blocked rate: {runKpis ? `${Math.round(runKpis.blocked_rate * 100)}%` : "-"}</span>
+          </div>
+        </InsightSection>
         <div className="suggestion-row">
           {[
             "Implementar feature desde PRD",
@@ -1673,8 +2061,31 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
 
       <aside className="home-status">
         <div className="status-title">
-          <span><Home size={15} /> Sistema</span>
-          <strong>{blockedRuns ? `${blockedRuns} bloqueado(s)` : "Todo en orden"}</strong>
+          <button className={`status-title-button ${blockedRuns ? "interactive" : ""}`} onClick={() => blockedReviewRuns[0] && onSelectRun(blockedReviewRuns[0])} disabled={!blockedReviewRuns[0]} title={blockedReviewRuns[0] ? "Abrir el primer run bloqueado" : "Sin runs bloqueados"}>
+            <span><Home size={15} /> Sistema</span>
+            <strong>{blockedRuns ? `${blockedRuns} bloqueado(s)` : "Todo en orden"}</strong>
+          </button>
+          {blockedReviewRuns.length > 0 && <>
+            <div className="status-title-actions">
+              <button className="status-action status-action-primary" onClick={() => onSelectRun(blockedReviewRuns[0])}>
+                <AlertTriangle size={12} /> Revisar bloqueados
+              </button>
+              <button className={`status-action status-action-toggle ${blockedListCollapsed ? "collapsed" : ""}`} onClick={() => setBlockedListCollapsed((value) => !value)}>
+                <ChevronDown size={12} /> {blockedListCollapsed ? "Mostrar lista" : "Ocultar lista"}
+              </button>
+            </div>
+            <div className={`status-links ${blockedListCollapsed ? "collapsed" : "expanded"}`} aria-label="Runs bloqueados">
+              <div className="status-links-inner">
+                {blockedReviewRuns.slice(0, 3).map((run) => (
+                  <button key={run.source_json} className="status-link-chip" onClick={() => onSelectRun(run)} title={`${run.objective} | ${run.risk_flags.join(", ") || "sin riesgo detallado"}`}>
+                    <AlertTriangle size={12} />
+                    <span>{run.objective}</span>
+                    <small>{run.risk_flags[0] ? run.risk_flags[0].replaceAll("_", " ") : `${run.risk_flags.length} riesgos`}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>}
         </div>
         <StatusGauge label="Contexto" value={contextLabel} percent={Math.min(100, Math.max(18, atomCount * 2))} tone="blue" />
         <StatusGauge label="Memoria" value={`${atomCount} atoms`} percent={Math.min(100, Math.max(20, atomCount * 3))} tone="green" />
@@ -1693,17 +2104,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
           </div>
         </InsightSection>
 
-        <InsightSection title="Memoria y contexto" summary={`${atomCount} atoms / ${evidenceCount} evidence / ${feedbackCount} feedback`} open={false}>
-          <CognitiveStatsPanel cognitiveStats={cognitiveStats} onRefresh={onRefreshCognitiveStats} />
-          <div className="mini-list">
-            <span>Portfolio: {nemoState?.context_portfolio?.estimated_tokens ?? "-"} token(s)</span>
-            <span>Atoms: {memoryKpis?.atom_count ?? atomCount} / Corrections: {memoryKpis?.correction_count ?? 0}</span>
-            <span>Apply success: {runKpis ? `${Math.round(runKpis.apply_success_rate * 100)}%` : "-"}</span>
-            <span>Blocked rate: {runKpis ? `${Math.round(runKpis.blocked_rate * 100)}%` : "-"}</span>
-          </div>
-        </InsightSection>
-
-        <InsightSection title="Actividad y decisiones" summary={`${recentRuns.length} runs recientes / ${visibleMessages.length} mensajes`} open={false}>
+        <InsightSection title="Actividad y decisiones" summary={`${recentRuns.length} runs recientes / ${messages.slice(-4).length} mensajes`} open={false}>
           <div className="recent-card">
             <strong>Actividad reciente</strong>
             {recentRuns.length === 0 ? <span className="empty-inline">Sin runs todavía.</span> : recentRuns.map((run) => (
@@ -1714,28 +2115,73 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
             ))}
           </div>
           <div className="home-chat-preview" aria-label="Conversacion reciente del agente">
-            {visibleMessages.length === 0 ? <span className="empty-inline">Sin mensajes recientes.</span> : visibleMessages.map((message) => <article className={message.role} key={message.id}>
-              <span>{message.role === "assistant" ? "agent" : "you"}</span>
-              <MessageRichText content={message.content} animate={false} compact />
-            </article>)}
+            {messages.slice(-4).length === 0 ? <span className="empty-inline">Sin mensajes recientes.</span> : messages.slice(-4).map((message) => {
+              const renderedContent = message.role === "assistant" ? parseAgentMessageDecorations(message.content).cleanedContent : message.content;
+              return <article className={message.role} key={message.id}>
+                <span>{message.role === "assistant" ? "agent" : "you"}</span>
+                <MessageRichText content={renderedContent} animate={false} compact />
+              </article>;
+            })}
           </div>
         </InsightSection>
-
-        <CognitiveStatsPanel cognitiveStats={cognitiveStats} onRefresh={onRefreshCognitiveStats} />
         <div className="agent-stack">
           <strong>Agentes activos <span>{readyRuns}</span></strong>
           <AgentPulse name="Planner" detail="Analizando requisitos" tone="green" />
           <AgentPulse name="Coder" detail="Editando sandbox" tone="blue" />
           <AgentPulse name="Reviewer" detail={`${evidenceCount} evidence handle(s)`} tone="violet" />
         </div>
-        {state.approval_queue.length > 0 && (
+        {visibleQueue.length > 0 && (
           <div className="home-approval-queue">
-            <strong><ChevronDown size={14} /> Approval Queue <span className="queue-count">{state.approval_queue.length}</span></strong>
-            {state.approval_queue.map((run) => (
-              <button key={run.source_json} className={`queue-item tone-${statusTone(run.review_status)}`} onClick={() => onSelectRun(run)} title={run.objective}>
-                <span className="queue-item-objective">{run.objective}</span>
-                <span className={`pill ${statusTone(run.review_status)}`}>{statusLabel(run.review_status)}</span>
-              </button>
+            <strong><ChevronDown size={14} /> Approval Queue <span className="queue-count">{visibleQueue.length}</span></strong>
+            <div className="queue-summary" aria-label="Resumen de cola">
+              <span>{queueSummary}</span>
+              {queueByBucket.blocked.length > 0 && <b>{queueByBucket.blocked.length} bloqueado(s)</b>}
+            </div>
+            {(["blocked", "queued", "ready"] as const).map((bucket) => (
+              <div className={`queue-group ${bucket}`} key={bucket}>
+                <header>
+                  <span>{queueBucketLabel(bucket)}</span>
+                  <small>{queueByBucket[bucket].length}</small>
+                </header>
+                {queueByBucket[bucket].length === 0 ? (
+                  <div className="queue-group-empty">Sin items</div>
+                ) : queueByBucket[bucket].map((run) => {
+                  const expanded = expandedQueueItems[run.source_json] ?? false;
+                  const tone = statusTone(run.review_status);
+                  const narratives = queueRunNarratives(run).slice(0, 2);
+                  return (
+                    <article key={run.source_json} className={`queue-item-card tone-${tone} ${expanded ? "expanded" : "collapsed"}`}>
+                      <button className="queue-item-top" onClick={() => toggleQueueItem(run)} title={run.objective}>
+                        <span className="queue-item-objective">{shortenObjective(run.objective)}</span>
+                        <span className={`pill ${tone}`}>{statusLabel(run.review_status)}</span>
+                        <ChevronDown size={13} className={`queue-expand-icon ${expanded ? "up" : "down"}`} />
+                      </button>
+                      <div className="queue-item-reason">{queuePrimaryReason(run)}</div>
+                      <div className={`queue-item-details ${expanded ? "expanded" : "collapsed"}`}>
+                        <div className="queue-item-meta">
+                          <span>{run.changed_files.length} archivo(s)</span>
+                          <span>{run.risk_flags.length} riesgo(s)</span>
+                          <span>{reviewDecisionLabel(run)}</span>
+                        </div>
+                        <div className="queue-risk-briefs">
+                          {narratives.map((item, index) => <article className="queue-risk-brief" key={`${run.source_json}-narrative-${index}`}>
+                            <strong>{item.title}</strong>
+                            <p>{item.reason}</p>
+                            <small>Impacto: {item.impact}</small>
+                            <small>Siguiente: {item.nextStep}</small>
+                          </article>)}
+                        </div>
+                        <div className="queue-item-ctas">
+                          <button onClick={() => onSelectRun(run)}>Revisar</button>
+                          <button onClick={() => onSelectRun(run)}>Abrir diff</button>
+                          <button onClick={() => onSelectRun(run)}>Continuar</button>
+                          <button className="danger" onClick={() => dismissQueueItem(run)}>Descartar</button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
             ))}
           </div>
         )}
@@ -1901,8 +2347,13 @@ type AgentPaneProps = {
   messages: AgentMessage[];
   draft: string;
   busy: boolean;
+  queuedPrompt: string | null;
+  queuedPrompts: string[];
   onDraftChange: (value: string) => void;
   onSend: () => void;
+  onStop: () => void;
+  onRemoveQueued: (index: number) => void;
+  onPrioritizeQueued: (index: number) => void;
   onRunAction: (action: AgentAction) => void;
   nemoState: NemoState | null;
   mcpWatcher: NemoMcpWatcherState | null;
@@ -2097,7 +2548,7 @@ function InsightSection({
   );
 }
 
-function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, onDraftChange, onSend, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, showSettingsPanel = true }: AgentPaneProps) {
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, showSettingsPanel = true }: AgentPaneProps) {
   const [compactView, setCompactView] = useState(true);
   const riskCount = run?.risk_flags.length ?? 0;
 
@@ -2108,6 +2559,12 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
         <div className="chat-thread">
           {messages.map((message) => <AgentChatMessage message={message} onRunAction={onRunAction} key={message.id} />)}
         </div>
+        <div className="chat-steering">
+          <button onClick={() => onSendGuidedPrompt("Continua desde el ultimo paso y explicame el avance en 3 bullets.")}>Continuar</button>
+          <button onClick={() => onSendGuidedPrompt("Enfoca la solucion en UX del chat: posicion, stop, steering y render visual de tools.")}>Enfocar UX</button>
+          <button onClick={() => onSendGuidedPrompt("Reformula la respuesta con opciones accionables y pasos concretos.")}>Reformular</button>
+          <button className="stop" onClick={onStop} disabled={!busy}><Square size={13} /> Detener</button>
+        </div>
         <div className="chat-composer">
           <textarea
             value={draft}
@@ -2117,8 +2574,24 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
             }}
             placeholder="Pide al agente continuar, corregir o aplicar cambios..."
           />
-          <button onClick={onSend} disabled={busy || !draft.trim()} title="Send agent prompt"><Send size={15} /></button>
+          <button onClick={onSend} disabled={!draft.trim()} title={busy ? "Queue message" : "Send agent prompt"}><Send size={15} /></button>
         </div>
+        {(busy || queuedPrompt) && <div className="chat-queue-status">
+          <span>{busy ? "El agente esta respondiendo..." : ""}</span>
+          {queuedPrompt && <strong>Siguiente: {queuedPrompt}</strong>}
+          {queuedPrompts.length > 1 && <span>{queuedPrompts.length - 1} mensaje(s) adicionales en cola</span>}
+          {queuedPrompts.length > 0 && <div className="queued-list">
+            {queuedPrompts.map((item, index) => (
+              <div className="queued-item" key={`${item}-${index}`}>
+                <span>{index + 1}. {item}</span>
+                <div>
+                  <button onClick={() => onPrioritizeQueued(index)} disabled={index === 0}>Priorizar</button>
+                  <button onClick={() => onRemoveQueued(index)}>Quitar</button>
+                </div>
+              </div>
+            ))}
+          </div>}
+        </div>}
       </section>
       <div className="metric-grid">
         <Metric icon={<TerminalSquare size={16} />} label="Runs" value={state.runs.length} />
@@ -2242,8 +2715,8 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
   );
 }
 
-function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo, busy, error, activeRepo }: { repos: string[]; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; busy: boolean; error: string; activeRepo?: string }) {
-  const [pendingPath, setPendingPath] = React.useState<string | null>(null);
+function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo, onBrowseFolder, busy, error, activeRepo }: { repos: string[]; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; onBrowseFolder: () => Promise<string | null>; busy: boolean; error: string; activeRepo?: string }) {
+  const [collapsed, setCollapsed] = React.useState<boolean>(false);
 
   const confirmAndOpen = React.useCallback((path: string) => {
     const folderName = path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? path;
@@ -2257,10 +2730,9 @@ function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo
       onRepoDraftChange(path);
       onOpenRepo(path);
     }
-    setPendingPath(null);
   }, [onRepoDraftChange, onOpenRepo]);
 
-  const pickFolder = React.useCallback(() => {
+  const pickFolder = React.useCallback(async () => {
     if (window.parent !== window) {
       const handler = (event: MessageEvent) => {
         if (event.data?.type !== 'pick-folder-result') return;
@@ -2269,8 +2741,11 @@ function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo
       };
       window.addEventListener('message', handler);
       window.parent.postMessage({ type: 'pick-folder' }, '*');
+      return;
     }
-  }, [confirmAndOpen]);
+    const picked = await onBrowseFolder();
+    if (picked) confirmAndOpen(picked);
+  }, [confirmAndOpen, onBrowseFolder]);
 
   const handleOpenCurrent = React.useCallback(() => {
     if (repoDraft) confirmAndOpen(repoDraft);
@@ -2280,7 +2755,10 @@ function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo
 
   return (
     <section className="repo-strip">
-      <div className="section-heading"><ChevronDown size={14} /> Workspace</div>
+      <button className={`section-heading section-toggle ${collapsed ? "collapsed" : ""}`} onClick={() => setCollapsed((value) => !value)} title={collapsed ? "Expandir workspace" : "Colapsar workspace"}>
+        <ChevronDown size={14} /> Workspace
+      </button>
+      {!collapsed && <>
       {activeRepo && (
         <div className="workspace-active-badge" title={activeRepo}>
           <HardDrive size={12} />
@@ -2290,9 +2768,7 @@ function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo
       )}
       <div className="repo-open-row">
         <input value={repoDraft} onChange={(event) => onRepoDraftChange(event.target.value)} placeholder="c:/dev/repo" />
-        {window.parent !== window && (
-          <button className="repo-item repo-item-folder" onClick={pickFolder} disabled={busy} title="Seleccionar carpeta con selector nativo"><HardDrive size={14} /></button>
-        )}
+        <button className="repo-item repo-item-folder" onClick={pickFolder} disabled={busy} title="Seleccionar carpeta con explorador"><HardDrive size={14} /> Explorar…</button>
         <button className="repo-item" onClick={handleOpenCurrent} disabled={busy || !repoDraft} title="Establecer como workspace del agente">{busy ? "Abriendo…" : "Usar"}</button>
       </div>
       {error && <div className="repo-error">{error}</div>}
@@ -2303,6 +2779,7 @@ function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo
           {repo === activeRepo && <span className="repo-active-dot" />}
         </button>
       ))}
+      </>}
     </section>
   );
 }
@@ -2806,24 +3283,123 @@ function NemoSection({ title, empty, children }: { title: string; empty: string;
 }
 
 function NemoLine({ tone, value, meta }: { tone: string; value: string; meta?: string }) {
-  return <div className={`nemo-line ${tone}`}><span>{meta ?? tone}</span><p>{value}</p></div>;
+  // Extract type label from value if it starts with [type]
+  let displayValue = value;
+  let type = tone;
+  
+  const typeMatch = value.match(/^\[(\w+)\]\s+(.*)$/);
+  if (typeMatch) {
+    type = typeMatch[1].toLowerCase();
+    displayValue = typeMatch[2];
+  }
+  
+  const typeLabels: Record<string, { icon: string; label: string; color: string }> = {
+    correction: { icon: '⚡', label: 'Aprendizaje', color: 'learning' },
+    preference: { icon: '✨', label: 'Preferencia', color: 'preference' },
+    project_fact: { icon: '📌', label: 'Contexto', color: 'fact' },
+    decision: { icon: '🎯', label: 'Decisión', color: 'decision' },
+    evidence: { icon: '📎', label: 'Evidencia', color: 'evidence' },
+    feedback: { icon: '💬', label: 'Retroalimentación', color: 'feedback' },
+    trace: { icon: '🔍', label: 'Trace', color: 'trace' },
+    portfolio: { icon: '📦', label: 'Portfolio', color: 'portfolio' },
+    meta: { icon: '📊', label: 'Metadatos', color: 'meta' },
+  };
+  
+  const typeInfo = typeLabels[type] || { icon: '•', label: type, color: type };
+  const displayMeta = meta ? `${typeInfo.icon} ${typeInfo.label}` : `${typeInfo.icon} ${typeInfo.label}`;
+  
+  return <div className={`nemo-line ${typeInfo.color}`} data-type={type}><span>{displayMeta}</span><p>{displayValue}</p></div>;
+}
+
+function parseInlineToolCall(content: string): Array<{ name: string; summary: string; status: string }> {
+  const parsed: Array<{ name: string; summary: string; status: string }> = [];
+  const tryParse = (candidate: string) => {
+    try {
+      const payload = JSON.parse(candidate) as { tool?: unknown; parameters?: unknown; args?: unknown; action?: unknown };
+      const toolName = typeof payload.tool === "string"
+        ? payload.tool
+        : typeof payload.action === "string"
+          ? payload.action
+          : "";
+      if (!toolName) return;
+      const params = payload.parameters ?? payload.args ?? {};
+      let summary = "executed";
+      if (params && typeof params === "object") {
+        const keys = Object.keys(params as Record<string, unknown>);
+        summary = keys.length ? `params: ${keys.join(", ")}` : "without params";
+      }
+      parsed.push({ name: toolName, summary, status: "completed" });
+    } catch {
+      // ignore non-tool JSON blocks
+    }
+  };
+
+  const trimmed = content.trim();
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) tryParse(trimmed);
+  const codeBlocks = content.match(/```(?:json)?\s*[\s\S]*?```/g) ?? [];
+  codeBlocks.forEach((block) => {
+    const raw = block.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
+    if (raw) tryParse(raw);
+  });
+  return parsed;
+}
+
+function parseAgentMessageDecorations(content: string): { cleanedContent: string; risks: string[]; inlineTools: Array<{ name: string; summary: string; status: string }> } {
+  const inlineTools = parseInlineToolCall(content);
+  const risks: string[] = [];
+  const lines = content.split("\n");
+  const keptLines = lines.filter((line) => {
+    const match = line.match(/^\s*Risks:\s*(.+)$/i);
+    if (!match) return true;
+    const items = match[1].split(",").map((item) => item.trim()).filter(Boolean);
+    risks.push(...items);
+    return false;
+  });
+
+  let cleaned = keptLines.join("\n").trim();
+  if (inlineTools.length > 0) {
+    cleaned = cleaned
+      .replace(/```(?:json)?\s*[\s\S]*?```/g, "")
+      .replace(/^\s*\{[\s\S]*\}\s*$/g, "")
+      .trim();
+  }
+  return { cleanedContent: cleaned || (inlineTools.length ? "Tool executed." : ""), risks, inlineTools };
+}
+
+function shouldAttachRunContextToMessage(content: string): boolean {
+  const normalized = content.toLowerCase();
+  const runIntentPattern = /\b(run|runs|diff|patch|hunk|review|revisar|aplicar|apply|rollback|riesgo|risk|aprob|approval|queue|cola|timeline|merge|conflict|conflicto|archivo|files?)\b/;
+  return runIntentPattern.test(normalized);
 }
 
 function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onRunAction: (action: AgentAction) => void }) {
+  const parsed = parseAgentMessageDecorations(message.content);
+  const payloadTools = message.tool_calls ?? [];
+  const mergedTools: RenderedToolCall[] = [
+    ...payloadTools.map((tool) => ({ ...tool, source: "payload" as const })),
+    ...parsed.inlineTools.map((tool, index) => ({
+      id: `inline-${message.id}-${index}`,
+      name: tool.name,
+      status: tool.status,
+      summary: tool.summary,
+      source: "inline" as const,
+    })),
+  ];
+
   return (
     <article className={`chat-message ${message.role}`}>
       <div className="message-role">{message.role}</div>
-      <MessageRichText content={message.content} animate={message.role === "assistant"} />
+      <MessageRichText content={parsed.cleanedContent} animate={message.role === "assistant"} />
       <div className="message-meta-row">
         <span className="message-meta-pill">~{estimateTokens(message.content)} tok</span>
-        {message.tool_calls && message.tool_calls.length > 0 && <span className="message-meta-pill">tools {message.tool_calls.length}</span>}
+        {mergedTools.length > 0 && <span className="message-meta-pill">tools {mergedTools.length}</span>}
       </div>
-      {message.tool_calls && message.tool_calls.length > 0 && <div className="tool-call-list">
-        {message.tool_calls.map((tool) => (
+      {mergedTools.length > 0 && <div className="tool-call-list">
+        {mergedTools.map((tool) => (
           <div className="tool-call" key={tool.id}>
             <Wrench size={13} />
             <div>
-              <strong>{tool.name}</strong>
+              <strong>{tool.name}{tool.source === "inline" ? " (detected)" : ""}</strong>
               <span>{tool.status} / {tool.summary}</span>
             </div>
           </div>
@@ -2910,45 +3486,103 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
   );
 }
 
-function BottomPanel({ run, status, job, onControl }: { run: MissionRun | undefined; status: string; job: HandoffJob | null; onControl: (action: "cancel" | "pause" | "resume") => void }) {
+function BottomPanel({ run, status, job, onControl, terminalCommand, terminalRunning, terminalResult, onTerminalCommandChange, onTerminalRun }: {
+  run: MissionRun | undefined;
+  status: string;
+  job: HandoffJob | null;
+  onControl: (action: "cancel" | "pause" | "resume") => void;
+  terminalCommand: string;
+  terminalRunning: boolean;
+  terminalResult: TerminalRunResult | null;
+  onTerminalCommandChange: (value: string) => void;
+  onTerminalRun: () => void;
+}) {
   const running = job ? ["starting", "running"].includes(job.status) : false;
   const paused = job?.status === "paused";
   const iterationLines = job ? extractIterationLines(job.logs) : [];
+  const [activeTab, setActiveTab] = useState<"timeline" | "terminal" | "output">("terminal");
   return (
     <section className="bottom-panel">
       <div className="bottom-tabs">
-        <span className="active"><PanelBottom size={14} /> Timeline</span>
-        <span><TerminalSquare size={14} /> Terminal</span>
-        <span><Clock3 size={14} /> Output</span>
+        <button type="button" className={activeTab === "timeline" ? "active" : ""} onClick={() => setActiveTab("timeline")}>
+          <PanelBottom size={14} /> Timeline
+        </button>
+        <button type="button" className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}>
+          <TerminalSquare size={14} /> Terminal
+        </button>
+        <button type="button" className={activeTab === "output" ? "active" : ""} onClick={() => setActiveTab("output")}>
+          <Clock3 size={14} /> Output
+        </button>
       </div>
       <div className="bottom-content">
-        <div className="terminal-line"><span>nemo</span> {status}</div>
-        {job && <div className="job-console">
-          <div className="job-header">
-            <strong>{job.job_id}</strong>
-            <span>{job.status}{job.returncode !== null ? ` returncode=${job.returncode}` : ""}</span>
-            <div>
-              <button disabled={!running} onClick={() => onControl("pause")}>Pause</button>
-              <button disabled={!paused} onClick={() => onControl("resume")}>Resume</button>
-              <button disabled={!running} onClick={() => onControl("cancel")}>Cancel</button>
+        {activeTab === "terminal" && (
+          <>
+            <div className="terminal-line"><span>nemo</span> {status}</div>
+            <div className="job-console">
+              <div className="job-iteration-title">Terminal real</div>
+              <div className="repo-open-row" style={{ padding: "6px 12px", gridTemplateColumns: "minmax(0, 1fr) auto", marginBottom: 0 }}>
+                <input
+                  value={terminalCommand}
+                  onChange={(event) => onTerminalCommandChange(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      onTerminalRun();
+                    }
+                  }}
+                  placeholder="git status --short"
+                />
+                <button className="repo-item" onClick={onTerminalRun} disabled={terminalRunning}>
+                  {terminalRunning ? "Running" : "Run"}
+                </button>
+              </div>
+              {terminalResult && <div className="mini-list" style={{ padding: "0 12px 8px" }}>
+                <span>exit: {terminalResult.exit_code ?? "timeout"} / duration: {terminalResult.duration_ms} ms</span>
+                <span>cwd: {terminalResult.cwd}</span>
+              </div>}
+              <div className="job-iteration-title">Salida</div>
+              <pre>{terminalResult ? `${terminalResult.stdout || ""}${terminalResult.stderr ? `\n${terminalResult.stderr}` : ""}`.trim() || "(no output)" : "Ejecuta un comando para ver salida."}</pre>
             </div>
-          </div>
-          {iterationLines.length > 0 ? (
-            <>
-              <div className="job-iteration-title">Iteration output ({iterationLines.length})</div>
-              <pre>{iterationLines.join("\n")}</pre>
-            </>
-          ) : null}
-          <div className="job-iteration-title">Full live output</div>
-          <pre>{job.logs.slice(-300).join("\n") || "No logs yet."}</pre>
-        </div>}
-        {run?.timeline.map((event, index) => (
-          <div className="timeline-row" key={`${event.sequence ?? index}-${event.kind}`}>
-            <span>{event.sequence ?? index + 1}</span>
-            <strong>{event.kind ?? "event"}</strong>
-            <p>{event.summary ?? event.phase ?? "No summary"}{event.payload_ref ? ` / ${event.payload_ref}` : ""}</p>
-          </div>
-        )) ?? <EmptyState />}
+            {job ? <div className="job-console">
+              <div className="job-header">
+                <strong>{job.job_id}</strong>
+                <span>{job.status}{job.returncode !== null ? ` returncode=${job.returncode}` : ""}</span>
+                <div>
+                  <button disabled={!running} onClick={() => onControl("pause")}>Pause</button>
+                  <button disabled={!paused} onClick={() => onControl("resume")}>Resume</button>
+                  <button disabled={!running} onClick={() => onControl("cancel")}>Cancel</button>
+                </div>
+              </div>
+            </div> : null}
+          </>
+        )}
+
+        {activeTab === "output" && (
+          <>
+            {job ? <div className="job-console">
+              {iterationLines.length > 0 ? (
+                <>
+                  <div className="job-iteration-title">Iteration output ({iterationLines.length})</div>
+                  <pre>{iterationLines.join("\n")}</pre>
+                </>
+              ) : null}
+              <div className="job-iteration-title">Full live output</div>
+              <pre>{job.logs.slice(-300).join("\n") || "No logs yet."}</pre>
+            </div> : <EmptyState />}
+          </>
+        )}
+
+        {activeTab === "timeline" && (
+          <>
+            {run?.timeline.length ? run.timeline.map((event, index) => (
+              <div className="timeline-row" key={`${event.sequence ?? index}-${event.kind}`}>
+                <span>{event.sequence ?? index + 1}</span>
+                <strong>{event.kind ?? "event"}</strong>
+                <p>{event.summary ?? event.phase ?? "No summary"}{event.payload_ref ? ` / ${event.payload_ref}` : ""}</p>
+              </div>
+            )) : <EmptyState />}
+          </>
+        )}
       </div>
     </section>
   );

@@ -1605,6 +1605,35 @@ def api_repo_clone(server: "MissionControlHttpServer", payload: dict[str, object
     return api_repo_open(server, {"repo_path": str(target)})
 
 
+def api_repo_pick_folder(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
+    if os.name != "nt":
+        raise _bad_request("folder picker is only supported on Windows", error_code="folder_picker_unsupported")
+    picker_script = (
+        "Add-Type -AssemblyName System.Windows.Forms | Out-Null; "
+        "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog; "
+        "$dialog.Description = 'Select workspace folder'; "
+        "$dialog.UseDescriptionForTitle = $true; "
+        "$dialog.ShowNewFolderButton = $true; "
+        "$result = $dialog.ShowDialog(); "
+        "if ($result -eq [System.Windows.Forms.DialogResult]::OK -and $dialog.SelectedPath) { Write-Output $dialog.SelectedPath }"
+    )
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-STA", "-Command", picker_script],
+        text=True,
+        capture_output=True,
+        timeout=120,
+        cwd=server.config.repo_path,
+    )
+    if completed.returncode != 0:
+        raise ValueError(completed.stderr.strip() or completed.stdout.strip() or "folder picker failed")
+    selected_path = ""
+    if completed.stdout:
+        lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        if lines:
+            selected_path = lines[-1]
+    return {"ok": True, "path": selected_path or None}
+
+
 def api_terminal_run(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     command = payload.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -3487,6 +3516,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/settings": lambda payload: api_settings(self.server, payload),
             "/api/repo/open": lambda payload: api_repo_open(self.server, payload),
             "/api/repo/clone": lambda payload: api_repo_clone(self.server, payload),
+            "/api/repo/pick-folder": lambda payload: api_repo_pick_folder(self.server, payload),
             "/api/terminal/run": lambda payload: api_terminal_run(self.server.config, payload),
             "/api/browser/open": lambda payload: api_browser_open(self.server, payload),
             "/api/browser/search": lambda payload: api_browser_search(self.server, payload),
