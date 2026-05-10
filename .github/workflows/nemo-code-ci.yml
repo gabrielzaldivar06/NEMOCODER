@@ -104,7 +104,7 @@ jobs:
 
   installer-preview:
     name: Installer Preview
-    if: ${{ env.INSTALLER_MODE == 'true' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.installer_mode == true) || (github.event_name != 'workflow_dispatch' && vars.INSTALLER_MODE == 'true') }}
     needs: backend-tests
     runs-on: windows-latest
     steps:
