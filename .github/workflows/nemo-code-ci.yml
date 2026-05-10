@@ -18,6 +18,8 @@ jobs:
   backend-tests:
     name: Backend Tests
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: src
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,28 +35,20 @@ jobs:
           pip install -e .
 
       - name: Run backend unit tests
-        env:
-          PYTHONPATH: src
         run: python -m unittest discover -s tests
 
       - name: Run release confidence and RC readiness gates
-        env:
-          PYTHONPATH: src
         run: |
           mkdir -p artifacts
           python -m unittest tests.test_release_confidence_e2e tests.test_global_mvp_gate tests.test_desktop_release_readiness_contract > artifacts/release-confidence.txt
           cat artifacts/release-confidence.txt
 
       - name: Generate release confidence evidence
-        env:
-          PYTHONPATH: src
         run: |
           python -m tests.generate_release_confidence_evidence --json-out artifacts/release-confidence.json --md-out artifacts/release-confidence.md
           cat artifacts/release-confidence.md
 
       - name: Generate release go/no-go dossier
-        env:
-          PYTHONPATH: src
         run: |
           python scripts/generate-release-go-no-go.py --json-out artifacts/release-go-no-go.json --md-out artifacts/release-go-no-go.md --allow-missing-release-bundle
           cat artifacts/release-go-no-go.md
@@ -228,7 +222,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: apps/mission-control
-        run: npm ci
+        run: npm install
 
       - name: Validate Mission Control interactive controls
         working-directory: apps/mission-control
