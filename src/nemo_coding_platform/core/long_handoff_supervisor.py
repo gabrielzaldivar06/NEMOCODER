@@ -103,25 +103,48 @@ def _extract_atomic_resume_state(payload: dict[str, Any], state: dict[str, Any])
         snapshots = {}
     preferred = state.get("latest_atomic_checkpoint")
     preferred_id = str(preferred) if isinstance(preferred, str) and preferred else None
-    candidate_ids: list[str] = []
-    if preferred_id:
-        candidate_ids.append(preferred_id)
-    candidate_ids.extend(str(item) for item in snapshots.keys() if isinstance(item, str))
-    for checkpoint_id in reversed(candidate_ids):
-        checkpoint_payload = snapshots.get(checkpoint_id)
-        if not isinstance(checkpoint_payload, dict):
+
+    atomic_candidates: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for checkpoint_id, checkpoint_payload in snapshots.items():
+        if not isinstance(checkpoint_id, str) or not isinstance(checkpoint_payload, dict):
             continue
         snapshot = checkpoint_payload.get("snapshot")
         if not isinstance(snapshot, dict):
             continue
         if str(snapshot.get("resume_mode") or "") != "atomic":
             continue
-        cursor = int(snapshot.get("repair_cursor") or 0)
-        validation_state = tuple(str(item) for item in snapshot.get("validation_state", ()) if isinstance(item, str))
-        # snapshot_runtime_path is stored in the outer checkpoint JSON (not in the nested snapshot dict).
-        raw_srp = checkpoint_payload.get("snapshot_runtime_path")
-        snapshot_runtime_path = str(raw_srp) if isinstance(raw_srp, str) and raw_srp else None
-        return checkpoint_id, max(0, cursor), validation_state, snapshot_runtime_path
+        atomic_candidates.append((checkpoint_id, checkpoint_payload, snapshot))
+
+    if not atomic_candidates:
+        return None, 0, (), None
+
+    scored_candidates: list[tuple[int, tuple[str, dict[str, Any], dict[str, Any]]]] = []
+    for item in atomic_candidates:
+        _, _, snapshot = item
+        scored_candidates.append((max(0, int(snapshot.get("repair_cursor") or 0)), item))
+
+    max_cursor = max(score for score, _ in scored_candidates)
+    top_candidates = [item for score, item in scored_candidates if score == max_cursor]
+
+    # On ties, prefer repair checkpoints because they capture the latest repair state.
+    repair_ties = [item for item in top_candidates if item[0].startswith("checkpoint-repair")]
+
+    selected: tuple[str, dict[str, Any], dict[str, Any]]
+    if repair_ties:
+        selected = repair_ties[-1]
+    elif preferred_id:
+        preferred_candidate = next((item for item in top_candidates if item[0] == preferred_id), None)
+        selected = preferred_candidate if preferred_candidate else top_candidates[-1]
+    else:
+        selected = top_candidates[-1]
+
+    checkpoint_id, checkpoint_payload, snapshot = selected
+    cursor = int(snapshot.get("repair_cursor") or 0)
+    validation_state = tuple(str(item) for item in snapshot.get("validation_state", ()) if isinstance(item, str))
+    # snapshot_runtime_path is stored in the outer checkpoint JSON (not in the nested snapshot dict).
+    raw_srp = checkpoint_payload.get("snapshot_runtime_path")
+    snapshot_runtime_path = str(raw_srp) if isinstance(raw_srp, str) and raw_srp else None
+    return checkpoint_id, max(0, cursor), validation_state, snapshot_runtime_path
     return None, 0, (), None
 
 
@@ -364,6 +387,7 @@ def execute_long_handoff_continuation(
     budget: LongHandoffBudget | None = None,
     **handoff_kwargs: object,
 ) -> HeadlessRunResult:
+    continuation_kwargs: dict[str, object] = dict(handoff_kwargs)
     plan = build_long_handoff_resume_plan(payload)
     if not plan.can_resume:
         raise ValueError(f"cannot continue long handoff: {', '.join(plan.reasons)}")
@@ -374,6 +398,7 @@ def execute_long_handoff_continuation(
     resume_objective = objective or f"Resume paused long handoff from {plan.resume_token}. Continue objective: {source_objective}"
     resume_task_id = f"{plan.task_id or 'task'}-resume"
     resume_run_id = f"{plan.run_id or 'run'}-resume-{plan.resume_minute}"
+    continuation_kwargs.setdefault("provider_mode", plan.provider_mode or "fake")
     result = execute_long_handoff_supervisor(
         HandoffRequest(
             resume_objective,
@@ -389,7 +414,7 @@ def execute_long_handoff_continuation(
         resume_validation_state=plan.resume_validation_state,
         resume_snapshot_runtime_path=plan.snapshot_runtime_path,
         resume_mode="atomic" if plan.latest_atomic_checkpoint else "phase_boundary",
-        **handoff_kwargs,
+        **continuation_kwargs,
     )
     link = _continuation_link_markdown(plan, run.get("id") if isinstance(run, dict) else None)
     runtime_path = Path(result.run.sandbox_path)
@@ -413,7 +438,7 @@ def execute_long_handoff_continuation(
         Artifact.from_content("artifact-continuation-link", result.run.id, ArtifactType.SUPERVISOR, "continuation-link.md", "Long handoff continuation link", link),
         Artifact.from_content("artifact-continuation-memory", result.run.id, ArtifactType.MEMORY_SUMMARY, "continuation-memory.md", "Long handoff continuation memory link", memory_summary),
     )
-    memory_adapter = handoff_kwargs.get("nemo_adapter")
+    memory_adapter = continuation_kwargs.get("nemo_adapter")
     active_memory_adapter = memory_adapter if isinstance(memory_adapter, (InMemoryNemoAdapter, PersistentNemoAdapter)) else InMemoryNemoAdapter()
     _, memory_result = active_memory_adapter.call(NemoLifecyclePhase.REVIEW, "store_conversation", summary=memory_summary)
     memory_traces = result.memory_traces + (
@@ -446,7 +471,9 @@ def execute_long_handoff_supervisor(
 ) -> HeadlessRunResult:
     active_budget = budget or LongHandoffBudget()
     active_budget.validate()
-    result = execute_headless_handoff(request, bounded_simulation=True, **handoff_kwargs)
+    active_handoff_kwargs: dict[str, object] = dict(handoff_kwargs)
+    active_handoff_kwargs.setdefault("provider_mode", "fake")
+    result = execute_headless_handoff(request, bounded_simulation=True, **active_handoff_kwargs)
     heartbeats = _planned_heartbeats(active_budget)
     escalation_flags = _escalation_flags(result, active_budget)
     resume_token = (

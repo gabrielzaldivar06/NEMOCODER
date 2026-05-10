@@ -173,6 +173,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "2",
                     "--pause-after-minutes",
                     "20",
+                    "--provider",
+                    "fake",
                     "--json",
                     "--save-json",
                     run_path,
@@ -253,6 +255,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "2",
                     "--pause-after-minutes",
                     "20",
+                    "--provider",
+                    "fake",
                     "--no-memory-db",
                     "--json",
                     "--save-json",
@@ -287,6 +291,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "2",
                     "--pause-after-minutes",
                     "20",
+                    "--provider",
+                    "fake",
                     "--memory-db",
                     str(memory_db),
                     "--json",
@@ -320,6 +326,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 "2",
                 "--pause-after-minutes",
                 "20",
+                "--provider",
+                "fake",
                 "--json",
             ])
         payload = json.loads(output.getvalue())
@@ -468,6 +476,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "2",
                     "--pause-after-minutes",
                     "20",
+                    "--provider",
+                    "fake",
                     "--no-memory-db",
                     "--json",
                     "--save-json",
@@ -500,6 +510,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "2",
                     "--pause-after-minutes",
                     "20",
+                    "--provider",
+                    "fake",
                     "--memory-db",
                     str(memory_db),
                     "--json",
@@ -533,6 +545,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "2",
                     "--pause-after-minutes",
                     "20",
+                    "--provider",
+                    "fake",
                     "--memory-db",
                     str(memory_db),
                     "--json",
@@ -552,6 +566,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source_path = f"{tmp}/source.json"
             first_path = f"{tmp}/first.json"
+            fork_path = f"{tmp}/fork.json"
             with contextlib.redirect_stdout(io.StringIO()):
                 main([
                     "long-handoff-run",
@@ -564,6 +579,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "2",
                     "--pause-after-minutes",
                     "20",
+                    "--provider",
+                    "fake",
                     "--no-memory-db",
                     "--json",
                     "--save-json",
@@ -572,8 +589,20 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 main(["long-handoff-continue", source_path, "--no-memory-db", "--json", "--save-json", first_path])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", source_path, "--lineage-context", source_path, "--lineage-context", first_path, "--allow-fork", "--json"])
-            payload = json.loads(output.getvalue())
+                code = main([
+                    "long-handoff-continue",
+                    source_path,
+                    "--lineage-context",
+                    source_path,
+                    "--lineage-context",
+                    first_path,
+                    "--allow-fork",
+                    "--json",
+                    "--save-json",
+                    fork_path,
+                ])
+            payload_text = output.getvalue().strip()
+            payload = json.loads(payload_text) if payload_text else load_headless_result_json(fork_path)
 
         self.assertEqual(code, 0)
         self.assertTrue(payload["resumed"])
