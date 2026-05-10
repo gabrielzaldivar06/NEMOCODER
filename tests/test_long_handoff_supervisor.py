@@ -22,11 +22,33 @@ def _load_cli_payload(output: io.StringIO, save_path: str | None = None) -> dict
             if isinstance(parsed, dict):
                 return parsed
         except json.JSONDecodeError:
-            pass
+            # Some CLI paths print auxiliary lines before JSON. Recover by parsing
+            # the last JSON-looking line or trailing JSON object in the stream.
+            for line in reversed(payload_text.splitlines()):
+                candidate = line.strip()
+                if not candidate:
+                    continue
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    continue
+            for idx, char in enumerate(payload_text):
+                if char != "{":
+                    continue
+                try:
+                    parsed = json.loads(payload_text[idx:])
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    continue
     if save_path:
-        loaded = load_headless_result_json(save_path)
-        if isinstance(loaded, dict):
-            return loaded
+        save_json = Path(save_path)
+        if save_json.exists():
+            loaded = load_headless_result_json(save_path)
+            if isinstance(loaded, dict):
+                return loaded
     raise ValueError("CLI JSON payload missing or invalid")
 
 
