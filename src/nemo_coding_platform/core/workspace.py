@@ -57,7 +57,8 @@ class Workspace:
         return cls(root=Path(path).resolve())
 
     def resolve_inside(self, relative_path: str | Path) -> Path:
-        candidate = (self.root / relative_path).resolve()
+        normalized = Path(str(relative_path).replace("\\", "/"))
+        candidate = (self.root / normalized).resolve()
         if candidate != self.root and self.root not in candidate.parents:
             raise ValueError(f"path escapes workspace: {relative_path}")
         return candidate
@@ -77,4 +78,4 @@ def snapshot_workspace(workspace: Workspace) -> WorkspaceSnapshot:
     for path in workspace.root.rglob("*"):
         if path.is_file() and ".git" not in path.parts and ".venv" not in path.parts:
             files.append(path.relative_to(workspace.root).as_posix())
-    return WorkspaceSnapshot(root=workspace.root, tracked_files=tuple(sorted(files)))
+    return WorkspaceSnapshot(root=workspace.root, tracked_files=tuple(sorted(files)))

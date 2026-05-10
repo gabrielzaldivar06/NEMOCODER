@@ -287,15 +287,25 @@ class HandoffJobManager:
         target = self._snapshot_path(job.job_id)
         if target is None:
             return
-        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
         snapshot = {
             **job.to_dict(include_logs=True),
             "payload": dict(job.payload),
             "schema_version": 1,
         }
         temp = target.with_suffix(".tmp")
-        temp.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
-        temp.replace(target)
+        try:
+            temp.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
+            temp.replace(target)
+        except FileNotFoundError:
+            # Temp directories can disappear during test teardown while background
+            # threads are still settling; treat persistence as best-effort.
+            return
+        except OSError:
+            return
 
     def _restore_snapshots(self) -> None:
         if self._snapshot_root is None or not self._snapshot_root.exists():

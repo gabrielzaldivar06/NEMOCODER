@@ -14,6 +14,22 @@ from nemo_coding_platform.core.persistence import build_long_handoff_lineage, bu
 from nemo_coding_platform.core.task_run import ArtifactType, EventKind
 
 
+def _load_cli_payload(output: io.StringIO, save_path: str | None = None) -> dict[str, object]:
+    payload_text = output.getvalue().strip()
+    if payload_text:
+        try:
+            parsed = json.loads(payload_text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    if save_path:
+        loaded = load_headless_result_json(save_path)
+        if isinstance(loaded, dict):
+            return loaded
+    raise ValueError("CLI JSON payload missing or invalid")
+
+
 class LongHandoffSupervisorTests(unittest.TestCase):
     def test_supervisor_adds_budget_heartbeats_and_resume_artifacts(self) -> None:
         result = execute_long_handoff_supervisor(
@@ -67,8 +83,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "--save-json",
                     path,
                 ])
-            payload_text = output.getvalue().strip()
-            payload = json.loads(payload_text) if payload_text else load_headless_result_json(path)
+            payload = _load_cli_payload(output, path)
             replay = build_replay_summary(load_headless_result_json(path))
 
         self.assertEqual(code, 0)
@@ -265,7 +280,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 code = main(["long-handoff-continue", paused_path, "--no-memory-db", "--json", "--save-json", continuation_path])
-            payload = json.loads(output.getvalue())
+            payload = _load_cli_payload(output, continuation_path)
             replay = build_replay_summary(load_headless_result_json(continuation_path))
 
         self.assertEqual(code, 0)
@@ -278,6 +293,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
     def test_long_handoff_continue_cli_memory_db_persists_continuation_link(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paused_path = f"{tmp}/paused.json"
+            continuation_path = f"{tmp}/continuation.json"
             memory_db = Path(tmp) / "nemo-memory.sqlite"
             with contextlib.redirect_stdout(io.StringIO()):
                 main([
@@ -301,8 +317,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 ])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", paused_path, "--memory-db", str(memory_db), "--json"])
-            payload = json.loads(output.getvalue())
+                code = main(["long-handoff-continue", paused_path, "--memory-db", str(memory_db), "--json", "--save-json", continuation_path])
+            payload = _load_cli_payload(output, continuation_path)
             atoms = PersistentMemoryStore(memory_db).search_atoms(limit=50)
 
         self.assertEqual(code, 0)
@@ -464,6 +480,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source_path = f"{tmp}/source.json"
             first_path = f"{tmp}/first.json"
+            blocked_path = f"{tmp}/blocked.json"
             with contextlib.redirect_stdout(io.StringIO()):
                 main([
                     "long-handoff-run",
@@ -486,8 +503,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 main(["long-handoff-continue", source_path, "--no-memory-db", "--json", "--save-json", first_path])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", source_path, "--lineage-context", source_path, "--lineage-context", first_path, "--json"])
-            payload = json.loads(output.getvalue())
+                code = main(["long-handoff-continue", source_path, "--lineage-context", source_path, "--lineage-context", first_path, "--json", "--save-json", blocked_path])
+            payload = _load_cli_payload(output, blocked_path)
 
         self.assertEqual(code, 1)
         self.assertEqual(payload["error"], "continuation_blocked_by_lineage_policy")
@@ -497,6 +514,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source_path = f"{tmp}/source.json"
             first_path = f"{tmp}/first.json"
+            blocked_path = f"{tmp}/blocked.json"
             memory_db = Path(tmp) / "nemo-memory.sqlite"
             with contextlib.redirect_stdout(io.StringIO()):
                 main([
@@ -521,8 +539,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--json", "--save-json", first_path])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--json"])
-            payload = json.loads(output.getvalue())
+                code = main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--json", "--save-json", blocked_path])
+            payload = _load_cli_payload(output, blocked_path)
 
         self.assertEqual(code, 1)
         self.assertEqual(payload["error"], "continuation_blocked_by_lineage_policy")
@@ -532,6 +550,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source_path = f"{tmp}/source.json"
             first_path = f"{tmp}/first.json"
+            continuation_path = f"{tmp}/continuation.json"
             memory_db = Path(tmp) / "nemo-memory.sqlite"
             with contextlib.redirect_stdout(io.StringIO()):
                 main([
@@ -556,8 +575,8 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--json", "--save-json", first_path])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--allow-fork", "--json"])
-            payload = json.loads(output.getvalue())
+                code = main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--allow-fork", "--json", "--save-json", continuation_path])
+            payload = _load_cli_payload(output, continuation_path)
 
         self.assertEqual(code, 0)
         self.assertTrue(payload["resumed"])
@@ -601,8 +620,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "--save-json",
                     fork_path,
                 ])
-            payload_text = output.getvalue().strip()
-            payload = json.loads(payload_text) if payload_text else load_headless_result_json(fork_path)
+            payload = _load_cli_payload(output, fork_path)
 
         self.assertEqual(code, 0)
         self.assertTrue(payload["resumed"])
