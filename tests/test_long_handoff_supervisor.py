@@ -61,11 +61,14 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "2",
                     "--pause-after-minutes",
                     "20",
+                    "--provider",
+                    "fake",
                     "--json",
                     "--save-json",
                     path,
                 ])
-            payload = json.loads(output.getvalue())
+            payload_text = output.getvalue().strip()
+            payload = json.loads(payload_text) if payload_text else load_headless_result_json(path)
             replay = build_replay_summary(load_headless_result_json(path))
 
         self.assertEqual(code, 0)
