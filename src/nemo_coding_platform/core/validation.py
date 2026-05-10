@@ -86,12 +86,40 @@ def simulate_validation(commands: tuple[str, ...], fail_commands: tuple[str, ...
     return ValidationSuiteResult(results)
 
 
-def validation_commands_for_policy(policy: str, explicit_commands: tuple[str, ...] = ()) -> tuple[str, ...]:
+_FRONTEND_EXTENSIONS = frozenset({".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".vue", ".svelte"})
+
+
+def _infer_npm_prefix(target_files: tuple[str, ...]) -> str | None:
+    """Return the closest package.json directory for any frontend target file, or None."""
+    for raw in target_files:
+        p = Path(raw)
+        for parent in p.parents:
+            if (parent / "package.json").exists():
+                return str(parent)
+    return None
+
+
+def _is_frontend_target(target_files: tuple[str, ...]) -> bool:
+    return any(Path(f).suffix in _FRONTEND_EXTENSIONS for f in target_files)
+
+
+def validation_commands_for_policy(
+    policy: str,
+    explicit_commands: tuple[str, ...] = (),
+    *,
+    target_files: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     active_policy = ValidationPolicy(policy)
     if explicit_commands:
         return explicit_commands
     if active_policy == ValidationPolicy.NONE:
         return (VALIDATION_SKIPPED_COMMAND,)
+    if _is_frontend_target(target_files):
+        prefix = _infer_npm_prefix(target_files)
+        prefix_arg = f" --prefix {prefix}" if prefix else ""
+        if active_policy == ValidationPolicy.SMOKE:
+            return (f"npm{prefix_arg} run build",)
+        return (f"npm{prefix_arg} run build", f"npm{prefix_arg} run lint --if-present")
     if active_policy == ValidationPolicy.SMOKE:
         return (f"{sys.executable} --version",)
     return ("python -m unittest",)

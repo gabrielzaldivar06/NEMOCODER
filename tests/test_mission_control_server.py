@@ -9,11 +9,94 @@ from unittest.mock import patch
 import nemo_coding_platform.mission_control_server as mission_control_server
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
-from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_nemo_mcp_status, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_self_modify_start, api_settings, api_state, api_stats, api_terminal_run
+from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_nemo_mcp_status, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_search, api_self_modify_start, api_settings, api_state, api_stats, api_terminal_run
 from tests.test_review_gate_cli import write_ready_run
 
 
 class MissionControlServerTests(unittest.TestCase):
+    def test_api_search_requires_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+
+            with self.assertRaises(ApiRequestError) as raised:
+                api_search(config, {})
+
+        self.assertEqual(raised.exception.error_code, "invalid_request")
+
+    def test_api_search_uses_requested_layers_and_returns_llm_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+
+            captured: dict[str, object] = {}
+
+            class _FakeResponse:
+                llm_context = "context text"
+
+                def as_dict(self) -> dict[str, object]:
+                    return {
+                        "query": "q",
+                        "results": [],
+                        "layer_timings_ms": {},
+                        "errors": {},
+                        "llm_context_chars": 12,
+                    }
+
+            def _fake_run_layered_search(query: str, **kwargs: object) -> _FakeResponse:
+                captured["query"] = query
+                captured["layers"] = kwargs.get("layers")
+                return _FakeResponse()
+
+            with patch("nemo_coding_platform.mission_control_server.run_layered_search", side_effect=_fake_run_layered_search):
+                payload = api_search(
+                    config,
+                    {"query": "find this", "layers": ["url"], "urls": ["https://example.com"]},
+                )
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["llm_context"], "context text")
+        self.assertEqual(payload["layers_used"], ["url"])
+        self.assertEqual(captured["query"], "find this")
+        layers = captured["layers"]
+        self.assertIsInstance(layers, list)
+        self.assertEqual([layer.name for layer in layers], ["url"])
+
+    def test_api_search_defaults_layers_when_payload_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+
+            captured: dict[str, object] = {}
+
+            class _FakeResponse:
+                llm_context = "ctx"
+
+                def as_dict(self) -> dict[str, object]:
+                    return {
+                        "query": "q",
+                        "results": [],
+                        "layer_timings_ms": {},
+                        "errors": {},
+                        "llm_context_chars": 3,
+                    }
+
+            def _fake_run_layered_search(query: str, **kwargs: object) -> _FakeResponse:
+                captured["layers"] = kwargs.get("layers")
+                return _FakeResponse()
+
+            with patch("nemo_coding_platform.mission_control_server.run_layered_search", side_effect=_fake_run_layered_search):
+                payload = api_search(config, {"query": "x", "layers": ["unknown"]})
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["layers_used"], ["nemo_memory", "nemo_portfolio", "url"])
+        layers = captured["layers"]
+        self.assertIsInstance(layers, list)
+        self.assertEqual([layer.name for layer in layers], ["nemo_memory", "nemo_portfolio", "url"])
+
     def test_browser_search_returns_results_and_persists_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -970,6 +1053,45 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertTrue(len(top_sources) >= 1)
         self.assertEqual(top_sources[0].get("url"), "https://example.com/docs")
         self.assertEqual(top_sources[0].get("reads"), 2)
+
+    def test_api_stats_counts_jobs_from_manager_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+            manager = HandoffJobManager()
+            manager._jobs["job-running"] = HandoffJob(
+                job_id="job-running",
+                task_id="task-a",
+                run_id="run-a",
+                run_json="run-a.json",
+                status="running",
+                command=("echo", "ok"),
+                payload={},
+                logs=[],
+            )
+            manager._jobs["job-completed"] = HandoffJob(
+                job_id="job-completed",
+                task_id="task-b",
+                run_id="run-b",
+                run_json="run-b.json",
+                status="completed",
+                command=("echo", "ok"),
+                payload={},
+                logs=[],
+            )
+
+            payload = api_stats(config, manager)
+
+        jobs = payload.get("jobs")
+        self.assertIsInstance(jobs, dict)
+        self.assertEqual(jobs.get("total"), 2)
+        self.assertEqual(jobs.get("active"), 1)
+        self.assertEqual(jobs.get("completed"), 1)
 
     def test_agent_message_routes_interface_color_request_to_self_mod_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,7 +21,11 @@ from typing import Any
 from urllib.parse import quote_plus, urlparse
 from uuid import uuid4
 
+from nemo_coding_platform.core.context_assembler import assemble_context
+from nemo_coding_platform.core.context_policy import ContextMode, get_profile
 from nemo_coding_platform.core.evals import score_persisted_result, score_spec10_lite
+from nemo_coding_platform.core.search_layer import resolve_layers, run_layered_search
+from nemo_coding_platform.core.trace import TraceEventKind, TraceEventStatus, append_tool_call_traces, build_trace_event
 from nemo_coding_platform.core.engine_interface import ENGINE_MESSAGE_FILE
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.long_handoff_supervisor import LongHandoffBudget, execute_long_handoff_supervisor
@@ -964,11 +968,13 @@ def _chat_mode(payload: dict[str, object], message: str, source_json: object) ->
 
 
 def _chat_mode_profile(mode: str) -> dict[str, int]:
-    if mode == "execution":
-        return {"portfolio_budget": 760, "search_limit": 4, "anticipate_limit": 4, "context_chars": 1900}
-    if mode == "research":
-        return {"portfolio_budget": 1300, "search_limit": 8, "anticipate_limit": 7, "context_chars": 3400}
-    return {"portfolio_budget": 900, "search_limit": 5, "anticipate_limit": 5, "context_chars": 2400}
+    p = get_profile(ContextMode(mode) if mode in {m.value for m in ContextMode} else ContextMode.CHAT)
+    return {
+        "portfolio_budget": p.portfolio_budget,
+        "search_limit": p.search_limit,
+        "anticipate_limit": p.anticipate_limit,
+        "context_chars": p.context_chars,
+    }
 
 
 def _selected_nemo_tools(payload: dict[str, object]) -> set[str]:
@@ -1374,11 +1380,12 @@ def _handoff_spec_mode(payload: dict[str, object]) -> str:
 def _handoff_request(config: MissionControlServerConfig, payload: dict[str, object]) -> HandoffRequest:
     objective = _objective(payload)
     linked_prd = _handoff_prd_text(payload)
+    target_files = tuple(_string_list(payload, "target_files", ()))
     return HandoffRequest(
         prd=linked_prd or objective,
         repo_path=str(config.repo_path),
         acceptance_criteria=_string_list(payload, "acceptance_criteria", ("implementation satisfies the objective",)),
-        validation_commands=validation_commands_for_policy(str(payload.get("validation_policy") or "smoke"), _string_list(payload, "validation_commands", ())),
+        validation_commands=validation_commands_for_policy(str(payload.get("validation_policy") or "smoke"), _string_list(payload, "validation_commands", ()), target_files=target_files),
         objective_summary=objective,
         linked_prd=linked_prd,
         spec_mode=_handoff_spec_mode(payload),
@@ -1526,25 +1533,20 @@ def _agent_context_summary(
     *,
     max_context_chars: int = 2400,
 ) -> str:
-    if not selected:
-        base = "No run is selected. Answer the user's chat request and propose a safe next action."
-        return (base + "\n\n" + cognitive_preload) if cognitive_preload else base
-    task = selected.get("task", {}) if isinstance(selected.get("task"), dict) else {}
-    run = selected.get("run", {}) if isinstance(selected.get("run"), dict) else {}
-    portfolio = selected.get("portfolio", {}) if isinstance(selected.get("portfolio"), dict) else {}
-    context = str(portfolio.get("context") or "")[: max_context_chars * 2]
-    summary = "\n".join(
-        line for line in (
-            f"Selected task: {task.get('id', 'unknown')} / {run.get('id', 'unknown')}",
-            f"Objective: {task.get('objective') or task.get('title') or 'Untitled'}",
-            f"Mergeable: {mergeable}",
-            f"Changed files: {', '.join(changed_files) or 'none'}",
-            f"Risk flags: {', '.join(risk_flags) or 'none'}",
-            f"NEMO context:\n{context}" if context else "",
-            f"Cognitive preload (reflexions + continuity):\n{cognitive_preload}" if cognitive_preload else "",
-        ) if line
+    task = selected.get("task") if isinstance(selected, dict) and isinstance(selected.get("task"), dict) else None
+    run = selected.get("run") if isinstance(selected, dict) and isinstance(selected.get("run"), dict) else None
+    portfolio = selected.get("portfolio") if isinstance(selected, dict) and isinstance(selected.get("portfolio"), dict) else None
+    packet = assemble_context(
+        task=task,
+        run=run,
+        portfolio=portfolio,
+        cognitive_preload=cognitive_preload,
+        changed_files=changed_files,
+        risk_flags=risk_flags,
+        mergeable=mergeable,
+        max_chars=max_context_chars,
     )
-    return _trim_context_summary(summary, max_chars=max_context_chars)
+    return packet.text
 
 
 def _verified_nemo_tool_list() -> str:
@@ -2904,6 +2906,49 @@ def api_nemo_cognitive_stats(config: MissionControlServerConfig, payload: dict[s
     }
 
 
+def api_search(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    """POST /api/search — layered search across NEMO memory, portfolio, and URL sources."""
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        raise ApiRequestError("query is required", error_code="invalid_request", status_code=400)
+
+    limit: int = min(int(payload.get("limit") or 5), 20)
+    token_budget: int = min(int(payload.get("token_budget") or 600), 4000)
+    topic: str = str(payload.get("topic") or "search")
+    urls: list[str] = [str(u) for u in (payload.get("urls") or []) if isinstance(u, str) and u.strip()]
+    layers = resolve_layers(payload.get("layers"))
+
+    tool_calls: list[dict[str, object]] = []
+
+    def nemo_call(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+        return _nemo_chat_tool_call(config, tool_calls, tool_name, **kwargs)
+
+    url_read_fn = None
+    if urls:
+        def url_read_fn(url: str) -> tuple[dict[str, Any], bool]:  # type: ignore[misc]
+            return _read_url_source_cached(url)
+
+    response = run_layered_search(
+        query,
+        limit=limit,
+        layers=layers,
+        nemo_call=nemo_call if config.memory_db is not None else None,
+        token_budget=token_budget,
+        topic=topic,
+        urls=urls,
+        url_read_fn=url_read_fn,
+    )
+
+    return {
+        "ok": True,
+        "query": query,
+        **response.as_dict(),
+        "llm_context": response.llm_context,
+        "layers_used": [layer.name for layer in layers],
+        "tool_calls": tool_calls,
+    }
+
+
 def api_nemo(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     selected = _selected_nemo_payload(payload)
     if config.memory_db is None:
@@ -3329,65 +3374,9 @@ def _nemo_tool_summary(tool_name: str, payload: dict[str, Any]) -> str:
     return "NEMO tool completed."
 
 
-def _build_agent_trace_event(
-    *,
-    step: int,
-    kind: str,
-    label: str,
-    status: str,
-    detail: str = "",
-    tool_name: str | None = None,
-    source: str = "server",
-    duration_ms: int | None = None,
-) -> dict[str, object]:
-    event: dict[str, object] = {
-        "id": f"trace-{uuid4().hex[:10]}",
-        "step": step,
-        "kind": kind,
-        "label": label,
-        "status": status,
-        "detail": detail,
-        "source": source,
-        "ts": datetime.now(timezone.utc).isoformat(),
-    }
-    if tool_name:
-        event["tool_name"] = tool_name
-    if duration_ms is not None:
-        event["duration_ms"] = duration_ms
-    return event
-
-
-def _append_agent_trace_from_tool_calls(
-    trace: list[dict[str, object]],
-    tool_calls: list[dict[str, object]],
-    *,
-    start_index: int,
-    step_counter: int,
-) -> tuple[int, int]:
-    index = start_index
-    step = step_counter
-    while index < len(tool_calls):
-        tool = tool_calls[index]
-        name = str(tool.get("name") or "tool")
-        alias_name = str(tool.get("alias_name") or "").strip()
-        status = str(tool.get("status") or "completed")
-        summary = str(tool.get("summary") or "")
-        label = f"tool: {name}"
-        if alias_name and alias_name != name:
-            label = f"{label} (alias {alias_name})"
-        trace.append(
-            _build_agent_trace_event(
-                step=step,
-                kind="tool_result",
-                label=label,
-                status=status,
-                detail=summary,
-                tool_name=name,
-            )
-        )
-        step += 1
-        index += 1
-    return index, step
+# Trace helpers delegated to core.trace
+_build_agent_trace_event = build_trace_event
+_append_agent_trace_from_tool_calls = append_tool_call_traces
 
 
 def _mission_control_ui_targets(repo_path: Path) -> list[str]:
@@ -4218,9 +4207,10 @@ def api_stats(config: MissionControlServerConfig, jobs: HandoffJobManager | None
     Aggregated statistics endpoint for performance monitoring.
     Returns timing data, repair metrics, and queue status.
     """
-    job_count = len(jobs.jobs) if jobs else 0
-    active_jobs = sum(1 for job in (jobs.jobs.values() if jobs else []) if job.status in ("running", "paused"))
-    completed_jobs = sum(1 for job in (jobs.jobs.values() if jobs else []) if job.status in ("completed", "failed"))
+    job_items = jobs.list() if jobs else []
+    job_count = len(job_items)
+    active_jobs = sum(1 for job in job_items if str(job.get("status") or "") in ("running", "paused"))
+    completed_jobs = sum(1 for job in job_items if str(job.get("status") or "") in ("completed", "failed"))
     settings = _load_settings(config)
     source_stats = _source_analytics_summary(settings.get("source_analytics"))
     raw_chat_metrics = settings.get("chat_metrics")
@@ -4381,6 +4371,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/nemo/mcp-status": lambda payload: api_nemo_mcp_status(self.server.config, payload),
             "/api/nemo/cognitive-stats": lambda payload: api_nemo_cognitive_stats(self.server.config, payload),
             "/api/nemo/risk-map": lambda payload: api_nemo_risk_map(self.server.config, payload),
+            "/api/search": lambda payload: api_search(self.server.config, payload),
             "/api/self-mod/insights": lambda payload: api_self_mod_insights(self.server.config, payload),
             "/api/eval": lambda payload: api_eval(self.server.config, payload),
             "/api/review": lambda payload: api_review(self.server.config, payload),

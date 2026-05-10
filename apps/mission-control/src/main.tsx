@@ -2377,7 +2377,8 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const evidenceCount = nemoState?.health.evidence_count ?? 0;
   const feedbackCount = nemoState?.health.feedback_count ?? 0;
   const contextLabel = nemoState?.context_portfolio?.estimated_tokens ? `${nemoState.context_portfolio.estimated_tokens}t` : "ready";
-  const totalRuns = state.runs.length;
+  const statsJobTotal = missionStats?.jobs?.total ?? 0;
+  const totalRuns = Math.max(state.runs.length, statsJobTotal);
   const queueCount = state.approval_queue.length;
   const runKpis = cognitiveStats?.run_kpis;
   const memoryKpis = cognitiveStats?.memory_kpis;

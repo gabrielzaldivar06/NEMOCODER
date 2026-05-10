@@ -61,6 +61,31 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(validation_commands_for_policy("full"), ("python -m unittest",))
         self.assertEqual(validation_commands_for_policy("smoke", ("custom check",)), ("custom check",))
 
+    def test_validation_policy_smoke_frontend_targets_returns_npm_build(self) -> None:
+        cmds = validation_commands_for_policy("smoke", target_files=("apps/mission-control/src/main.tsx",))
+        self.assertEqual(len(cmds), 1)
+        self.assertIn("npm", cmds[0])
+        self.assertIn("build", cmds[0])
+
+    def test_validation_policy_targeted_frontend_returns_build_and_lint(self) -> None:
+        cmds = validation_commands_for_policy("targeted", target_files=("src/styles.css",))
+        self.assertEqual(len(cmds), 2)
+        self.assertTrue(all("npm" in c for c in cmds))
+        self.assertIn("build", cmds[0])
+        self.assertIn("lint", cmds[1])
+
+    def test_validation_policy_explicit_commands_override_frontend_detection(self) -> None:
+        cmds = validation_commands_for_policy("smoke", ("my-check",), target_files=("main.tsx",))
+        self.assertEqual(cmds, ("my-check",))
+
+    def test_validation_policy_non_frontend_targets_use_python_commands(self) -> None:
+        cmds = validation_commands_for_policy("smoke", target_files=("src/server.py",))
+        self.assertIn("--version", cmds[0])
+
+    def test_validation_policy_none_always_skips_regardless_of_targets(self) -> None:
+        cmds = validation_commands_for_policy("none", target_files=("apps/ui/App.tsx",))
+        self.assertEqual(cmds, (VALIDATION_SKIPPED_COMMAND,))
+
     def test_validation_time_budget_marks_exhaustion(self) -> None:
         result = run_validation_suite(
             (f"{sys.executable} --version", f"{sys.executable} --version"),
