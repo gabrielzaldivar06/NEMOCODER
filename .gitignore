@@ -1,4 +1,5 @@
 .venv/
+.venv*/
 __pycache__/
 *.py[cod]
 
@@ -17,3 +18,7 @@ reference-repos/*/
 apps/mission-control/node_modules/
 apps/mission-control/dist/
 apps/mission-control/tsconfig.tsbuildinfo
+
+# Local CI dispatch evidence files
+artifacts/ci-installer-run-*.json
+artifacts/ci-installer-run-*.md
