@@ -301,7 +301,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 ])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", paused_path, "--no-memory-db", "--json", "--save-json", continuation_path])
+                code = main(["long-handoff-continue", paused_path, "--provider", "fake", "--no-memory-db", "--json", "--save-json", continuation_path])
             payload = _load_cli_payload(output, continuation_path)
             replay = build_replay_summary(load_headless_result_json(continuation_path))
 
@@ -339,7 +339,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 ])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", paused_path, "--memory-db", str(memory_db), "--json", "--save-json", continuation_path])
+                code = main(["long-handoff-continue", paused_path, "--provider", "fake", "--memory-db", str(memory_db), "--json", "--save-json", continuation_path])
             payload = _load_cli_payload(output, continuation_path)
             atoms = PersistentMemoryStore(memory_db).search_atoms(limit=50)
 
@@ -522,10 +522,10 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "--save-json",
                     source_path,
                 ])
-                main(["long-handoff-continue", source_path, "--no-memory-db", "--json", "--save-json", first_path])
+                main(["long-handoff-continue", source_path, "--provider", "fake", "--no-memory-db", "--json", "--save-json", first_path])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", source_path, "--lineage-context", source_path, "--lineage-context", first_path, "--json", "--save-json", blocked_path])
+                code = main(["long-handoff-continue", source_path, "--provider", "fake", "--lineage-context", source_path, "--lineage-context", first_path, "--json", "--save-json", blocked_path])
             payload = _load_cli_payload(output, blocked_path)
 
         self.assertEqual(code, 1)
@@ -558,10 +558,10 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "--save-json",
                     source_path,
                 ])
-                main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--json", "--save-json", first_path])
+                main(["long-handoff-continue", source_path, "--provider", "fake", "--memory-db", str(memory_db), "--json", "--save-json", first_path])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--json", "--save-json", blocked_path])
+                code = main(["long-handoff-continue", source_path, "--provider", "fake", "--memory-db", str(memory_db), "--json", "--save-json", blocked_path])
             payload = _load_cli_payload(output, blocked_path)
 
         self.assertEqual(code, 1)
@@ -594,10 +594,10 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "--save-json",
                     source_path,
                 ])
-                main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--json", "--save-json", first_path])
+                main(["long-handoff-continue", source_path, "--provider", "fake", "--memory-db", str(memory_db), "--json", "--save-json", first_path])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = main(["long-handoff-continue", source_path, "--memory-db", str(memory_db), "--allow-fork", "--json", "--save-json", continuation_path])
+                code = main(["long-handoff-continue", source_path, "--provider", "fake", "--memory-db", str(memory_db), "--allow-fork", "--json", "--save-json", continuation_path])
             payload = _load_cli_payload(output, continuation_path)
 
         self.assertEqual(code, 0)
@@ -627,12 +627,14 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                     "--save-json",
                     source_path,
                 ])
-                main(["long-handoff-continue", source_path, "--no-memory-db", "--json", "--save-json", first_path])
+                main(["long-handoff-continue", source_path, "--provider", "fake", "--no-memory-db", "--json", "--save-json", first_path])
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 code = main([
                     "long-handoff-continue",
                     source_path,
+                    "--provider",
+                    "fake",
                     "--lineage-context",
                     source_path,
                     "--lineage-context",
