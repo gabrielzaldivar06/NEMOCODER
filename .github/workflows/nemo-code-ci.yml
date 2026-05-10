@@ -156,14 +156,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifacts/installer -Force | Out-Null
-          $bundleRoot = "apps/nemo-desktop/src-tauri/target/release/bundle"
-          if (-not (Test-Path $bundleRoot)) {
-            throw "Installer bundle path not found: $bundleRoot"
+          $targetRoot = "apps/nemo-desktop/src-tauri/target"
+          if (-not (Test-Path $targetRoot)) {
+            throw "Installer build target path not found: $targetRoot"
           }
 
-          $installers = Get-ChildItem -Path $bundleRoot -Recurse -File | Where-Object { $_.Extension -in @('.msi', '.exe') }
+          $installers = Get-ChildItem -Path $targetRoot -Recurse -File | Where-Object { $_.Extension -in @('.msi', '.exe') }
           if (-not $installers -or $installers.Count -eq 0) {
-            throw "No installer artifacts (.msi/.exe) found under $bundleRoot"
+            throw "No installer artifacts (.msi/.exe) found under $targetRoot"
           }
 
           $repoRoot = (Resolve-Path .).Path
@@ -204,7 +204,8 @@ jobs:
           path: |
             artifacts/installer/installer-evidence.json
             artifacts/installer/installer-evidence.md
-            apps/nemo-desktop/src-tauri/target/release/bundle
+            apps/nemo-desktop/src-tauri/target/**/*.msi
+            apps/nemo-desktop/src-tauri/target/**/*.exe
 
   mission-control:
     name: Mission Control
