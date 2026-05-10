@@ -1,9 +1,6 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$Owner,
-
-    [Parameter(Mandatory = $true)]
-    [string]$Repo,
+    [string]$Owner = "",
+    [string]$Repo = "",
 
     [string]$Workflow = "nemo-code-ci.yml",
     [string]$Ref = "main",
@@ -14,6 +11,54 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Convert-SecureStringToPlainText {
+    param([Security.SecureString]$SecureValue)
+
+    if (-not $SecureValue) {
+        return ""
+    }
+
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureValue)
+    try {
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    }
+}
+
+function Resolve-OwnerRepoFromOrigin {
+    $originUrl = (git remote get-url origin 2>$null)
+    if (-not $originUrl) {
+        return $null
+    }
+
+    $httpsMatch = [regex]::Match($originUrl, "github\.com[/:](?<owner>[^/]+)/(?<repo>[^/.]+)(?:\.git)?$")
+    if ($httpsMatch.Success) {
+        return @{
+            owner = $httpsMatch.Groups["owner"].Value
+            repo = $httpsMatch.Groups["repo"].Value
+        }
+    }
+
+    return $null
+}
+
+if (-not $Owner -or -not $Repo) {
+    $resolved = Resolve-OwnerRepoFromOrigin
+    if ($resolved) {
+        if (-not $Owner) {
+            $Owner = $resolved.owner
+        }
+        if (-not $Repo) {
+            $Repo = $resolved.repo
+        }
+    }
+}
+
+if (-not $Owner -or -not $Repo) {
+    throw "Missing owner/repo and could not resolve from origin remote. Provide -Owner and -Repo."
+}
+
 if (-not $Token) {
     if ($env:GITHUB_TOKEN) {
         $Token = $env:GITHUB_TOKEN
@@ -23,7 +68,13 @@ if (-not $Token) {
 }
 
 if (-not $Token) {
-    throw "Missing GitHub token. Provide -Token or set GITHUB_TOKEN/GH_TOKEN."
+    Write-Host "GitHub token not found in environment."
+    $secureToken = Read-Host -Prompt "Paste GitHub token (input hidden)" -AsSecureString
+    $Token = Convert-SecureStringToPlainText -SecureValue $secureToken
+}
+
+if (-not $Token) {
+    throw "Missing GitHub token. Provide -Token, set GITHUB_TOKEN/GH_TOKEN, or enter it in the secure prompt."
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -33,7 +84,45 @@ Set-Location $repoRoot
 $headers = @{
     Authorization = "Bearer $Token"
     Accept = "application/vnd.github+json"
+    "User-Agent" = "nemo-installer-dispatch"
     "X-GitHub-Api-Version" = "2022-11-28"
+}
+
+function Invoke-GitHubApi {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("Get", "Post")]
+        [string]$Method,
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [string]$Body = ""
+    )
+
+    $request = @{
+        Uri = $Uri
+        Headers = $headers
+        Method = $Method
+    }
+
+    if ($Body) {
+        $request["Body"] = $Body
+        $request["ContentType"] = "application/json"
+    }
+
+    try {
+        return Invoke-RestMethod @request
+    } catch {
+        $message = $_.Exception.Message
+        $responseBody = ""
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            $responseBody = $_.ErrorDetails.Message
+        }
+        $diag = "GitHub API call failed: $Method $Uri`n$message"
+        if ($responseBody) {
+            $diag += "`n$responseBody"
+        }
+        throw $diag
+    }
 }
 
 $dispatchUri = "https://api.github.com/repos/$Owner/$Repo/actions/workflows/$Workflow/dispatches"
@@ -45,12 +134,20 @@ $dispatchBody = @{
 } | ConvertTo-Json -Depth 6
 
 $startUtc = [DateTime]::UtcNow
+$runsUri = "https://api.github.com/repos/$Owner/$Repo/actions/workflows/$Workflow/runs?event=workflow_dispatch&per_page=20"
+
+# Capture the latest existing run before dispatch so we only track a brand-new run.
+$latestBeforeDispatch = Invoke-GitHubApi -Method Get -Uri $runsUri
+$baselineRunId = 0
+if ($latestBeforeDispatch.workflow_runs -and $latestBeforeDispatch.workflow_runs.Count -gt 0) {
+    $baselineRunId = [int64]$latestBeforeDispatch.workflow_runs[0].id
+}
+
 Write-Host "Dispatching workflow '$Workflow' for $Owner/$Repo (ref=$Ref, installer_mode=true)..."
-Invoke-RestMethod -Uri $dispatchUri -Headers $headers -Method Post -Body $dispatchBody -ContentType "application/json"
+Invoke-GitHubApi -Method Post -Uri $dispatchUri -Body $dispatchBody | Out-Null
 
 $run = $null
 $deadline = $startUtc.AddMinutes($TimeoutMinutes)
-$runsUri = "https://api.github.com/repos/$Owner/$Repo/actions/workflows/$Workflow/runs?event=workflow_dispatch&per_page=20"
 
 function Get-NormalizedRef {
     param([string]$RawRef)
@@ -65,12 +162,17 @@ $targetBranch = Get-NormalizedRef -RawRef $Ref
 
 Write-Host "Waiting for workflow run to appear..."
 while (([DateTime]::UtcNow) -lt $deadline -and -not $run) {
-    $runsResponse = Invoke-RestMethod -Uri $runsUri -Headers $headers -Method Get
+    $runsResponse = Invoke-GitHubApi -Method Get -Uri $runsUri
     $candidates = @($runsResponse.workflow_runs)
 
     foreach ($candidate in $candidates) {
         $createdUtc = [DateTime]::Parse($candidate.created_at).ToUniversalTime()
-        if ($createdUtc -ge $startUtc.AddMinutes(-2) -and $candidate.head_branch -eq $targetBranch) {
+        $candidateId = [int64]$candidate.id
+        if (
+            $candidateId -gt $baselineRunId -and
+            $createdUtc -ge $startUtc.AddMinutes(-2) -and
+            $candidate.head_branch -eq $targetBranch
+        ) {
             $run = $candidate
             break
         }
@@ -90,7 +192,7 @@ $runUri = "https://api.github.com/repos/$Owner/$Repo/actions/runs/$runId"
 Write-Host "Tracking run id=$runId ..."
 
 while (([DateTime]::UtcNow) -lt $deadline) {
-    $run = Invoke-RestMethod -Uri $runUri -Headers $headers -Method Get
+    $run = Invoke-GitHubApi -Method Get -Uri $runUri
     Write-Host ("Run status={0} conclusion={1}" -f $run.status, $run.conclusion)
 
     if ($run.status -eq "completed") {
@@ -105,7 +207,7 @@ if ($run.status -ne "completed") {
 }
 
 $artifactsUri = "https://api.github.com/repos/$Owner/$Repo/actions/runs/$runId/artifacts"
-$artifactsResponse = Invoke-RestMethod -Uri $artifactsUri -Headers $headers -Method Get
+$artifactsResponse = Invoke-GitHubApi -Method Get -Uri $artifactsUri
 $artifactNames = @($artifactsResponse.artifacts | ForEach-Object { $_.name })
 
 $requiredArtifacts = @("release-confidence-evidence", "installer-transition-evidence")
