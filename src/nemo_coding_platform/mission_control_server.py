@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1358,17 +1359,20 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
             {
                 "role": "system",
                 "content": (
-                    "You are the real Mission Control coding agent for the local-first NEMO CODE platform. "
-                    "Answer in the user's language. Be concise, specific, and operational. "
-                    "Use the selected run and NEMO context when available. Do not claim you applied code unless an explicit action did it. "
-                    "Never invent MCP/NEMO tool names or capabilities. If asked about available tools, use the full catalog provided below "
-                    "and state explicitly when an operation may require approval."
+                    "You are the Mission Control coding agent for the local-first NEMO CODE platform. "
+                    "Answer in the user's language. Be concise, direct, and operational — never ask for confirmation before acting. "
+                    "IMPORTANT: The Mission Control server already executed all NEMO MCP tool calls (prime_context, store_conversation, "
+                    "build_context_portfolio, anticipate, search_memories) before calling you. "
+                    "Those results are provided in your context. Do NOT say you will call tools or ask permission to do so — just act and confirm what was done. "
+                    "When the user asks you to save, store, or remember something, confirm it is already saved (the server did it). "
+                    "Do not claim you applied code unless an explicit apply action did it. "
+                    "Never invent MCP/NEMO tool names or capabilities outside the verified catalog below."
                 ),
             },
-            {"role": "system", "content": f"Verified NEMO tool names: {verified_tools}"},
+            {"role": "system", "content": f"Verified NEMO tool names (all already executed server-side, not by you): {verified_tools}"},
             {"role": "system", "content": f"NEMO MCP native mode: {native_mode}. URL: {native_mcp_url or 'not configured'}"},
-            {"role": "system", "content": f"Runtime-verified local NEMO MCP READ tools (probed now): {runtime_read_text}"},
-            {"role": "system", "content": f"Declared local NEMO MCP WRITE/DESTRUCTIVE tools (not auto-probed): {runtime_write_text}"},
+            {"role": "system", "content": f"Runtime-verified local NEMO MCP READ tools: {runtime_read_text}"},
+            {"role": "system", "content": f"Declared local NEMO MCP WRITE/DESTRUCTIVE tools: {runtime_write_text}"},
             {"role": "system", "content": context_summary},
             {"role": "user", "content": user_message},
         ],
@@ -1470,12 +1474,137 @@ def _selected_nemo_payload(payload: dict[str, object]) -> dict[str, Any] | None:
     }
 
 
+def _hidden_run_source_json(settings: dict[str, object]) -> set[str]:
+    raw = settings.get("hidden_run_source_json")
+    if not isinstance(raw, list):
+        return set()
+    return {str(item) for item in raw if isinstance(item, str) and item}
+
+
+def _run_timestamp_from_state_run(run: dict[str, object]) -> float | None:
+    source_json = run.get("source_json")
+    if isinstance(source_json, str) and source_json:
+        try:
+            path = Path(source_json)
+            if path.exists():
+                return float(path.stat().st_mtime)
+        except OSError:
+            pass
+
+    for key in ("run_id", "task_id", "source_json"):
+        value = run.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+        match = re.search(r"(\d{10,13})", value)
+        if match:
+            epoch = int(match.group(1))
+            return float(epoch * 1000 if len(match.group(1)) == 10 else epoch) / 1000.0
+    return None
+
+
 def api_state(config: MissionControlServerConfig, jobs: HandoffJobManager | None = None) -> dict[str, object]:
     settings = _load_settings(config)
     recent = tuple(str(item) for item in settings.get("recent_repos", []) if isinstance(item, str))
     state = build_mission_control_state(config.repo_path, config.runtimes_path, settings=settings, recent_repos=recent)
+    hidden_source_json = _hidden_run_source_json(settings)
+    if hidden_source_json:
+        runs = state.get("runs")
+        if isinstance(runs, list):
+            state["runs"] = [
+                run
+                for run in runs
+                if not (isinstance(run, dict) and isinstance(run.get("source_json"), str) and run.get("source_json") in hidden_source_json)
+            ]
+        approval_queue = state.get("approval_queue")
+        if isinstance(approval_queue, list):
+            state["approval_queue"] = [
+                run
+                for run in approval_queue
+                if not (isinstance(run, dict) and isinstance(run.get("source_json"), str) and run.get("source_json") in hidden_source_json)
+            ]
     state["jobs"] = jobs.list() if jobs is not None else []
     return state
+
+
+def api_runs_cleanup(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
+    mode = str(payload.get("mode") or "old").strip().lower()
+    if mode not in {"old", "all"}:
+        raise _bad_request("mode must be one of: old, all", error_code="invalid_mode")
+
+    older_than_hours = float(payload.get("older_than_hours") or 24)
+    keep_latest = int(payload.get("keep_latest") or 8)
+    if older_than_hours < 1:
+        older_than_hours = 1
+    if keep_latest < 0:
+        keep_latest = 0
+
+    state = api_state(server.config, server.jobs)
+    runs = state.get("runs") if isinstance(state.get("runs"), list) else []
+    run_entries = [run for run in runs if isinstance(run, dict)]
+    if not run_entries:
+        return {
+            "ok": True,
+            "mode": mode,
+            "removed_count": 0,
+            "removed_source_json": [],
+            "state": state,
+        }
+
+    removable: list[str] = []
+    if mode == "all":
+        removable = [str(run.get("source_json")) for run in run_entries if isinstance(run.get("source_json"), str)]
+    else:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        stamped: list[tuple[dict[str, object], float]] = []
+        unstamped: list[dict[str, object]] = []
+        for run in run_entries:
+            ts = _run_timestamp_from_state_run(run)
+            if ts is None:
+                unstamped.append(run)
+            else:
+                stamped.append((run, ts))
+
+        threshold_seconds = older_than_hours * 3600
+        removable_by_age = {
+            str(run.get("source_json"))
+            for run, ts in stamped
+            if (now_ts - ts) > threshold_seconds and isinstance(run.get("source_json"), str)
+        }
+
+        runs_by_recency = sorted(stamped, key=lambda item: item[1], reverse=True)
+        ranked_sources = [str(run.get("source_json")) for run, _ in runs_by_recency if isinstance(run.get("source_json"), str)]
+        ranked_sources.extend(str(run.get("source_json")) for run in unstamped if isinstance(run.get("source_json"), str))
+        removable_by_count = set(ranked_sources[keep_latest:]) if len(ranked_sources) > keep_latest else set()
+
+        removable = sorted(removable_by_age.union(removable_by_count))
+
+    removable_set = {item for item in removable if item}
+    if not removable_set:
+        return {
+            "ok": True,
+            "mode": mode,
+            "removed_count": 0,
+            "removed_source_json": [],
+            "state": state,
+        }
+
+    settings = _load_settings(server.config)
+    existing_hidden = _hidden_run_source_json(settings)
+    merged_hidden = sorted(existing_hidden.union(removable_set))
+    settings["hidden_run_source_json"] = merged_hidden
+    _save_settings(server.config, settings)
+
+    return {
+        "ok": True,
+        "mode": mode,
+        "removed_count": len(removable_set),
+        "removed_source_json": sorted(removable_set),
+        "state": api_state(server.config, server.jobs),
+    }
 
 
 def api_settings(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
@@ -2923,6 +3052,18 @@ def _trigger_frontend_hot_reload(config: MissionControlServerConfig) -> dict[str
     return {"triggered": True, "marker": str(marker), "ts": int(now)}
 
 
+def _is_memory_store_request(message: str) -> bool:
+    text = message.lower()
+    store_terms = (
+        "guarda", "guardalo", "guárdalo", "guardar", "guárdame",
+        "recuerda", "recuérdalo", "recuérdame",
+        "almacena", "almacénalo", "almacenar",
+        "save", "store", "remember",
+        "en nemo", "en memoria", "en el contexto",
+    )
+    return any(term in text for term in store_terms)
+
+
 def _is_self_interface_request(message: str) -> bool:
     text = message.lower()
     self_terms = (
@@ -3013,6 +3154,114 @@ def _self_platform_action(message: str, payload: dict[str, object]) -> dict[str,
             "base_url": payload.get("model_base_url") or payload.get("base_url") or "http://localhost:1234/v1",
         },
     }
+
+
+def _first_url_in_text(message: str) -> str | None:
+    match = re.search(r"https?://\S+", message)
+    if not match:
+        return None
+    return match.group(0).rstrip(").,;:!?\"'")
+
+
+def _pc_control_action(message: str, payload: dict[str, object]) -> dict[str, object] | None:
+    text = message.lower()
+    timeout_value = payload.get("timeout_seconds") or "45"
+
+    if any(token in text for token in ("buscar", "search web", "buscar web", "search:")):
+        query_match = re.search(r"(?:buscar|search(?:\s+web)?)\s*:?\s*(.+)", message, flags=re.IGNORECASE)
+        query = query_match.group(1).strip() if query_match else ""
+        if query:
+            return {
+                "id": "pc-control-browser-search",
+                "kind": "pc_control",
+                "label": "PC Search",
+                "summary": "Search the web from chat (requires authorization).",
+                "payload": {
+                    "mode": "browser_search",
+                    "query": query,
+                    "timeout_seconds": timeout_value,
+                },
+            }
+
+    if any(token in text for token in ("abrir", "open", "browser", "navegador", "url")):
+        url = _first_url_in_text(message)
+        if url:
+            return {
+                "id": "pc-control-browser-open",
+                "kind": "pc_control",
+                "label": "PC Open URL",
+                "summary": "Open a browser URL from chat (requires authorization).",
+                "payload": {
+                    "mode": "browser_open",
+                    "url": url,
+                },
+            }
+
+    if any(token in text for token in ("terminal", "powershell", "cmd", "shell", "comando")):
+        command_match = re.search(r"(?:terminal|powershell|cmd|shell|comando)\s*:?\s*(.+)", message, flags=re.IGNORECASE)
+        command = command_match.group(1).strip() if command_match else ""
+        if command:
+            return {
+                "id": "pc-control-terminal-run",
+                "kind": "pc_control",
+                "label": "PC Run Cmd",
+                "summary": "Run a terminal command from chat (requires authorization).",
+                "payload": {
+                    "mode": "terminal_run",
+                    "command": command,
+                    "timeout_seconds": timeout_value,
+                },
+            }
+    return None
+
+
+def _run_or_handoff_actions(message: str, payload: dict[str, object], selected_objective: str, changed_files: tuple[str, ...]) -> list[dict[str, object]]:
+    text = message.lower()
+    actions: list[dict[str, object]] = []
+    target_files = "\n".join(changed_files)
+    provider = payload.get("provider") or "subprocess"
+    timeout_value = payload.get("timeout_seconds") or "300"
+
+    if any(token in text for token in ("run", "ejecuta", "lanza", "inicia run", "nuevo run")):
+        actions.append(
+            {
+                "id": "start-run-from-chat",
+                "kind": "run",
+                "label": "Run",
+                "summary": "Start a new async run from this chat request.",
+                "payload": {
+                    "objective": f"Run: {message}",
+                    "acceptance_criteria": "run objective completed with explicit output",
+                    "validation_commands": "python -m unittest",
+                    "target_files": target_files,
+                    "provider": provider,
+                    "timeout_seconds": timeout_value,
+                },
+            }
+        )
+
+    if "handoff" in text or "traspaso" in text:
+        actions.append(
+            {
+                "id": "start-handoff-from-chat",
+                "kind": "handoff",
+                "label": "Handoff",
+                "summary": "Start a new async handoff from this chat request.",
+                "payload": {
+                    "objective": f"Handoff: {message or selected_objective}",
+                    "acceptance_criteria": "handoff advances selected objective",
+                    "validation_commands": "python -m unittest",
+                    "target_files": target_files,
+                    "provider": provider,
+                    "timeout_seconds": timeout_value,
+                },
+            }
+        )
+
+    pc_action = _pc_control_action(message, payload)
+    if pc_action:
+        actions.append(pc_action)
+    return actions
 
 
 def api_agent_message(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
@@ -3125,6 +3374,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 },
             }
         )
+    actions.extend(_run_or_handoff_actions(message, payload, selected_objective, changed_files))
     if not actions:
         actions.append(
             {
@@ -3155,6 +3405,19 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         source_scope="mission_control_chat",
         importance=8 if actions else 6,
     )
+    # Proactively persist user data when they ask to save/remember something
+    if _is_memory_store_request(message):
+        _nemo_chat_tool_call(
+            config,
+            tool_calls,
+            "cognitive_ingest",
+            lifecycle_phase="review",
+            nemo_mcp_url=nemo_mcp_url,
+            content=message,
+            memory_type="preference",
+            tags=("mission-control", "user-data", "agent-chat"),
+            context="User explicitly asked to store this in NEMO memory from Mission Control chat",
+        )
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
     # --- Cognitive preload: merge anticipate results + self-mod continuity ---
     _cognitive_parts: list[str] = []
@@ -3528,6 +3791,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/git/checkout": lambda payload: api_git_checkout(self.server.config, payload),
             "/api/git/sync": lambda payload: api_git_sync(self.server.config, payload),
             "/api/artifacts/cleanup": lambda payload: api_cleanup(self.server.config, payload),
+            "/api/runs/cleanup": lambda payload: api_runs_cleanup(self.server, payload),
             "/api/file": lambda payload: api_file(self.server.config, payload),
             "/api/handoff": lambda payload: api_handoff(self.server.config, payload),
             "/api/handoff/start": lambda payload: api_handoff_start(self.server, payload),

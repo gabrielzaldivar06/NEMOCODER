@@ -87,6 +87,13 @@ type ReviewPlan = { mergeable: boolean; risk_flags: string[]; files: Array<{ pat
 type ApplyHistoryItem = { path: string; task_id: string; run_id: string; applied_files: string[]; backup_root: string | null; backup_files: string[]; created_at: string };
 type ApplyHistoryResult = { applies: ApplyHistoryItem[] };
 type CleanupResult = { dry_run: boolean; candidates: string[]; deleted: string[]; max_age_days: number };
+type RunsCleanupResult = {
+  ok: boolean;
+  mode: "old" | "all";
+  removed_count: number;
+  removed_source_json: string[];
+  state: MissionState;
+};
 type OrphanCleanupResult = {
   dry_run: boolean;
   max_age_minutes: number;
@@ -121,7 +128,7 @@ type RenderedToolCall = AgentToolCall & {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -362,6 +369,7 @@ type GitDiffHunk = {
 };
 
 type AppSection = "home" | "runs" | "versioning" | "terminal" | "browser" | "extensions" | "memory" | "settings";
+type RunsWorkbenchTab = "file" | "review" | "agent";
 
 function normalizeFilePreview(payload: FilePreview): FilePreview {
   return {
@@ -687,6 +695,7 @@ export function App() {
   const [expandedRunSources, setExpandedRunSources] = useState<Record<string, boolean>>({});
   const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("trusted");
   const [activeSection, setActiveSection] = useState<AppSection>("home");
+    const [runsWorkbenchTab, setRunsWorkbenchTab] = useState<RunsWorkbenchTab>("file");
   const [repoBusy, setRepoBusy] = useState<boolean>(false);
   const [repoError, setRepoError] = useState<string>("");
   const [terminalDraft, setTerminalDraft] = useState<string>("git status --short");
@@ -1308,6 +1317,112 @@ export function App() {
         .catch((error: Error) => setStatus(error.message));
       return;
     }
+    if (action.kind === "run" || action.kind === "handoff") {
+      const objective = String(action.payload.objective || action.label || "Chat objective");
+      setStatus(`Starting ${action.kind} from chat: ${objective}`);
+      postJson<HandoffJobResult>("/api/handoff/start", {
+        objective,
+        acceptance_criteria: String(action.payload.acceptance_criteria || "passes requested goal"),
+        validation_commands: String(action.payload.validation_commands || "python -m unittest"),
+        target_files: String(action.payload.target_files || ""),
+        provider: String(action.payload.provider || settingsDraft.provider),
+        timeout_seconds: String(action.payload.timeout_seconds || handoffDraft.timeoutSeconds || settingsDraft.timeout_seconds),
+        model: settingsDraft.default_model,
+        base_url: settingsDraft.model_base_url,
+        max_runtime_minutes: settingsDraft.max_runtime_minutes,
+        heartbeat_minutes: settingsDraft.heartbeat_minutes,
+        max_heartbeats: settingsDraft.max_heartbeats,
+        token_budget: settingsDraft.token_budget,
+      })
+        .then((payload) => {
+          setActiveJob(payload.job);
+          setStatus(`${action.kind} started: ${payload.job.job_id}`);
+        })
+        .catch((error: Error) => setStatus(error.message));
+      return;
+    }
+    if (action.kind === "pc_control") {
+      const mode = String(action.payload.mode || "");
+      const command = String(action.payload.command || "");
+      const url = String(action.payload.url || "");
+      const query = String(action.payload.query || "");
+      const timeoutSeconds = Number(action.payload.timeout_seconds || 45);
+      const authSummary = mode === "terminal_run"
+        ? `Comando: ${command}`
+        : mode === "browser_open"
+          ? `URL: ${url}`
+          : `Busqueda: ${query}`;
+      if (!window.confirm(`Autorizar control de PC para esta accion?\n${authSummary}`)) {
+        setStatus("PC control action rejected by user");
+        return;
+      }
+      if (mode === "terminal_run") {
+        if (!command.trim()) {
+          setStatus("PC control terminal action requires command");
+          return;
+        }
+        setActiveSection("terminal");
+        setTerminalDraft(command);
+        setTerminalRunning(true);
+        setStatus(`Running authorized terminal command: ${command}`);
+        postJson<TerminalRunResult>("/api/terminal/run", { command, timeout_seconds: timeoutSeconds })
+          .then((payload) => {
+            setTerminalResult(payload);
+            setStatus(payload.ok ? `Terminal command completed (${payload.duration_ms} ms)` : `Terminal command failed (${payload.exit_code ?? "timeout"})`);
+          })
+          .catch((error: Error) => setStatus(error.message))
+          .finally(() => setTerminalRunning(false));
+        return;
+      }
+      if (mode === "browser_open") {
+        if (!url.trim()) {
+          setStatus("PC control browser action requires URL");
+          return;
+        }
+        setActiveSection("browser");
+        setBrowserDraft(url);
+        setStatus(`Opening authorized browser URL: ${url}`);
+        postJson<{ ok: boolean; url: string; opened: boolean; history: string[] }>("/api/browser/open", { url })
+          .then((payload) => {
+            setBrowserState((current) => ({ ...current, last_url: payload.url, history: payload.history ?? current.history }));
+            setStatus(payload.opened ? `Browser opened: ${payload.url}` : `Browser URL saved: ${payload.url}`);
+          })
+          .catch((error: Error) => setStatus(error.message));
+        return;
+      }
+      if (mode === "browser_search") {
+        if (!query.trim()) {
+          setStatus("PC control search action requires query");
+          return;
+        }
+        setActiveSection("browser");
+        setBrowserQueryDraft(query);
+        setBrowserSearching(true);
+        setStatus(`Running authorized web search: ${query}`);
+        postJson<{ ok: boolean; query: string; engine: string; search_url: string; results: BrowserSearchItem[]; history?: string[]; search_history?: string[] }>("/api/browser/search", {
+          query,
+          max_results: 8,
+          timeout_seconds: timeoutSeconds,
+        })
+          .then((payload) => {
+            setBrowserSearchState({ query: payload.query, engine: payload.engine, results: payload.results ?? [] });
+            if (payload.search_url) setBrowserDraft(payload.search_url);
+            setBrowserState((current) => ({
+              ...current,
+              last_url: payload.search_url || current.last_url,
+              history: payload.history ?? current.history,
+              search_query: payload.query,
+              search_history: payload.search_history ?? current.search_history,
+            }));
+            setStatus(`Search completed: ${payload.results?.length ?? 0} result(s)`);
+          })
+          .catch((error: Error) => setStatus(error.message))
+          .finally(() => setBrowserSearching(false));
+        return;
+      }
+      setStatus(`Unsupported PC control mode: ${mode || "unknown"}`);
+      return;
+    }
     setStatus(`Starting agent action: ${action.label}`);
     postJson<HandoffJobResult>("/api/handoff/start", action.payload)
       .then((payload) => {
@@ -1442,23 +1557,32 @@ export function App() {
   };
 
   const archiveOldRuns = () => {
-    if (!state.approval_queue || state.approval_queue.length === 0) {
-      setStatus("No hay runs para archivar");
-      return;
-    }
-    const oldRuns = state.approval_queue.filter((run) => {
-      const now = new Date();
-      const created = new Date(run.source_json);
-      const hoursOld = (now.getTime() - created.getTime()) / (1000 * 60 * 60);
-      return hoursOld > 24;
-    });
-    if (oldRuns.length === 0) {
-      setStatus("No hay runs antiguos (>24h) para archivar");
-      return;
-    }
-    if (confirm(`¿Archivar ${oldRuns.length} run(s) antiguo(s)?`)) {
-      setStatus(`Archivados ${oldRuns.length} run(s) ✓`);
-    }
+    if (!confirm("¿Limpiar runs antiguos? (backend persistente, no reaparecen al refrescar)")) return;
+    setStatus("Limpiando runs antiguos...");
+    postJson<RunsCleanupResult>("/api/runs/cleanup", { mode: "old", older_than_hours: 24, keep_latest: 8 })
+      .then((payload) => {
+        const nextState = normalizeState(payload.state);
+        setState(nextState);
+        const nextSelected = nextState.runs.find((run) => run.source_json === selectedRunSource) ?? nextState.runs[0];
+        setSelectedRunSource(nextSelected?.source_json ?? "");
+        setSelectedFile(nextSelected?.changed_files[0] ?? "");
+        setStatus(payload.removed_count > 0 ? `Runs antiguos limpiados: ${payload.removed_count} ✓` : "No había runs antiguos para limpiar");
+      })
+      .catch((error: Error) => setStatus(error.message));
+  };
+
+  const clearAllRuns = () => {
+    if (!confirm("¿Limpiar TODOS los runs? Esta acción es persistente y no se revierten al refrescar.")) return;
+    setStatus("Limpiando todos los runs...");
+    postJson<RunsCleanupResult>("/api/runs/cleanup", { mode: "all" })
+      .then((payload) => {
+        const nextState = normalizeState(payload.state);
+        setState(nextState);
+        setSelectedRunSource("");
+        setSelectedFile("");
+        setStatus(`Todos los runs limpiados: ${payload.removed_count} ✓`);
+      })
+      .catch((error: Error) => setStatus(error.message));
   };
 
   const runTerminal = () => {
@@ -1858,7 +1982,7 @@ export function App() {
                   <div className={`file-tree ${isExpanded ? "expanded" : "collapsed"}`}>
                     <div className="file-tree-inner">
                       {run.changed_files.length === 0 ? <span className="tree-empty">No changed files</span> : run.changed_files.map((file) => (
-                        <button className={activeFile === file ? "active" : ""} key={file} onClick={() => { setSelectedRunSource(run.source_json); setSelectedFile(file); setExpandedRunSources((current) => ({ ...current, [run.source_json]: true })); loadFilePreview(run, file); loadNemoState(run); loadSelfInsights(run); }}>
+                        <button className={activeFile === file ? "active" : ""} key={file} onClick={() => { setRunsWorkbenchTab("file"); setSelectedRunSource(run.source_json); setSelectedFile(file); setExpandedRunSources((current) => ({ ...current, [run.source_json]: true })); loadFilePreview(run, file); loadNemoState(run); loadSelfInsights(run); }}>
                           <FileCode2 size={14} />
                           <span>{file}</span>
                         </button>
@@ -1901,13 +2025,19 @@ export function App() {
 
         {activeSection === "runs" && <>
           <div className="tab-row">
-            <span className="tab active"><FileCode2 size={14} /> {activeFile || "welcome.md"}</span>
-            <span className="tab"><GitCompare size={14} /> Review</span>
-            <span className="tab"><MessageSquareText size={14} /> Agent</span>
+            <button type="button" className={`tab ${runsWorkbenchTab === "file" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("file")}>
+              <FileCode2 size={14} /> {activeFile || "welcome.md"}
+            </button>
+            <button type="button" className={`tab ${runsWorkbenchTab === "review" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("review")}>
+              <GitCompare size={14} /> Review
+            </button>
+            <button type="button" className={`tab ${runsWorkbenchTab === "agent" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("agent")}>
+              <MessageSquareText size={14} /> Agent
+            </button>
           </div>
 
-          <div className="workspace-main">
-            <EditorPane
+          <div className="workspace-main" style={runsWorkbenchTab === "file" ? undefined : { gridTemplateColumns: "minmax(0, 1fr)" }}>
+            {runsWorkbenchTab !== "agent" && <EditorPane
               run={selectedRun}
               filePreview={filePreview}
               activeFile={activeFile}
@@ -1915,8 +2045,8 @@ export function App() {
               onToggleHunk={toggleHunkDecision}
               onSetFileDecision={setFileDecision}
               onApplySelected={applySelectedDiff}
-            />
-            <AgentPane
+            />}
+            {runsWorkbenchTab !== "review" && <AgentPane
               run={selectedRun}
               state={state}
               readyRuns={readyRuns}
@@ -1964,6 +2094,7 @@ export function App() {
               onClearChat={clearAgentChat}
               onStartNewChat={startNewChat}
               onArchiveOldRuns={archiveOldRuns}
+              onClearAllRuns={clearAllRuns}
               planObjective={planState.objective}
               currentPlan={planState.currentPlan}
               activeStepId={planState.activeStepId}
@@ -1972,7 +2103,7 @@ export function App() {
               onGeneratePlan={generatePlanPrompt}
               onSelectPlanStep={handlePlanStepSelect}
               showSettingsPanel={false}
-            />
+            />}
           </div>
         </>}
 
@@ -2227,6 +2358,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
           {queuedPrompts.length > 1 && <div className="home-queue-note">Pendientes: {queuedPrompts.length}</div>}
         </div>
         <section className="home-conversation-stage" aria-label="Conversacion con agente">
+          <AgentLiveStatus busy={running} queuedPrompt={queuedPrompt} messages={messages} compact />
           <div className="home-conversation-header">
             <MessageSquareText size={16} aria-hidden="true" />
             <span className="home-conversation-count" aria-label={`${visibleMessages.length} mensajes recientes`}>
@@ -2582,6 +2714,7 @@ type AgentPaneProps = {
   onClearChat: () => void;
   onStartNewChat: () => void;
   onArchiveOldRuns: () => void;
+  onClearAllRuns: () => void;
   planObjective: ObjectiveState | null;
   currentPlan: ExecutionPlan | null;
   activeStepId: string | null;
@@ -2760,7 +2893,7 @@ function InsightSection({
   );
 }
 
-function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true }: AgentPaneProps) {
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true }: AgentPaneProps) {
   const [compactView, setCompactView] = useState(true);
   const riskCount = run?.risk_flags.length ?? 0;
 
@@ -2770,7 +2903,8 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
       <div className="chat-controls">
         <button onClick={onClearChat} title="Borrar historial del chat"><span>🗑️</span> Limpiar</button>
         <button onClick={onStartNewChat} title="Iniciar nueva sesión"><span>💬</span> Nuevo</button>
-        <button onClick={onArchiveOldRuns} title="Archivar runs antiguos"><span>📦</span> Archivar</button>
+        <button onClick={onArchiveOldRuns} title="Limpiar runs antiguos"><span>📦</span> Limpiar runs</button>
+        <button onClick={onClearAllRuns} title="Limpiar todos los runs"><span>🧨</span> Limpiar todo</button>
       </div>
       <div className="chat-controls" style={{ marginTop: 8 }}>
         <button onClick={onOpenObjectiveModal} title="Definir objetivo estructurado"><span>🎯</span> Objetivo</button>
@@ -2789,6 +2923,7 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
         onStepClick={onSelectPlanStep}
       />}
       <section className="agent-chat">
+        <AgentLiveStatus busy={busy} queuedPrompt={queuedPrompt} messages={messages} />
         <div className="chat-thread">
           {messages.map((message) => <AgentChatMessage message={message} onRunAction={onRunAction} key={message.id} />)}
         </div>
@@ -3598,6 +3733,89 @@ function parseAgentMessageDecorations(content: string): { cleanedContent: string
       .trim();
   }
   return { cleanedContent: cleaned || (inlineTools.length ? "Tool executed." : ""), risks, inlineTools };
+}
+
+function _normalizeToolDisplayName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "tool";
+  const parts = trimmed.split(".").filter(Boolean);
+  if (parts.length >= 2) return `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  return parts[0];
+}
+
+function _collectRecentToolNames(messages: AgentMessage[]): string[] {
+  const collected: string[] = [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    const payloadTools = message.tool_calls ?? [];
+    for (const tool of payloadTools) {
+      if (tool?.name) collected.push(String(tool.name));
+    }
+    const inlineTools = parseInlineToolCall(message.content);
+    for (const tool of inlineTools) {
+      if (tool?.name) collected.push(String(tool.name));
+    }
+    if (collected.length >= 8) break;
+  }
+  const seen = new Set<string>();
+  return collected.filter((name) => {
+    const key = name.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function AgentLiveStatus({
+  busy,
+  queuedPrompt,
+  messages,
+  compact = false,
+}: {
+  busy: boolean;
+  queuedPrompt: string | null;
+  messages: AgentMessage[];
+  compact?: boolean;
+}) {
+  const [tick, setTick] = useState<number>(0);
+  const recentTools = useMemo(() => _collectRecentToolNames(messages), [messages]);
+
+  useEffect(() => {
+    if (!busy) {
+      setTick(0);
+      return;
+    }
+    const timer = window.setInterval(() => setTick((value) => value + 1), 1200);
+    return () => window.clearInterval(timer);
+  }, [busy]);
+
+  if (!busy && !queuedPrompt) return null;
+
+  const toolName = recentTools.length > 0 ? _normalizeToolDisplayName(recentTools[tick % recentTools.length]) : null;
+  const phases: Array<{ label: string; detail: string }> = [
+    { label: "pensando", detail: "Analizando tu instruccion y el estado actual." },
+    { label: "cargando contexto", detail: "Recopilando memoria y continuidad de la tarea." },
+    { label: "investigando", detail: "Contrastando riesgos, decisiones y siguientes pasos." },
+    { label: toolName ? `usando tool: ${toolName}` : "usando tools", detail: toolName ? `Ejecutando ${toolName} para obtener evidencia.` : "Ejecutando herramientas de Mission Control y NEMO." },
+    { label: "escribiendo", detail: "Preparando una respuesta operativa y accionable." },
+  ];
+  const current = phases[tick % phases.length];
+
+  return (
+    <div className={`agent-live-status ${busy ? "live" : "queued"} ${compact ? "compact" : ""}`} aria-live="polite">
+      <span className="agent-live-dot" aria-hidden="true" />
+      <div className="agent-live-copy">
+        <strong>{busy ? `Agente ${current.label}` : "Mensaje en cola"}</strong>
+        <small>{busy ? current.detail : `Siguiente: ${queuedPrompt}`}</small>
+      </div>
+      {busy && <div className="agent-live-steps" aria-hidden="true">
+        {phases.map((phase, index) => (
+          <span key={`${phase.label}-${index}`} className={index === (tick % phases.length) ? "active" : ""} />
+        ))}
+      </div>}
+    </div>
+  );
 }
 
 function shouldAttachRunContextToMessage(content: string): boolean {
