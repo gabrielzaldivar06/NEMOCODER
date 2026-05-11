@@ -249,6 +249,16 @@ type NemoMcpWatcherState = {
   active: boolean;
   status: string;
   url: string;
+  capabilities?: {
+    enabled?: boolean;
+    supports_context_bootstrap?: boolean;
+    supports_prime_context?: boolean;
+    supports_search_memories?: boolean;
+    supports_core_context_reads?: boolean;
+    supports_write_read_roundtrip?: boolean;
+    roundtrip_probe_executed?: boolean;
+    errors?: string[];
+  };
   available_tools?: string[];
   selected_tools?: string[];
   latency_ms?: number;
@@ -463,9 +473,9 @@ function renderInlineRichText(value: string): React.ReactNode[] {
   });
 }
 
-function extractIterationLines(logs: string[]): string[] {
+function extractIterationLines(logs: string[] = []): string[] {
   const iterationPattern = /(iteration|iteracion|iter\s*#|iter\s*\d+|step\s*\d+|paso\s*\d+)/i;
-  return logs.filter((line) => iterationPattern.test(line));
+  return Array.isArray(logs) ? logs.filter((line) => iterationPattern.test(line)) : [];
 }
 
 const initialState: MissionState = {
@@ -505,6 +515,7 @@ const DEFAULT_SESSION_NEMO_TOOLS = [
   "store_conversation",
   "cognitive_ingest",
 ];
+const DEFAULT_HANDOFF_VALIDATION_COMMAND = "npm --prefix apps/mission-control run build";
 
 type ChatSessionSnapshot = {
   version: 1;
@@ -557,6 +568,12 @@ function queueBucketLabel(bucket: "blocked" | "queued" | "ready"): string {
   if (bucket === "blocked") return "Bloqueado";
   if (bucket === "ready") return "Listo";
   return "En cola";
+}
+
+function handoffValidationCommand(value: unknown): string {
+  const command = String(value || "").trim();
+  if (!command || command === "python -m unittest") return DEFAULT_HANDOFF_VALIDATION_COMMAND;
+  return command;
 }
 
 type QueueRiskNarrative = {
@@ -794,7 +811,7 @@ export function App() {
   const [handoffDraft, setHandoffDraft] = useState({
     objective: "",
     acceptance: "passes validation",
-    validation: "python -m unittest",
+    validation: DEFAULT_HANDOFF_VALIDATION_COMMAND,
     validationPolicy: "smoke",
     targetFiles: "",
     provider: "subprocess",
@@ -1175,7 +1192,7 @@ export function App() {
     postJson<HandoffJobResult>("/api/handoff/start", {
       objective: handoffDraft.objective,
       acceptance_criteria: handoffDraft.acceptance,
-      validation_commands: handoffDraft.validation,
+      validation_commands: handoffValidationCommand(handoffDraft.validation),
       validation_policy: handoffDraft.validationPolicy,
       target_files: handoffDraft.targetFiles,
       provider: handoffDraft.provider || settingsDraft.provider,
@@ -1186,6 +1203,11 @@ export function App() {
       heartbeat_minutes: settingsDraft.heartbeat_minutes,
       max_heartbeats: settingsDraft.max_heartbeats,
       token_budget: settingsDraft.token_budget,
+      nemo_mcp_url: settingsDraft.nemo_mcp_url || initialState.settings.nemo_mcp_url,
+      nemo_mcp_prefix: "nemo.",
+      require_nemo_mcp_capabilities: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
+      require_nemo_roundtrip: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
+      selected_nemo_tools: selectedNemoTools,
     })
       .then((payload) => {
         setActiveJob(payload.job);
@@ -1264,6 +1286,9 @@ export function App() {
         source_json: shouldAttachRunContextToMessage(content) ? selectedRun?.source_json : undefined,
         chat_mode: routeChatMode(content, Boolean(selectedRun?.source_json)),
         selected_nemo_tools: selectedNemoTools,
+        nemo_mcp_url: settingsDraft.nemo_mcp_url || initialState.settings.nemo_mcp_url,
+        require_nemo_mcp_capabilities: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
+        require_nemo_roundtrip: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
         provider: settingsDraft.provider,
         model_base_url: settingsDraft.model_base_url,
         default_model: settingsDraft.default_model,
@@ -1415,7 +1440,7 @@ export function App() {
       postJson<HandoffJobResult>("/api/handoff/start", {
         objective,
         acceptance_criteria: String(action.payload.acceptance_criteria || "passes requested goal"),
-        validation_commands: String(action.payload.validation_commands || "python -m unittest"),
+        validation_commands: handoffValidationCommand(action.payload.validation_commands),
         target_files: String(action.payload.target_files || ""),
         provider: String(action.payload.provider || settingsDraft.provider),
         timeout_seconds: String(action.payload.timeout_seconds || handoffDraft.timeoutSeconds || settingsDraft.timeout_seconds),
@@ -1425,6 +1450,9 @@ export function App() {
         heartbeat_minutes: settingsDraft.heartbeat_minutes,
         max_heartbeats: settingsDraft.max_heartbeats,
         token_budget: settingsDraft.token_budget,
+        nemo_mcp_url: settingsDraft.nemo_mcp_url || initialState.settings.nemo_mcp_url,
+        nemo_mcp_prefix: "nemo.",
+        selected_nemo_tools: selectedNemoTools,
       })
         .then((payload) => {
           setActiveJob(payload.job);
@@ -1516,7 +1544,13 @@ export function App() {
       return;
     }
     setStatus(`Starting agent action: ${action.label}`);
-    postJson<HandoffJobResult>("/api/handoff/start", action.payload)
+    postJson<HandoffJobResult>("/api/handoff/start", {
+      ...action.payload,
+      validation_commands: handoffValidationCommand(action.payload.validation_commands),
+      nemo_mcp_url: String(action.payload.nemo_mcp_url || settingsDraft.nemo_mcp_url || initialState.settings.nemo_mcp_url),
+      nemo_mcp_prefix: String(action.payload.nemo_mcp_prefix || "nemo."),
+      selected_nemo_tools: selectedNemoTools,
+    })
       .then((payload) => {
         setActiveJob(payload.job);
         setStatus(`Job started: ${payload.job.job_id}`);
@@ -3731,6 +3765,14 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
   const update = (key: keyof MissionState["settings"], value: string | number | boolean | string[]) => onSettingsChange({ ...settings, [key]: value });
   const watcherTone = mcpWatcher?.active ? "ready" : "blocked";
   const watcherLabel = mcpWatcher?.status ?? "loading";
+  const capabilities = mcpWatcher?.capabilities;
+  const capabilityRows = [
+    ["context_bootstrap", capabilities?.supports_context_bootstrap],
+    ["prime_context", capabilities?.supports_prime_context],
+    ["search_memories", capabilities?.supports_search_memories],
+    ["core reads", capabilities?.supports_core_context_reads],
+    ["write/read", capabilities?.supports_write_read_roundtrip],
+  ] as const;
   return (
     <section className="ops-panel settings-editor">
       <div className="panel-title"><Settings size={16} /> Ajustes</div>
@@ -3744,8 +3786,17 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
           <strong>MCP watcher</strong>
           <span>{watcherLabel}{mcpWatcher?.latency_ms !== undefined ? ` / ${mcpWatcher.latency_ms} ms` : ""}</span>
           {mcpWatcher?.error && <small>{mcpWatcher.error}</small>}
+          {capabilities?.errors && capabilities.errors.length > 0 && <small>{capabilities.errors.join(" / ")}</small>}
         </div>
         <button onClick={onRefreshMcpWatcher}><RefreshCw size={14} /> Comprobar</button>
+      </div>
+      <div className="repo-picker">
+        <strong>Capabilities NEMO MCP</strong>
+        <div className="mini-list">
+          {capabilityRows.map(([label, ok]) => (
+            <span key={label} className={ok ? "ready" : "blocked"}>{label}: {ok ? "ok" : "blocked"}</span>
+          ))}
+        </div>
       </div>
       <div className="repo-picker">
         <strong>Selector de tools MCP por sesion</strong>
@@ -3803,6 +3854,7 @@ function NemoMemoryPanel({ nemoState, mcpWatcher }: { nemoState: NemoState | nul
   const corrections = nemoState?.corrections ?? [];
   const evidence = nemoState?.evidence ?? [];
   const feedback = nemoState?.feedback ?? [];
+  const capabilities = mcpWatcher?.capabilities;
   return (
     <section className="nemo-panel">
       <div className="panel-title"><Database size={16} /> NEMO Memory</div>
@@ -3817,6 +3869,12 @@ function NemoMemoryPanel({ nemoState, mcpWatcher }: { nemoState: NemoState | nul
         <strong>{mcpWatcher?.configured ? "configured" : "not set"}</strong><small>remote</small>
         <strong>{mcpWatcher?.latency_ms ?? 0}</strong><small>ms</small>
       </div>
+      <NemoSection title="MCP capabilities" empty="No capability probe yet.">
+        <NemoLine tone={capabilities?.supports_context_bootstrap ? "meta" : "correction"} value={`context_bootstrap: ${capabilities?.supports_context_bootstrap ? "ok" : "blocked"}`} />
+        <NemoLine tone={capabilities?.supports_prime_context ? "meta" : "correction"} value={`prime_context: ${capabilities?.supports_prime_context ? "ok" : "blocked"}`} />
+        <NemoLine tone={capabilities?.supports_search_memories ? "meta" : "correction"} value={`search_memories: ${capabilities?.supports_search_memories ? "ok" : "blocked"}`} />
+        <NemoLine tone={capabilities?.supports_write_read_roundtrip ? "meta" : "correction"} value={`write/read roundtrip: ${capabilities?.supports_write_read_roundtrip ? "ok" : "blocked"}`} meta={capabilities?.errors?.join(" / ") || undefined} />
+      </NemoSection>
       <NemoSection title="Context portfolio" empty="No portfolio compiled yet.">
         {portfolioLines.map((line, index) => <NemoLine key={`${line}-${index}`} tone="portfolio" value={line} />)}
         {nemoState?.context_portfolio?.estimated_tokens !== undefined && <NemoLine tone="meta" value={`${nemoState.context_portfolio.estimated_tokens} estimated tokens`} />}

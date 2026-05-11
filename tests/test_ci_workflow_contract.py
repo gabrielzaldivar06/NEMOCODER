@@ -11,11 +11,18 @@ class CiWorkflowContractTests(unittest.TestCase):
     def test_workflow_dispatch_exposes_installer_mode_toggle(self) -> None:
         self.assertIn("workflow_dispatch:", self.source)
         self.assertIn("installer_mode:", self.source)
+        self.assertIn("real_mcp_gate:", self.source)
         self.assertIn("type: boolean", self.source)
 
     def test_global_installer_mode_env_is_defined(self) -> None:
         self.assertIn("INSTALLER_MODE:", self.source)
         self.assertIn("vars.INSTALLER_MODE", self.source)
+
+    def test_real_mcp_release_gate_is_opt_in_and_required_when_enabled(self) -> None:
+        self.assertIn("NEMOCODE_REAL_MCP_REQUIRED:", self.source)
+        self.assertIn("vars.NEMOCODE_REAL_MCP_REQUIRED", self.source)
+        self.assertIn("Run required real NEMO MCP continuity gate", self.source)
+        self.assertIn("test_mcp_native_real_server_continuity_across_sessions_and_core_tools", self.source)
 
     def test_installer_preview_job_is_real_windows_build(self) -> None:
         self.assertIn("installer-preview:", self.source)

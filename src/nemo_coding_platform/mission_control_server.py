@@ -40,6 +40,7 @@ from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_
 from nemo_coding_platform.core.rate_limiter import RateLimiter
 from nemo_coding_platform.core.self_modification import get_self_mod_continuity, query_self_mod_risk_patterns, self_mod_impact, self_mod_similar_runs, self_mod_trajectory
 from nemo_coding_platform.core.validation import validation_commands_for_policy
+from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, default_nemo_mcp_url, discover_vscode_mcp_server
 from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool
 
 
@@ -54,10 +55,13 @@ SOURCE_ANALYTICS_MAX_EVENTS = 400
 JOB_HEARTBEAT_SECONDS = 20.0
 JOB_STALL_HEARTBEATS = 8
 _NEMO_TOOL_SCAN_CACHE: dict[str, object] = {"at": 0.0, "verified_read_only": (), "declared_write_or_destructive": ()}
+_NEMO_MCP_CAPABILITY_CACHE: dict[str, object] = {"at": 0.0, "key": None, "payload": None}
 _URL_SOURCE_CACHE: dict[str, dict[str, object]] = {}
 _DEFAULT_SESSION_NEMO_TOOLS: tuple[str, ...] = (
+    "context_bootstrap",
     "prime_context",
     "build_context_portfolio",
+    "get_context_portfolio_stats",
     "search_memories",
     "anticipate",
     "store_conversation",
@@ -686,7 +690,7 @@ def _default_settings(config: MissionControlServerConfig) -> dict[str, object]:
         },
         "provider": "subprocess",
         "memory_db": str(config.memory_db) if config.memory_db else "",
-        "nemo_mcp_url": os.environ.get("NEMOCODE_NEMO_MCP_URL", "http://127.0.0.1:8765/mcp/sse"),
+        "nemo_mcp_url": default_nemo_mcp_url(config.repo_path),
         "runtime_path": str(config.runtimes_path),
         "timeout_seconds": 300,
         "max_runtime_minutes": 240,
@@ -736,6 +740,12 @@ def _load_settings(config: MissionControlServerConfig) -> dict[str, object]:
     settings["memory_db"] = str(config.memory_db) if config.memory_db else ""
     raw_mcp_url = settings.get("nemo_mcp_url")
     settings["nemo_mcp_url"] = str(raw_mcp_url).strip() if isinstance(raw_mcp_url, str) else ""
+    if (
+        not os.environ.get("NEMOCODE_NEMO_MCP_URL")
+        and settings["nemo_mcp_url"] == "http://127.0.0.1:8765/mcp/sse"
+        and discover_vscode_mcp_server("nemo", config.repo_path) is not None
+    ):
+        settings["nemo_mcp_url"] = VSCODE_STDIO_NEMO_URL
     recent = settings.get("recent_repos")
     if not isinstance(recent, list):
         recent = []
@@ -1408,6 +1418,7 @@ def _nemo_adapter(
 
 def _require_nemo_mcp_for_execution(
     *,
+    config: MissionControlServerConfig,
     payload: dict[str, object],
     provider: str,
     memory_enabled: bool,
@@ -1428,6 +1439,24 @@ def _require_nemo_mcp_for_execution(
         if details:
             message = f"{message}: {details}"
         raise _bad_request(message, error_code="nemo_mcp_unreachable")
+    require_capabilities = bool(payload.get("require_nemo_mcp_capabilities", payload.get("nemo_required", True)))
+    require_roundtrip = bool(payload.get("require_nemo_roundtrip", require_capabilities))
+    if require_capabilities:
+        capabilities = _probe_nemo_mcp_capabilities(
+            config,
+            mcp_url=mcp_url,
+            include_roundtrip_probe=require_roundtrip,
+        )
+        if not capabilities.get("supports_core_context_reads"):
+            raise _bad_request(
+                "NEMO MCP is reachable but missing required context-read capabilities before handoff execution",
+                error_code="nemo_mcp_capability_mismatch",
+            )
+        if require_roundtrip and not capabilities.get("supports_write_read_roundtrip"):
+            raise _bad_request(
+                "NEMO MCP write/read continuity probe failed before handoff execution",
+                error_code="nemo_mcp_roundtrip_failed",
+            )
     return mcp_url
 
 
@@ -1549,13 +1578,37 @@ def _agent_context_summary(
     return packet.text
 
 
+def _nemo_bootstrap_packet(tool_calls: list[dict[str, object]], *, max_chars: int = 1600) -> str:
+    """Compact the real NEMO bootstrap results into a prompt-safe packet."""
+    lines = ["NEMO bootstrap packet:"]
+    interesting = (
+        "nemo_memory.prime_context",
+        "nemo_memory.build_context_portfolio",
+        "nemo_memory.search_memories",
+        "nemo_memory.anticipate",
+    )
+    for tool_name in interesting:
+        for call in reversed(tool_calls):
+            if str(call.get("name") or "") != tool_name:
+                continue
+            status = str(call.get("status") or "unknown")
+            summary = str(call.get("summary") or "").strip()
+            if summary:
+                lines.append(f"- {tool_name}: {status} — {summary}")
+            else:
+                lines.append(f"- {tool_name}: {status}")
+            break
+    packet = "\n".join(lines)
+    return _trim_output(packet, max_chars)
+
+
 def _verified_nemo_tool_list() -> str:
     return ", ".join(sorted(contract.name for contract in NEMO_TOOL_REGISTRY))
 
 
 def _probe_arguments_for_tool(tool_name: str) -> dict[str, Any]:
     probes: dict[str, dict[str, Any]] = {
-        "prime_context": {"topic": "tool-scan", "limit": 1},
+        "prime_context": {"topic": "tool-scan"},
         "context_bootstrap": {"topic": "tool-scan", "task": "tool scan", "limit": 1, "token_budget": 128},
         "build_context_portfolio": {"task": "tool scan", "topic": "tool-scan", "token_budget": 128},
         "expand_context_evidence": {"handle": "probe-missing-handle"},
@@ -1654,9 +1707,8 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "NEMO MCP is the memory/context plane used by this product; it is not the product itself. "
                     "Do not describe yourself as a generic messaging system. "
                     "Answer in the user's language. Be concise, direct, and operational — never ask for confirmation before acting. "
-                    "IMPORTANT: The Mission Control server already executed all NEMO MCP tool calls (prime_context, store_conversation, "
-                    "build_context_portfolio, anticipate, search_memories) before calling you. "
-                    "Those results are provided in your context. Do NOT say you will call tools or ask permission to do so — just act and confirm what was done. "
+                    "IMPORTANT: The Mission Control server bootstrapped NEMO context before calling you and included the real results below. "
+                    "Treat that packet as authoritative memory for this response. Do NOT claim you personally called the tools, but do use the bootstrapped context directly. "
                     "When the user asks you to save, store, or remember something, confirm it is already saved (the server did it). "
                     "Do not claim you applied code unless an explicit apply action did it. "
                     "Never invent MCP/NEMO tool names or capabilities outside the verified catalog below."
@@ -1670,6 +1722,7 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
             {"role": "user", "content": user_message},
         ],
         "temperature": 0.2,
+        "max_tokens": _chat_max_tokens(payload),
         "stream": False,
     }
     data = json.dumps(body).encode("utf-8")
@@ -1698,6 +1751,15 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
     if not isinstance(response_message, dict) or not isinstance(response_message.get("content"), str):
         raise ValueError("LM Studio chat failed: response message had no content")
     return response_message["content"].strip() or "The model returned an empty response."
+
+
+def _chat_max_tokens(payload: dict[str, object]) -> int:
+    value = payload.get("max_tokens", payload.get("chat_max_tokens", 512))
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError):
+        tokens = 512
+    return max(64, min(tokens, 2048))
 
 
 def _write_apply_memory(result: MergeApplyResult, memory_db: Path | None) -> None:
@@ -2758,6 +2820,27 @@ def _probe_nemo_mcp_sse(mcp_url: str, timeout_seconds: float = 2.5) -> dict[str,
             "status": "not_configured",
             "url": "",
         }
+    if target.lower() == VSCODE_STDIO_NEMO_URL:
+        server = discover_vscode_mcp_server("nemo")
+        if server is None:
+            return {
+                "configured": True,
+                "active": False,
+                "status": "stdio_config_missing",
+                "url": target,
+                "transport": "vscode_stdio",
+            }
+        return {
+            "configured": True,
+            "active": True,
+            "status": "active",
+            "url": target,
+            "transport": "vscode_stdio",
+            "server_name": server.name,
+            "config_source": server.source_path,
+            "command": server.command,
+            "args": list(server.args),
+        }
 
     started = time.perf_counter()
     request = urllib.request.Request(target, headers={"Accept": "text/event-stream"})
@@ -2800,6 +2883,164 @@ def _probe_nemo_mcp_sse(mcp_url: str, timeout_seconds: float = 2.5) -> dict[str,
         }
 
 
+def _probe_nemo_mcp_capabilities(
+    config: MissionControlServerConfig,
+    *,
+    mcp_url: str,
+    include_roundtrip_probe: bool = False,
+) -> dict[str, object]:
+    cache_key = (str(config.memory_db), str(mcp_url or "").strip(), bool(include_roundtrip_probe))
+    cached_payload = _NEMO_MCP_CAPABILITY_CACHE.get("payload")
+    if (
+        not include_roundtrip_probe
+        and _NEMO_MCP_CAPABILITY_CACHE.get("key") == cache_key
+        and isinstance(cached_payload, dict)
+        and time.time() - float(_NEMO_MCP_CAPABILITY_CACHE.get("at") or 0.0) < 300.0
+    ):
+        return dict(cached_payload)
+
+    if config.memory_db is None:
+        return {
+            "enabled": False,
+            "supports_context_bootstrap": False,
+            "supports_prime_context": False,
+            "supports_search_memories": False,
+            "supports_core_context_reads": False,
+            "supports_write_read_roundtrip": False,
+            "roundtrip_probe_executed": False,
+            "errors": ["memory_db_disabled"],
+        }
+
+    errors: list[str] = []
+
+    bootstrap_raw = mcp_call_nemo_tool(
+        "context_bootstrap",
+        lifecycle_phase="start",
+        memory_db=str(config.memory_db),
+        mcp_url=mcp_url,
+        task="mission control capability probe",
+        topic="Mission Control conversation",
+        token_budget=256,
+        limit=5,
+    )
+    bootstrap_payload = _normalize_nemo_tool_payload(bootstrap_raw)
+    supports_context_bootstrap = bool(bootstrap_raw.get("ok")) and (
+        bool(bootstrap_payload.get("context"))
+        or isinstance(bootstrap_payload.get("portfolio"), dict)
+        or isinstance(bootstrap_payload.get("prime_context"), dict)
+        or isinstance(bootstrap_payload.get("context_portfolio"), dict)
+    )
+    if not supports_context_bootstrap:
+        errors.append("context_bootstrap_unavailable")
+
+    if str(mcp_url or "").strip().lower() == VSCODE_STDIO_NEMO_URL and not include_roundtrip_probe:
+        prime_context_payload = bootstrap_payload.get("prime_context") if isinstance(bootstrap_payload.get("prime_context"), dict) else {}
+        supports_prime_context = bool(prime_context_payload) or isinstance(bootstrap_payload.get("context"), str)
+        supports_search_memories = True
+        supports_core_context_reads = supports_context_bootstrap and supports_prime_context and supports_search_memories
+        payload = {
+            "enabled": True,
+            "supports_context_bootstrap": supports_context_bootstrap,
+            "supports_prime_context": supports_prime_context,
+            "supports_search_memories": supports_search_memories,
+            "supports_core_context_reads": supports_core_context_reads,
+            "supports_write_read_roundtrip": False,
+            "roundtrip_probe_executed": False,
+            "errors": errors,
+            "probe_mode": "vscode_stdio_lightweight",
+        }
+        _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
+        return payload
+
+    prime_raw = mcp_call_nemo_tool(
+        "prime_context",
+        lifecycle_phase="start",
+        memory_db=str(config.memory_db),
+        mcp_url=mcp_url,
+        topic="Mission Control conversation",
+    )
+    prime_payload = _normalize_nemo_tool_payload(prime_raw)
+    supports_prime_context = bool(prime_raw.get("ok")) and (
+        isinstance(prime_payload.get("memories"), list)
+        or isinstance(prime_payload.get("context"), str)
+    )
+    if not supports_prime_context:
+        errors.append("prime_context_unavailable")
+
+    search_raw = mcp_call_nemo_tool(
+        "search_memories",
+        lifecycle_phase="review",
+        memory_db=str(config.memory_db),
+        mcp_url=mcp_url,
+        query="mission control capability probe",
+        limit=3,
+    )
+    search_payload = _normalize_nemo_tool_payload(search_raw)
+    supports_search_memories = bool(search_raw.get("ok")) and (
+        isinstance(search_payload.get("memories"), list)
+        or isinstance(search_payload.get("results"), list)
+    )
+    if not supports_search_memories:
+        errors.append("search_memories_unavailable")
+
+    supports_write_read_roundtrip = False
+    roundtrip_executed = False
+    if include_roundtrip_probe:
+        roundtrip_executed = True
+        marker = f"mc-capability-probe-{uuid4().hex[:8]}"
+        write_raw = mcp_call_nemo_tool(
+            "store_conversation",
+            lifecycle_phase="close",
+            memory_db=str(config.memory_db),
+            mcp_url=mcp_url,
+            summary=f"capability probe marker {marker}",
+            topic=marker,
+            tags=("mission-control", "capability-probe"),
+        )
+        write_ok = bool(write_raw.get("ok"))
+        if not write_ok:
+            errors.append("roundtrip_write_failed")
+        else:
+            prime_marker_raw = mcp_call_nemo_tool(
+                "prime_context",
+                lifecycle_phase="start",
+                memory_db=str(config.memory_db),
+                mcp_url=mcp_url,
+                topic=marker,
+            )
+            prime_marker_payload = _normalize_nemo_tool_payload(prime_marker_raw)
+            search_marker_raw = mcp_call_nemo_tool(
+                "search_memories",
+                lifecycle_phase="review",
+                memory_db=str(config.memory_db),
+                mcp_url=mcp_url,
+                query=marker,
+                limit=5,
+            )
+            search_marker_payload = _normalize_nemo_tool_payload(search_marker_raw)
+
+            context_text = str(prime_marker_payload.get("context") or "")
+            memories = search_marker_payload.get("memories") if isinstance(search_marker_payload.get("memories"), list) else []
+            supports_write_read_roundtrip = marker in context_text or len(memories) > 0
+            if not supports_write_read_roundtrip:
+                errors.append("roundtrip_read_failed")
+
+    supports_core_context_reads = supports_context_bootstrap and supports_prime_context and supports_search_memories
+    payload = {
+        "enabled": True,
+        "supports_context_bootstrap": supports_context_bootstrap,
+        "supports_prime_context": supports_prime_context,
+        "supports_search_memories": supports_search_memories,
+        "supports_core_context_reads": supports_core_context_reads,
+        "supports_write_read_roundtrip": supports_write_read_roundtrip,
+        "roundtrip_probe_executed": roundtrip_executed,
+        "errors": errors,
+    }
+    if not include_roundtrip_probe:
+        _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
+    return payload
+
+
 def api_nemo_mcp_status(config: MissionControlServerConfig, payload: dict[str, object] | None = None) -> dict[str, object]:
     settings = _load_settings(config)
     payload_data = payload if isinstance(payload, dict) else {}
@@ -2809,11 +3050,32 @@ def api_nemo_mcp_status(config: MissionControlServerConfig, payload: dict[str, o
     else:
         mcp_url = str(settings.get("nemo_mcp_url") or "").strip()
     probe = _probe_nemo_mcp_sse(mcp_url)
+    include_capability_probe = bool(payload_data.get("include_capability_probe", True))
+    include_roundtrip_probe = bool(payload_data.get("include_roundtrip_probe", False))
+    capabilities = (
+        _probe_nemo_mcp_capabilities(
+            config,
+            mcp_url=mcp_url,
+            include_roundtrip_probe=include_roundtrip_probe,
+        )
+        if probe.get("active") and include_capability_probe
+        else {
+            "enabled": False,
+            "supports_context_bootstrap": False,
+            "supports_prime_context": False,
+            "supports_search_memories": False,
+            "supports_core_context_reads": False,
+            "supports_write_read_roundtrip": False,
+            "roundtrip_probe_executed": False,
+            "errors": ["probe_not_active_or_disabled"],
+        }
+    )
     selected_tools = _selected_nemo_tools(payload_data)
     available_tools = sorted(contract.name for contract in NEMO_TOOL_REGISTRY)
     return {
         "ok": True,
         **probe,
+        "capabilities": capabilities,
         "available_tools": available_tools,
         "selected_tools": sorted(selected_tools),
         "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -3180,7 +3442,7 @@ def api_handoff(config: MissionControlServerConfig, payload: dict[str, object]) 
     payload = _enforce_workspace_scope(config, {**_load_settings(config), **payload})
     _enforce_workflow_policy(payload, action="handoff", allowed_modes=("build",))
     provider_mode = _provider_mode(payload)
-    nemo_mcp_url = _require_nemo_mcp_for_execution(payload=payload, provider=provider_mode, memory_enabled=config.memory_db is not None)
+    nemo_mcp_url = _require_nemo_mcp_for_execution(config=config, payload=payload, provider=provider_mode, memory_enabled=config.memory_db is not None)
     run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     short_id = uuid4().hex[:8]
     task_id = f"mc-task-{run_suffix}-{short_id}"
@@ -3226,7 +3488,7 @@ def api_handoff_start(server: "MissionControlHttpServer", payload: dict[str, obj
     merged_payload = _enforce_workspace_scope(server.config, {**_load_settings(server.config), **payload})
     _enforce_workflow_policy(merged_payload, action="handoff_start", allowed_modes=("build",))
     provider_mode = _provider_mode(merged_payload)
-    _require_nemo_mcp_for_execution(payload=merged_payload, provider=provider_mode, memory_enabled=server.config.memory_db is not None)
+    _require_nemo_mcp_for_execution(config=server.config, payload=merged_payload, provider=provider_mode, memory_enabled=server.config.memory_db is not None)
     job = server.jobs.start(server.config, merged_payload)
     return {"ok": True, "job": job.to_dict()}
 
@@ -3342,7 +3604,7 @@ def _nemo_chat_tool_call(
         **arguments,
     )
     ok = bool(result.get("ok"))
-    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    payload = _normalize_nemo_tool_payload(result)
     tool_calls.append(
         {
             "id": f"tool-{uuid4().hex[:8]}",
@@ -3356,14 +3618,56 @@ def _nemo_chat_tool_call(
     return payload if ok else {}
 
 
+def _normalize_nemo_tool_payload(result: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap payload shapes returned by native MCP wrappers.
+
+    Expected inputs include:
+    - {"payload": {...tool-data...}}
+    - {"payload": {"result": {...tool-data...}}}
+    - {"payload": {"result": {"payload": {...tool-data...}}}}
+    """
+    outer = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    if not outer:
+        return {}
+
+    nested_result = outer.get("result") if isinstance(outer.get("result"), dict) else None
+    if nested_result is None:
+        return outer
+
+    nested_payload = nested_result.get("payload") if isinstance(nested_result.get("payload"), dict) else None
+    if nested_payload is not None:
+        return nested_payload
+    return nested_result
+
+
 def _nemo_tool_summary(tool_name: str, payload: dict[str, Any]) -> str:
+    if tool_name == "context_bootstrap":
+        prime_payload = payload.get("prime_context") if isinstance(payload.get("prime_context"), dict) else {}
+        context = str(payload.get("context") or prime_payload.get("context") or "")
+        portfolio = payload.get("portfolio") if isinstance(payload.get("portfolio"), dict) else {}
+        if not portfolio and isinstance(payload.get("context_portfolio"), dict):
+            portfolio = payload["context_portfolio"]
+        estimated_tokens = portfolio.get("estimated_tokens", 0) if isinstance(portfolio, dict) else 0
+        return f"Bootstrapped context chars={len(context)} portfolio_tokens={estimated_tokens}."
     if tool_name == "prime_context":
         context = str(payload.get("context") or "")
-        return f"Loaded Mission Control memory context chars={len(context)}."
+        memories = payload.get("memories") if isinstance(payload.get("memories"), list) else []
+        return f"Loaded Mission Control memory context chars={len(context)} memories={len(memories)}."
     if tool_name == "build_context_portfolio":
         return f"Built context portfolio tokens={payload.get('estimated_tokens', 0)} evidence={len(payload.get('evidence_handles', []))}."
     if tool_name == "search_memories":
-        return f"Searched memory; matches={len(payload.get('memories', []))}."
+        memories = _memories_from_nemo_payload(payload)
+        user_name = ""
+        if isinstance(memories, list) and memories:
+            first = memories[0]
+            if isinstance(first, dict):
+                raw_name = first.get("user_name")
+                if isinstance(raw_name, str) and raw_name.strip():
+                    user_name = raw_name.strip()
+        if not user_name:
+            user_name = _extract_user_name_from_memories(memories)
+        suffix = f" user_name={user_name}." if user_name else "."
+        return f"Searched memory; matches={len(memories)}{suffix}"
     if tool_name == "anticipate":
         items = payload.get("memories") or payload.get("anticipated") or []
         return f"Anticipated {len(items)} relevant reflexion(s) and risk pattern(s) for this task."
@@ -3423,15 +3727,333 @@ def _trigger_frontend_hot_reload(config: MissionControlServerConfig) -> dict[str
 
 
 def _is_memory_store_request(message: str) -> bool:
-    text = message.lower()
-    store_terms = (
-        "guarda", "guardalo", "guárdalo", "guardar", "guárdame",
-        "recuerda", "recuérdalo", "recuérdame",
-        "almacena", "almacénalo", "almacenar",
-        "save", "store", "remember",
-        "en nemo", "en memoria", "en el contexto",
+    text = message.lower().strip()
+    if re.search(r"\b(?:recuerdas|recuérdas|remember\s+what|do\s+you\s+remember)\b", text):
+        return False
+    store_patterns = (
+        r"\bguarda(?:lo|me)?\b",
+        r"\bguárda(?:lo|me)?\b",
+        r"\bguardar(?:lo)?\b",
+        r"\brecuerda\s+(?:que|esto|esta|este|mi|mis|la|el|lo)\b",
+        r"\brecuérdalo\b",
+        r"\brecuérdame\b",
+        r"\balmacena(?:lo)?\b",
+        r"\balmacénalo\b",
+        r"\balmacenar\b",
+        r"\b(?:save|store|remember)\b",
     )
-    return any(term in text for term in store_terms)
+    return any(re.search(pattern, text) for pattern in store_patterns)
+
+
+def _is_nemo_memory_lookup_request(message: str) -> bool:
+    if _is_identity_query(message):
+        return True
+    if _is_project_query(message):
+        return True
+    text = message.lower()
+    memory_surface = any(term in text for term in ("nemo", "mcp", "memoria", "memory", "contexto"))
+    lookup_intent = any(
+        term in text
+        for term in (
+            "revisa", "busca", "consulta", "recupera", "retrieve", "search",
+            "tienes informacion", "tienes información", "hay informacion", "hay información",
+            "que sabes", "qué sabes", "informacion sobre", "información sobre",
+            "recuerdas", "recuérdas", "te acuerdas", "dime lo que sepas", "dime que sabes", "dime qué sabes",
+        )
+    )
+    question_intent = bool(re.search(r"\b(?:que|qué|what)\s+(?:es|is)\b", text))
+    natural_memory_question = bool(
+        re.search(
+            r"\b(?:recuerdas|recuérdas|te\s+acuerdas|dime\s+lo\s+que\s+sepas|dime\s+(?:que|qué)\s+sabes|(?:que|qué)\s+sabes|what\s+do\s+you\s+know|do\s+you\s+remember)\b",
+            text,
+        )
+    )
+    return (memory_surface and (lookup_intent or question_intent)) or natural_memory_question
+
+
+def _extract_nemo_lookup_query(message: str) -> str:
+    text = message.strip()
+    stopwords = {"nemo", "mcp", "memoria", "memorias", "memory", "contexto", "busca", "revisa", "consulta", "que", "qué", "dime", "recuerdas"}
+    for pattern in (
+        r"\b(?:recuerdas|recuérdas)\s+([^,.;!?]+)",
+        r"\bte\s+acuerdas\s+de\s+([^,.;!?]+)",
+        r"\b(?:dime\s+lo\s+que\s+sepas\s+de|dime\s+(?:que|qué)\s+sabes\s+de|(?:que|qué)\s+sabes\s+de|what\s+do\s+you\s+know\s+about)\s+([^,.;!?]+)",
+        r"\b(?:que|qué|what)\s+(?:es|is)\s+([^,.;!?]+)",
+        r"\b(?:sobre|acerca de|for|about)\s+([^,.;!?]+)",
+        r"\b(?:query|busca|search)\s+(?:en\s+)?(?:nemo\s+)?(?:mcp\s+)?(?:que\s+es\s+|qué\s+es\s+)?([^,.;!?]+)",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            candidate = _clean_nemo_lookup_query(match.group(1))
+            if candidate.lower() not in stopwords:
+                return candidate
+    for candidate in re.findall(r"\b[A-Z][A-Z0-9_.:-]{2,}\b", text):
+        if candidate.lower() not in stopwords:
+            return candidate
+    return text
+
+
+def _clean_nemo_lookup_query(value: str) -> str:
+    cleaned = value.strip().strip(".,;:!?()[]{}\"'")
+    cleaned = re.sub(
+        r"\b(?:en\s+)?(?:nemo|mcp|memoria|memorias|memory|contexto)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\b(?:las|los|la|el|un|una)\b\s*$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip().strip(".,;:!?()[]{}\"'")
+
+
+def _is_project_query(message: str) -> bool:
+    text = message.lower()
+    return any(term in text for term in ("proyecto", "proyectos", "project", "projects", "repos", "repositorios"))
+
+
+def _is_identity_query(message: str) -> bool:
+    text = message.lower()
+    if "nombre" in text and any(marker in text for marker in ("?", "cual es", "cuál es", "como me", "cómo me")):
+        return True
+    return any(
+        phrase in text
+        for phrase in (
+            "cual es mi nombre",
+            "cuál es mi nombre",
+            "como me llamo",
+            "cómo me llamo",
+            "what is my name",
+            "my name",
+        )
+    )
+
+
+def _extract_declared_user_name(message: str) -> str:
+    text = message.strip()
+    patterns = (
+        r"(?:mi nombre es|me llamo|my name is)\s+(.+)$",
+        r"(?:guarda que mi nombre es|guardar que mi nombre es)\s+(.+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _clean_declared_user_name(match.group(1))
+    return ""
+
+
+def _clean_declared_user_name(value: str) -> str:
+    cleaned = value.strip().strip(".!,;:")
+    cleaned = re.split(
+        r"\s+(?:guarda|guardalo|guárdalo|guardar|guardarlo|save|store|remember|recuerda|en\s+nemo|en\s+mcp|en\s+memoria)\b",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return cleaned.strip().strip(".!,;:")
+
+
+def _extract_user_name_from_memories(memories: object) -> str:
+    if not isinstance(memories, list):
+        return ""
+    for item in memories:
+        if not isinstance(item, dict):
+            continue
+        user_name = item.get("user_name")
+        if isinstance(user_name, str) and user_name.strip():
+            return user_name.strip()
+        for field_name in ("content", "summary", "text"):
+            value = item.get(field_name)
+            if not isinstance(value, str):
+                continue
+            match = re.search(r"(?:mi nombre es|me llamo|my name is)\s+(.+)$", value, flags=re.IGNORECASE)
+            if match:
+                return _clean_declared_user_name(match.group(1))
+    return ""
+
+
+def _unique_memories_from_payloads(payloads: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    memories: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for _, payload in payloads:
+        for item in _memories_from_nemo_payload(payload):
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("id") or item.get("memory_id") or item.get("content") or item)
+            if key in seen:
+                continue
+            seen.add(key)
+            memories.append(item)
+    return memories
+
+
+def _memories_from_nemo_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    raw_memories = payload.get("memories")
+    if isinstance(raw_memories, list):
+        return [item if isinstance(item, dict) else {"content": str(item), "type": "memory"} for item in raw_memories if isinstance(item, (dict, str))]
+    raw_results = payload.get("results")
+    memories: list[dict[str, Any]] = []
+    if isinstance(raw_results, list):
+        for item in raw_results:
+            if isinstance(item, str):
+                memories.append({"content": item, "type": "memory"})
+                continue
+            if not isinstance(item, dict):
+                continue
+            data = item.get("data")
+            if isinstance(data, dict):
+                merged = dict(data)
+                if "type" not in merged and isinstance(item.get("type"), str):
+                    merged["type"] = item["type"]
+                if "similarity_score" not in merged and "similarity_score" in item:
+                    merged["similarity_score"] = item.get("similarity_score")
+                memories.append(merged)
+            else:
+                memories.append(item)
+    return memories
+
+
+def _verified_nemo_memory_response(message: str, payloads: list[tuple[str, dict[str, Any]]]) -> str:
+    if not _is_nemo_memory_lookup_request(message):
+        return ""
+    memories = _unique_memories_from_payloads(payloads)
+    if _is_identity_query(message):
+        known_user_name = _extract_user_name_from_memories(memories)
+        project_memories = _project_memories_from_payloads(payloads) if _is_project_query(message) else []
+        if known_user_name:
+            lines = [f"Según NEMO MCP real, tu nombre es {known_user_name}."]
+            if _is_project_query(message):
+                if project_memories:
+                    lines.append("También encontré estos proyectos o contextos de proyecto en NEMO MCP real:")
+                    for index, memory in enumerate(project_memories[:5], start=1):
+                        lines.append(f"{index}. {_trim_output(_memory_content(memory), 240)}")
+                else:
+                    lines.append("No encontré proyectos guardados de forma útil en NEMO MCP real.")
+            related = [
+                memory
+                for memory in memories
+                if not _is_discarded_memory(memory)
+                and not _is_echo_memory(memory, message)
+                and not _is_chat_lookup_echo(memory)
+                and not _is_lookup_prompt_echo(memory)
+            ]
+            if related:
+                lines.append("También recuperé estas memorias relacionadas:")
+                for index, memory in enumerate(related[:3], start=1):
+                    lines.append(f"{index}. {_trim_output(_memory_content(memory), 220)}")
+            return "\n".join(lines)
+        if project_memories:
+            lines = ["Consulté NEMO MCP real y no encontré una memoria de identidad con tu nombre.", "Pero sí encontré estos proyectos o contextos de proyecto:"]
+            for index, memory in enumerate(project_memories[:5], start=1):
+                lines.append(f"{index}. {_trim_output(_memory_content(memory), 240)}")
+            return "\n".join(lines)
+        return "Consulté NEMO MCP real y no encontré una memoria de identidad con tu nombre ni proyectos guardados útiles."
+
+    lookup_query = _extract_nemo_lookup_query(message)
+    useful_memories = [
+        memory
+        for memory in memories
+        if not _is_discarded_memory(memory)
+        and not _is_echo_memory(memory, message)
+        and not _is_chat_lookup_echo(memory)
+        and not _is_lookup_prompt_echo(memory)
+        and _memory_matches_lookup(memory, lookup_query)
+    ]
+    if not useful_memories:
+        return f"Consulté NEMO MCP real por {lookup_query!r} y no encontré memorias útiles distintas del propio historial de chat."
+
+    lines = [f"Sí. Consulté NEMO MCP real por {lookup_query!r} y encontré {len(useful_memories)} memoria(s) verificadas:"]
+    for index, memory in enumerate(useful_memories[:5], start=1):
+        content = _memory_content(memory)
+        memory_id = str(memory.get("id") or memory.get("memory_id") or "sin-id")
+        memory_type = str(memory.get("type") or memory.get("memory_type") or "memory")
+        lines.append(f"{index}. [{memory_type} {memory_id}] {_trim_output(content, 260)}")
+    return "\n".join(lines)
+
+
+def _memory_content(memory: dict[str, Any]) -> str:
+    data = memory.get("data")
+    if isinstance(data, dict):
+        nested = _memory_content(data)
+        if nested:
+            return nested
+    for field_name in ("content", "summary", "text", "compact_claim"):
+        value = memory.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return json.dumps(memory, ensure_ascii=False, sort_keys=True)
+
+
+def _is_echo_memory(memory: dict[str, Any], message: str) -> bool:
+    content = _memory_content(memory).lower()
+    normalized_message = message.strip().lower()
+    if content == normalized_message:
+        return True
+    return content.startswith("mission control chat user request:") and normalized_message in content
+
+
+def _is_discarded_memory(memory: dict[str, Any]) -> bool:
+    tags = memory.get("tags")
+    tag_text = " ".join(str(tag).lower() for tag in tags) if isinstance(tags, list) else ""
+    content = _memory_content(memory).lower()
+    topic = str(memory.get("topic") or "").lower()
+    return (
+        "discarded" in tag_text
+        or "test-cleanup" in tag_text
+        or "ignore" in tag_text
+        or topic.startswith("nemocode cleanup")
+        or content.startswith("test cleanup / ignore")
+    )
+
+
+def _is_chat_lookup_echo(memory: dict[str, Any]) -> bool:
+    content = _memory_content(memory).lower().strip()
+    if not content.startswith("mission control chat user request:"):
+        return False
+    request = content.split(":", 1)[1].strip() if ":" in content else content
+    return not _is_memory_store_request(request)
+
+
+def _is_lookup_prompt_echo(memory: dict[str, Any]) -> bool:
+    content = _memory_content(memory).lower().strip()
+    return bool(
+        re.match(
+            r"^(?:recuerdas|recuérdas|dime\s+lo\s+que\s+sepas\s+de|dime\s+(?:que|qué)\s+sabes\s+de|(?:que|qué)\s+sabes\s+de)\b",
+            content,
+        )
+    )
+
+
+def _project_memories_from_payloads(payloads: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
+    project_memories: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for query, payload in payloads:
+        query_text = query.lower()
+        if not any(term in query_text for term in ("proyecto", "proyectos", "project", "projects", "repo", "repositorio")):
+            continue
+        for memory in _memories_from_nemo_payload(payload):
+            if not isinstance(memory, dict):
+                continue
+            if _is_discarded_memory(memory) or _is_chat_lookup_echo(memory) or _is_lookup_prompt_echo(memory):
+                continue
+            content = _memory_content(memory).lower()
+            memory_type = str(memory.get("type") or memory.get("memory_type") or "").lower()
+            if "project" not in memory_type and not any(term in content for term in ("proyecto", "project", "repo", "repositorio")):
+                continue
+            key = str(memory.get("id") or memory.get("memory_id") or memory.get("content") or memory)
+            if key in seen:
+                continue
+            seen.add(key)
+            project_memories.append(memory)
+    return project_memories
+
+
+def _memory_matches_lookup(memory: dict[str, Any], lookup_query: str) -> bool:
+    query = lookup_query.strip().lower()
+    if not query:
+        return True
+    content = _memory_content(memory).lower()
+    return query in content
 
 
 def _is_self_interface_request(message: str) -> bool:
@@ -3640,6 +4262,24 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     message = _message(payload)
     provider = _provider_mode(payload)
     nemo_mcp_url = _require_nemo_mcp_url(payload)
+    require_mcp_capabilities = bool(payload.get("require_nemo_mcp_capabilities", provider == "subprocess" and payload.get("nemo_required", config.memory_db is not None)))
+    require_mcp_roundtrip = bool(payload.get("require_nemo_roundtrip", False))
+    if require_mcp_capabilities:
+        capability_probe = _probe_nemo_mcp_capabilities(
+            config,
+            mcp_url=nemo_mcp_url,
+            include_roundtrip_probe=require_mcp_roundtrip,
+        )
+        if not capability_probe.get("supports_core_context_reads"):
+            raise _bad_request(
+                "NEMO MCP is reachable but missing required context-read capabilities (context_bootstrap/prime_context/search_memories)",
+                error_code="nemo_mcp_capability_mismatch",
+            )
+        if require_mcp_roundtrip and not capability_probe.get("supports_write_read_roundtrip"):
+            raise _bad_request(
+                "NEMO MCP write/read continuity probe failed for this environment",
+                error_code="nemo_mcp_roundtrip_failed",
+            )
     source_json = payload.get("source_json")
     chat_mode = _chat_mode(payload, message, source_json)
     mode_profile = _chat_mode_profile(chat_mode)
@@ -3678,6 +4318,19 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
             **arguments,
         )
 
+    def _skip_nemo(tool_name: str, summary: str) -> None:
+        canonical_name = f"nemo_memory.{tool_name}"
+        tool_calls.append(
+            {
+                "id": f"tool-{uuid4().hex[:8]}",
+                "name": canonical_name,
+                "tool_name": tool_name,
+                "alias_name": f"nemocode.{tool_name}",
+                "status": "skipped",
+                "summary": summary,
+            }
+        )
+
     agent_trace.append(
         _build_agent_trace_event(
             step=trace_step,
@@ -3710,14 +4363,64 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     )
     trace_step += 1
 
-    _call_nemo("prime_context", "start", topic="Mission Control conversation", limit=8)
+    bootstrap_payload = _call_nemo("context_bootstrap", "start", task=message, topic="Mission Control conversation", token_budget=portfolio_budget, limit=8)
+    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    if str(nemo_mcp_url).strip().lower() == VSCODE_STDIO_NEMO_URL:
+        _skip_nemo("prime_context", "Covered by context_bootstrap prime_context payload; skipped duplicate expensive direct prime_context call.")
+    else:
+        _call_nemo("prime_context", "start", topic="Mission Control conversation", limit=8)
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     _call_nemo("build_context_portfolio", "plan", task=message, topic="Mission Control conversation", token_budget=portfolio_budget, limit=40)
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    _call_nemo("search_memories", "review", query=message, topic="NEMOCODE self-modification", limit=mode_profile["search_limit"])
+    _call_nemo("get_context_portfolio_stats", "review")
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    anticipate_payload = _call_nemo("anticipate", "plan", task=message, limit=mode_profile["anticipate_limit"])
+    run_memory_lookup = _is_nemo_memory_lookup_request(message)
+    primary_search_payload: dict[str, Any] = {}
+    primary_search_query = _extract_nemo_lookup_query(message) if run_memory_lookup else ""
+    if run_memory_lookup:
+        primary_search_payload = _call_nemo("search_memories", "review", query=primary_search_query, limit=min(5, mode_profile["search_limit"]), compact=True, database_filter="ai_memories")
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    else:
+        _skip_nemo("search_memories", "Skipped expensive semantic search for ordinary chat; NEMO bootstrap/prime context already loaded.")
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    run_deep_context = run_memory_lookup or chat_mode in {"research", "execution"}
+    if run_deep_context:
+        anticipate_payload = _call_nemo("anticipate", "plan", task=message, limit=mode_profile["anticipate_limit"])
+    else:
+        anticipate_payload = {}
+        _skip_nemo("anticipate", "Deferred expensive anticipate for ordinary chat; context_bootstrap and portfolio already loaded proactive NEMO context.")
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    memory_lookup_payloads: list[tuple[str, dict[str, Any]]] = [(message, primary_search_payload)]
+    if _is_nemo_memory_lookup_request(message):
+        lookup_query = _extract_nemo_lookup_query(message)
+        if lookup_query and lookup_query.casefold() not in {message.casefold(), primary_search_query.casefold()}:
+            lookup_payload = _call_nemo("search_memories", "review", query=lookup_query, limit=min(5, max(3, mode_profile["search_limit"])), compact=True, database_filter="ai_memories")
+            memory_lookup_payloads.append((lookup_query, lookup_payload))
+            tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    if _is_identity_query(message):
+        for identity_query in ("mi nombre es",):
+            identity_payload = _call_nemo(
+                "search_memories",
+                "review",
+                query=identity_query,
+                limit=min(5, max(3, mode_profile["search_limit"])),
+                compact=True,
+                database_filter="ai_memories",
+            )
+            memory_lookup_payloads.append((identity_query, identity_payload))
+            tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    if _is_project_query(message):
+        for project_query in ("proyecto activo", "proyectos"):
+            project_payload = _call_nemo(
+                "search_memories",
+                "review",
+                query=project_query,
+                limit=min(5, max(3, mode_profile["search_limit"])),
+                compact=True,
+                database_filter="ai_memories",
+            )
+            memory_lookup_payloads.append((project_query, project_payload))
+            tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     source_notes: list[str] = []
     source_items: list[dict[str, object]] = []
     source_urls = _extract_http_urls(message)
@@ -3888,14 +4591,25 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     # Proactively persist user data when they ask to save/remember something
     if _is_memory_store_request(message):
-        _call_nemo(
-            "cognitive_ingest",
-            "review",
-            content=message,
-            memory_type="preference",
-            tags=("mission-control", "user-data", "agent-chat"),
-            context="User explicitly asked to store this in NEMO memory from Mission Control chat",
-        )
+        declared_name = _extract_declared_user_name(message)
+        if declared_name:
+            _call_nemo(
+                "cognitive_ingest",
+                "review",
+                content=f'{{"user_name": {declared_name!r}, "source_message": {message!r}}}',
+                memory_type="preference",
+                tags=("mission-control", "user-data", "identity", "agent-chat"),
+                context="User explicitly provided their name in Mission Control chat",
+            )
+        else:
+            _call_nemo(
+                "cognitive_ingest",
+                "review",
+                content=message,
+                memory_type="preference",
+                tags=("mission-control", "user-data", "agent-chat"),
+                context="User explicitly asked to store this in NEMO memory from Mission Control chat",
+            )
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
     # --- Cognitive preload: merge anticipate results + self-mod continuity ---
@@ -3923,6 +4637,24 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                     _cognitive_parts.append(f"Continuity from similar past tasks: {_cont_text}")
         except Exception:  # noqa: BLE001 — best-effort, never block the chat
             pass
+    if _is_identity_query(message) and config.memory_db is not None:
+        known_user_name = ""
+        memories = _unique_memories_from_payloads(memory_lookup_payloads)
+        if isinstance(memories, list) and memories:
+            first = memories[0]
+            if isinstance(first, dict):
+                raw_name = first.get("user_name")
+                if isinstance(raw_name, str) and raw_name.strip():
+                    known_user_name = raw_name.strip()
+        if not known_user_name:
+            known_user_name = _extract_user_name_from_memories(memories)
+        if known_user_name:
+            _cognitive_parts.append(f"Known user name from NEMO: {known_user_name}")
+    if isinstance(bootstrap_payload, dict):
+        bootstrap_context = str(bootstrap_payload.get("context") or "").strip()
+        if bootstrap_context:
+            _cognitive_parts.append(f"Bootstrapped NEMO context: {bootstrap_context}")
+    _cognitive_parts.append(_nemo_bootstrap_packet(tool_calls))
     cognitive_preload = "\n".join(_cognitive_parts)
     context_summary = _agent_context_summary(
         selected,
@@ -3932,7 +4664,19 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         cognitive_preload=cognitive_preload,
         max_context_chars=mode_profile["context_chars"],
     )
-    if provider == "fake":
+    verified_memory_response = _verified_nemo_memory_response(message, memory_lookup_payloads)
+    if verified_memory_response:
+        response = verified_memory_response
+        tool_calls.append(
+            {
+                "id": f"tool-{uuid4().hex[:8]}",
+                "name": "mission_control.verified_nemo_answer",
+                "status": "completed",
+                "summary": "Answered from real NEMO MCP search results; skipped model-only memory claims.",
+            }
+        )
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    elif provider == "fake":
         response = (
             "[fake planner] Built an operational response using local Mission Control context. "
             "Use the suggested action buttons to continue safely."

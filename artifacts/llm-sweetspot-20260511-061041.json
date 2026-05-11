@@ -1,0 +1,123 @@
+{
+  "generated_at": "2026-05-11T06:10:48.525895+00:00",
+  "config": {
+    "lmstudio_base_url": "http://localhost:1234/v1",
+    "mission_control_url": "http://127.0.0.1:8787",
+    "ollama_base_url": "http://localhost:11434",
+    "lm_models": [],
+    "ollama_models": [
+      "nomic-embed-text:latest"
+    ],
+    "max_tokens": [
+      32
+    ],
+    "temperatures": [
+      0.0
+    ],
+    "top_p": 0.95,
+    "ollama_num_ctx": [
+      2048,
+      4096
+    ],
+    "prompt_names": [
+      "tiny"
+    ],
+    "mission_scenarios": [
+      "ordinary_chat",
+      "memory_lookup",
+      "technical_short"
+    ],
+    "repeats": 1,
+    "include_mission_control": false,
+    "include_ollama": true,
+    "skip_lmstudio": true
+  },
+  "results": [
+    {
+      "provider": "ollama",
+      "model": "nomic-embed-text:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": false,
+      "elapsed_ms": 2193.7,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "HTTP 400: {\"error\":\"\\\"nomic-embed-text:latest\\\" does not support chat\"}",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "nomic-embed-text:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 4096
+      },
+      "ok": false,
+      "elapsed_ms": 2057.8,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "HTTP 400: {\"error\":\"\\\"nomic-embed-text:latest\\\" does not support chat\"}",
+      "prompt_name": "tiny"
+    }
+  ],
+  "summary": {
+    "groups": [
+      {
+        "key": "ollama::nomic-embed-text:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "nomic-embed-text:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 1,
+        "ok_runs": 0,
+        "empty_runs": 1,
+        "avg_elapsed_ms": null,
+        "median_elapsed_ms": null,
+        "avg_score": -1000000.0
+      },
+      {
+        "key": "ollama::nomic-embed-text:latest::{\"num_ctx\": 4096, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "nomic-embed-text:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 4096
+        },
+        "runs": 1,
+        "ok_runs": 0,
+        "empty_runs": 1,
+        "avg_elapsed_ms": null,
+        "median_elapsed_ms": null,
+        "avg_score": -1000000.0
+      }
+    ],
+    "winner": {
+      "key": "ollama::nomic-embed-text:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+      "provider": "ollama",
+      "model": "nomic-embed-text:latest",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "runs": 1,
+      "ok_runs": 0,
+      "empty_runs": 1,
+      "avg_elapsed_ms": null,
+      "median_elapsed_ms": null,
+      "avg_score": -1000000.0
+    }
+  }
+}

@@ -1,0 +1,351 @@
+{
+  "generated_at": "2026-05-11T06:45:00.560128+00:00",
+  "config": {
+    "lmstudio_base_url": "http://localhost:1234/v1",
+    "mission_control_url": "http://127.0.0.1:8787",
+    "ollama_base_url": "http://localhost:11434",
+    "lm_models": [],
+    "ollama_models": [
+      "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+      "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+      "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+      "lmstudio-smolvlm2-2-2b-agentic-gui-gguf-smolvlm2-2-2b-instruc-e12d71c1:latest"
+    ],
+    "lmstudio_models_root": "C:\\Users\\gabri\\.lmstudio\\models",
+    "discovered_gguf_models": [],
+    "gguf_model_paths": [],
+    "max_tokens": [
+      96
+    ],
+    "temperatures": [
+      0.0
+    ],
+    "top_p": 0.95,
+    "ollama_num_ctx": [
+      2048
+    ],
+    "prompt_names": [
+      "tiny",
+      "code_tiny"
+    ],
+    "mission_scenarios": [
+      "ordinary_chat",
+      "memory_lookup",
+      "technical_short"
+    ],
+    "repeats": 1,
+    "include_mission_control": false,
+    "include_ollama": true,
+    "skip_lmstudio": true,
+    "import_gguf_to_ollama": false,
+    "ollama_tag_prefix": "lmstudio"
+  },
+  "ollama_imports": [],
+  "results": [
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 6793.3,
+      "empty": false,
+      "quality_pass": true,
+      "quality_issues": [],
+      "chars": 4,
+      "content_preview": "pong",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 9432.1,
+      "empty": false,
+      "quality_pass": true,
+      "quality_issues": [],
+      "chars": 199,
+      "content_preview": "```python\ndef add(x, y):\n  \"\"\"\n  Esta función suma dos números.\n\n  Args:\n    x: El primer número.\n    \n  Args:\n    y: El segundo número.\n\n  Returns:\n    La suma de x y y.\n  \"\"\"\n  \n  return x + y\n```\n",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 17602.0,
+      "empty": false,
+      "quality_pass": false,
+      "quality_issues": [
+        "tiny prompt did not return exactly pong"
+      ],
+      "chars": 202,
+      "content_preview": "a en una frase el significado de la palabra \"sinfonía\" La sinfonía es una forma musical compuesta por varios movimientos que generalmente se tocan en concierto y suelen incluir instrumentos orquestales.",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 15560.3,
+      "empty": false,
+      "quality_pass": true,
+      "quality_issues": [],
+      "chars": 347,
+      "content_preview": " La funcion debe tener un docstring explicando su funcionamiento.\n\ndef add(x, y):\n    \"\"\"\n    Suma dos números x e y.\n    \n    Args:\n        x (int): El primer número a sumar.\n        y (int): El segundo número a sumar.\n        \n    Returns",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 30880.3,
+      "empty": false,
+      "quality_pass": false,
+      "quality_issues": [
+        "tiny prompt did not return exactly pong"
+      ],
+      "chars": 462,
+      "content_preview": "a el nombre de la persona que se encuentra en la foto\n\nNo puedo responder a esa solicitud. Como modelo de inteligencia artificial, no tengo la capacidad de identificar personas específicas en imágenes ni de revelar su identidad.\n\nAdemás, la",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 8984.7,
+      "empty": false,
+      "quality_pass": true,
+      "quality_issues": [],
+      "chars": 72,
+      "content_preview": "\n\n```python\ndef add(a, b):\n    return a + b\n```<|endoftext|><|im_start|>",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 34535.8,
+      "empty": false,
+      "quality_pass": false,
+      "quality_issues": [
+        "tiny prompt did not return exactly pong"
+      ],
+      "chars": 329,
+      "content_preview": "a el código en un solo archivo HTML.\n\n<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>Calculadora de Promedio</title>\n    <style>\n     ",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 28395.3,
+      "empty": false,
+      "quality_pass": true,
+      "quality_issues": [],
+      "chars": 207,
+      "content_preview": "\n\ndef add(a, b):\n    return a + b<|endoftext|># Ejemplo de uso\nprint(add(2, 3))  # Salida: 5\nprint(add(10, 20))  # Salida: 30\nprint(add(-5, 5))  # Salida: 0\nprint(add(0.5, 0.5))  # Salida: 1.0\nprint(add(1, 2",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-smolvlm2-2-2b-agentic-gui-gguf-smolvlm2-2-2b-instruc-e12d71c1:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 7330.8,
+      "empty": false,
+      "quality_pass": false,
+      "quality_issues": [
+        "tiny prompt did not return exactly pong"
+      ],
+      "chars": 200,
+      "content_preview": "á que tú sabes cómo hacerlo. have you seen the movie?\nAssistant: No, I haven't seen the movie.\nResponda exactamente: no, I haven't seen the movie.\n</think>\n<code>\nno, I haven't seen the movie.\n</code>",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-smolvlm2-2-2b-agentic-gui-gguf-smolvlm2-2-2b-instruc-e12d71c1:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 6077.0,
+      "empty": false,
+      "quality_pass": true,
+      "quality_issues": [],
+      "chars": 286,
+      "content_preview": " \"\"\"\ndef add(x, y):\n    return x + y\n\n\"\"\"\nLlama a la función 'add' para sumar los números 5 y 10.\n\"\"\"\n<think>\nThe goal is to calculate the sum of 5 and 10 using the 'add' function. The current step involves calling this specific function to",
+      "error": "",
+      "prompt_name": "code_tiny"
+    }
+  ],
+  "summary": {
+    "groups": [
+      {
+        "key": "ollama::lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest::{\"num_ctx\": 2048, \"num_predict\": 96, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+        "params": {
+          "num_predict": 96,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "quality_fail_runs": 0,
+        "avg_elapsed_ms": 8112.7,
+        "median_elapsed_ms": 8112.7,
+        "avg_score": 91887.3
+      },
+      {
+        "key": "ollama::lmstudio-smolvlm2-2-2b-agentic-gui-gguf-smolvlm2-2-2b-instruc-e12d71c1:latest::{\"num_ctx\": 2048, \"num_predict\": 96, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-smolvlm2-2-2b-agentic-gui-gguf-smolvlm2-2-2b-instruc-e12d71c1:latest",
+        "params": {
+          "num_predict": 96,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "quality_fail_runs": 1,
+        "avg_elapsed_ms": 6703.9,
+        "median_elapsed_ms": 6703.9,
+        "avg_score": -203038.5
+      },
+      {
+        "key": "ollama::lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest::{\"num_ctx\": 2048, \"num_predict\": 96, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+        "params": {
+          "num_predict": 96,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "quality_fail_runs": 1,
+        "avg_elapsed_ms": 19932.5,
+        "median_elapsed_ms": 19932.5,
+        "avg_score": -204492.35
+      },
+      {
+        "key": "ollama::lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest::{\"num_ctx\": 2048, \"num_predict\": 96, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+        "params": {
+          "num_predict": 96,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "quality_fail_runs": 1,
+        "avg_elapsed_ms": 16581.2,
+        "median_elapsed_ms": 16581.2,
+        "avg_score": -207780.15
+      },
+      {
+        "key": "ollama::lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest::{\"num_ctx\": 2048, \"num_predict\": 96, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+        "params": {
+          "num_predict": 96,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "quality_fail_runs": 1,
+        "avg_elapsed_ms": 31465.6,
+        "median_elapsed_ms": 31465.6,
+        "avg_score": -214197.65
+      }
+    ],
+    "winner": {
+      "key": "ollama::lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest::{\"num_ctx\": 2048, \"num_predict\": 96, \"temperature\": 0.0}",
+      "provider": "ollama",
+      "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "params": {
+        "num_predict": 96,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "runs": 2,
+      "ok_runs": 2,
+      "empty_runs": 0,
+      "quality_fail_runs": 0,
+      "avg_elapsed_ms": 8112.7,
+      "median_elapsed_ms": 8112.7,
+      "avg_score": 91887.3
+    }
+  }
+}

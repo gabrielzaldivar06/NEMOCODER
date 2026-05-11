@@ -1,0 +1,207 @@
+{
+  "generated_at": "2026-05-11T06:09:40.777290+00:00",
+  "config": {
+    "lmstudio_base_url": "http://localhost:1234/v1",
+    "mission_control_url": "http://127.0.0.1:8787",
+    "ollama_base_url": "http://localhost:11434",
+    "lm_models": [
+      "nvidia.agentic.coder-4b",
+      "gemma4-overlooked.thinker.uncensored-e2b.gguf",
+      "opus4.7-gods.ghost.codex-4b.gguf",
+      "qwen3.5-9b-moq"
+    ],
+    "ollama_models": [],
+    "max_tokens": [
+      32
+    ],
+    "temperatures": [
+      0.0
+    ],
+    "top_p": 0.95,
+    "ollama_num_ctx": [
+      2048,
+      4096
+    ],
+    "prompt_names": [
+      "tiny"
+    ],
+    "mission_scenarios": [
+      "ordinary_chat",
+      "memory_lookup",
+      "technical_short"
+    ],
+    "repeats": 1,
+    "include_mission_control": false,
+    "include_ollama": false
+  },
+  "results": [
+    {
+      "provider": "lmstudio",
+      "model": "nvidia.agentic.coder-4b",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "max_tokens": 32,
+        "temperature": 0.0,
+        "top_p": 0.95
+      },
+      "ok": true,
+      "elapsed_ms": 13319.3,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "usage": {
+        "prompt_tokens": 23,
+        "completion_tokens": 32,
+        "total_tokens": 55
+      },
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "lmstudio",
+      "model": "gemma4-overlooked.thinker.uncensored-e2b.gguf",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "max_tokens": 32,
+        "temperature": 0.0,
+        "top_p": 0.95
+      },
+      "ok": true,
+      "elapsed_ms": 24213.1,
+      "empty": false,
+      "chars": 4,
+      "content_preview": "pong",
+      "usage": {
+        "prompt_tokens": 14,
+        "completion_tokens": 2,
+        "total_tokens": 16
+      },
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "lmstudio",
+      "model": "opus4.7-gods.ghost.codex-4b.gguf",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "max_tokens": 32,
+        "temperature": 0.0,
+        "top_p": 0.95
+      },
+      "ok": true,
+      "elapsed_ms": 44080.6,
+      "empty": false,
+      "chars": 4,
+      "content_preview": "pong",
+      "usage": {
+        "prompt_tokens": 17,
+        "completion_tokens": 2,
+        "total_tokens": 19
+      },
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "lmstudio",
+      "model": "qwen3.5-9b-moq",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "max_tokens": 32,
+        "temperature": 0.0,
+        "top_p": 0.95
+      },
+      "ok": false,
+      "elapsed_ms": 62079.1,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "usage": null,
+      "error": "timed out",
+      "prompt_name": "tiny"
+    }
+  ],
+  "summary": {
+    "groups": [
+      {
+        "key": "lmstudio::gemma4-overlooked.thinker.uncensored-e2b.gguf::{\"max_tokens\": 32, \"temperature\": 0.0, \"top_p\": 0.95}",
+        "provider": "lmstudio",
+        "model": "gemma4-overlooked.thinker.uncensored-e2b.gguf",
+        "params": {
+          "max_tokens": 32,
+          "temperature": 0.0,
+          "top_p": 0.95
+        },
+        "runs": 1,
+        "ok_runs": 1,
+        "empty_runs": 0,
+        "avg_elapsed_ms": 24213.1,
+        "median_elapsed_ms": 24213.1,
+        "avg_score": 75786.9
+      },
+      {
+        "key": "lmstudio::opus4.7-gods.ghost.codex-4b.gguf::{\"max_tokens\": 32, \"temperature\": 0.0, \"top_p\": 0.95}",
+        "provider": "lmstudio",
+        "model": "opus4.7-gods.ghost.codex-4b.gguf",
+        "params": {
+          "max_tokens": 32,
+          "temperature": 0.0,
+          "top_p": 0.95
+        },
+        "runs": 1,
+        "ok_runs": 1,
+        "empty_runs": 0,
+        "avg_elapsed_ms": 44080.6,
+        "median_elapsed_ms": 44080.6,
+        "avg_score": 55919.4
+      },
+      {
+        "key": "lmstudio::nvidia.agentic.coder-4b::{\"max_tokens\": 32, \"temperature\": 0.0, \"top_p\": 0.95}",
+        "provider": "lmstudio",
+        "model": "nvidia.agentic.coder-4b",
+        "params": {
+          "max_tokens": 32,
+          "temperature": 0.0,
+          "top_p": 0.95
+        },
+        "runs": 1,
+        "ok_runs": 1,
+        "empty_runs": 1,
+        "avg_elapsed_ms": 13319.3,
+        "median_elapsed_ms": 13319.3,
+        "avg_score": -1000000.0
+      },
+      {
+        "key": "lmstudio::qwen3.5-9b-moq::{\"max_tokens\": 32, \"temperature\": 0.0, \"top_p\": 0.95}",
+        "provider": "lmstudio",
+        "model": "qwen3.5-9b-moq",
+        "params": {
+          "max_tokens": 32,
+          "temperature": 0.0,
+          "top_p": 0.95
+        },
+        "runs": 1,
+        "ok_runs": 0,
+        "empty_runs": 1,
+        "avg_elapsed_ms": null,
+        "median_elapsed_ms": null,
+        "avg_score": -1000000.0
+      }
+    ],
+    "winner": {
+      "key": "lmstudio::gemma4-overlooked.thinker.uncensored-e2b.gguf::{\"max_tokens\": 32, \"temperature\": 0.0, \"top_p\": 0.95}",
+      "provider": "lmstudio",
+      "model": "gemma4-overlooked.thinker.uncensored-e2b.gguf",
+      "params": {
+        "max_tokens": 32,
+        "temperature": 0.0,
+        "top_p": 0.95
+      },
+      "runs": 1,
+      "ok_runs": 1,
+      "empty_runs": 0,
+      "avg_elapsed_ms": 24213.1,
+      "median_elapsed_ms": 24213.1,
+      "avg_score": 75786.9
+    }
+  }
+}

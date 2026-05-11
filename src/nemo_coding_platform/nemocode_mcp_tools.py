@@ -7,14 +7,17 @@ from typing import Any
 from nemo_coding_platform.core.headless_runner import execute_headless_handoff
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.persistence import load_headless_result_json
-from nemo_coding_platform.core.nemo_adapter import McpNemoAdapter, PersistentNemoAdapter
+from nemo_coding_platform.core.nemo_adapter import McpNemoAdapter, PersistentNemoAdapter, StdioMcpNemoAdapter
+from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase, tool_allowed_in_lifecycle
 from nemo_coding_platform.core.self_modification import SelfModRequest, SelfModTaskType, execute_self_modification, get_self_mod_continuity, learn_from_self_mod_failure, mark_portfolio_effective, query_self_mod_risk_patterns, record_self_mod_decision, record_self_mod_feedback, self_mod_apply, self_mod_impact, self_mod_review, self_mod_rollback, self_mod_similar_runs, self_mod_status, self_mod_trajectory
 
 
-def _get_adapter(memory_db: str = ".nemo-memory.db", mcp_url: str = "", mcp_prefix: str = "") -> PersistentNemoAdapter | McpNemoAdapter:
+def _get_adapter(memory_db: str = ".nemo-memory.db", mcp_url: str = "", mcp_prefix: str = "") -> PersistentNemoAdapter | McpNemoAdapter | StdioMcpNemoAdapter:
     if mcp_url.strip():
+        if mcp_url.strip().lower() == VSCODE_STDIO_NEMO_URL:
+            return StdioMcpNemoAdapter(server_name="nemo", tool_prefix=mcp_prefix)
         effective_prefix = mcp_prefix if mcp_prefix else "nemocode."
         return McpNemoAdapter(mcp_url.strip(), tool_prefix=effective_prefix)
     store = PersistentMemoryStore(Path(memory_db))
@@ -45,7 +48,7 @@ def mcp_call_nemo_tool(
             "ok": result.ok,
             "tool": tool_name,
             "lifecycle_phase": phase.value,
-            "transport": "mcp_remote" if mcp_url.strip() else "persistent_local",
+            "transport": "vscode_stdio" if mcp_url.strip().lower() == VSCODE_STDIO_NEMO_URL else ("mcp_remote" if mcp_url.strip() else "persistent_local"),
             "payload": result.payload,
         }
     except Exception as e:

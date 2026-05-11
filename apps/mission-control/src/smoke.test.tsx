@@ -1,5 +1,5 @@
 import React from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./main";
@@ -181,6 +181,9 @@ beforeEach(() => {
       }
       return asResponse({ ok: true, stdout: "ok", stderr: "" });
     }
+    if (url.includes("/api/handoff/start")) {
+      return asResponse({ ok: true, job: { job_id: "job-1", status: "running", logs: [], returncode: null } });
+    }
     if (url.includes("/api/git/checkout")) {
       return asResponse({ ok: true, stdout: "ok", stderr: "" });
     }
@@ -221,7 +224,28 @@ describe("mission-control app", () => {
   it("renders the shell without crashing", async () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: /NEMO CODE/i })).toBeInTheDocument();
-    expect(await screen.findByText(/Consola de Mision/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Agent Runs/i)).toBeInTheDocument();
+  });
+
+  it("starts handoff with NEMO MCP settings and stable local validation", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByTitle(/Configurar handoff/i));
+    fireEvent.change(await screen.findByPlaceholderText(/Describe the PRD/i), { target: { value: "Add a small local MVP feature" } });
+    fireEvent.click(await screen.findByRole("button", { name: /Start in sandbox/i }));
+
+    const fetchMock = vi.mocked(fetch);
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/api/handoff/start"))).toBe(true);
+    });
+    const handoffCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/api/handoff/start"));
+    const body = JSON.parse(String((handoffCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body.objective).toBe("Add a small local MVP feature");
+    expect(body.validation_commands).toBe("npm --prefix apps/mission-control run build");
+    expect(body.nemo_mcp_url).toBe("http://127.0.0.1:8765/mcp/sse");
+    expect(body.nemo_mcp_prefix).toBe("nemo.");
+    expect(body.require_nemo_mcp_capabilities).toBe(true);
+    expect(body.require_nemo_roundtrip).toBe(true);
+    expect(body.selected_nemo_tools).toContain("prime_context");
   });
 
   it("navigates to versioning section", async () => {

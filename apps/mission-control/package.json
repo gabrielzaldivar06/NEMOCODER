@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "dev:mvp": "powershell -ExecutionPolicy Bypass -File ../../scripts/start-mvp-local.ps1",
     "dev:api": "set PYTHONPATH=../../src&& ..\\..\\.venv\\Scripts\\python.exe -m nemo_coding_platform mission-control-server --repo ../.. --runtimes .nemo-runtimes",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",

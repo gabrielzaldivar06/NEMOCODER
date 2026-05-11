@@ -1,0 +1,211 @@
+{
+  "generated_at": "2026-05-11T06:06:00.765981+00:00",
+  "config": {
+    "lmstudio_base_url": "http://localhost:1234/v1",
+    "mission_control_url": "http://127.0.0.1:8787",
+    "ollama_base_url": "http://localhost:11434",
+    "lm_models": [
+      "nvidia.agentic.coder-4b"
+    ],
+    "ollama_models": [],
+    "max_tokens": [
+      32
+    ],
+    "temperatures": [
+      0.0
+    ],
+    "top_p": 0.95,
+    "ollama_num_ctx": [
+      2048,
+      4096
+    ],
+    "prompt_names": [
+      "tiny"
+    ],
+    "mission_scenarios": [
+      "ordinary_chat"
+    ],
+    "repeats": 1,
+    "include_mission_control": true,
+    "include_ollama": false
+  },
+  "results": [
+    {
+      "provider": "lmstudio",
+      "model": "nvidia.agentic.coder-4b",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "max_tokens": 32,
+        "temperature": 0.0,
+        "top_p": 0.95
+      },
+      "ok": true,
+      "elapsed_ms": 18378.9,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "usage": {
+        "prompt_tokens": 23,
+        "completion_tokens": 32,
+        "total_tokens": 55
+      },
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "mission_control",
+      "model": "nvidia.agentic.coder-4b",
+      "scenario": "ping de diagnostico rapido",
+      "params": {
+        "max_tokens": 32,
+        "require_nemo_mcp_capabilities": true
+      },
+      "ok": true,
+      "elapsed_ms": 24849.1,
+      "empty": false,
+      "chars": 37,
+      "content_preview": "The model returned an empty response.",
+      "component_costs": {
+        "nemo_mcp_ms": 57.1,
+        "model_ms": 23777.5,
+        "server_other_ms": 0.0
+      },
+      "segments": [
+        {
+          "label": "tool: nemo_memory.context_bootstrap (alias nemocode.context_bootstrap)",
+          "start_label": "tool_call: nemo_memory.context_bootstrap",
+          "status": "completed",
+          "ms": 15.3
+        },
+        {
+          "label": "tool: nemo_memory.build_context_portfolio (alias nemocode.build_context_portfolio)",
+          "start_label": "tool_call: nemo_memory.build_context_portfolio",
+          "status": "completed",
+          "ms": 18.1
+        },
+        {
+          "label": "tool: nemo_memory.get_context_portfolio_stats (alias nemocode.get_context_portfolio_stats)",
+          "start_label": "tool_call: nemo_memory.get_context_portfolio_stats",
+          "status": "completed",
+          "ms": 14.0
+        },
+        {
+          "label": "tool: nemo_memory.store_conversation (alias nemocode.store_conversation)",
+          "start_label": "tool_call: nemo_memory.store_conversation",
+          "status": "completed",
+          "ms": 9.7
+        },
+        {
+          "label": "tool: lmstudio.chat_completions",
+          "start_label": "model_generation",
+          "status": "completed",
+          "ms": 23777.5
+        },
+        {
+          "label": "status",
+          "start_label": "status",
+          "status": "completed",
+          "ms": 23860.8
+        }
+      ],
+      "nemo_tool_count": 7,
+      "has_nemo_context_bootstrap": true,
+      "has_nemo_store_conversation": true,
+      "has_verified_nemo_answer": false,
+      "tool_summaries": [
+        {
+          "name": "nemo_memory.context_bootstrap",
+          "status": "completed",
+          "summary": "Bootstrapped context chars=0 portfolio_tokens=0."
+        },
+        {
+          "name": "nemo_memory.prime_context",
+          "status": "skipped",
+          "summary": "Covered by context_bootstrap prime_context payload; skipped duplicate expensive direct prime_context call."
+        },
+        {
+          "name": "nemo_memory.build_context_portfolio",
+          "status": "completed",
+          "summary": "Built context portfolio tokens=0 evidence=0."
+        },
+        {
+          "name": "nemo_memory.get_context_portfolio_stats",
+          "status": "completed",
+          "summary": "NEMO tool completed."
+        },
+        {
+          "name": "nemo_memory.search_memories",
+          "status": "skipped",
+          "summary": "Skipped expensive semantic search for ordinary chat; NEMO bootstrap/prime context already loaded."
+        },
+        {
+          "name": "nemo_memory.anticipate",
+          "status": "skipped",
+          "summary": "Deferred expensive anticipate for ordinary chat; context_bootstrap and portfolio already loaded proactive NEMO context."
+        },
+        {
+          "name": "nemo_memory.store_conversation",
+          "status": "completed",
+          "summary": "Stored conversation memory atom=unknown."
+        },
+        {
+          "name": "lmstudio.chat_completions",
+          "status": "completed",
+          "summary": "Model=nvidia.agentic.coder-4b base_url=http://localhost:1234/v1."
+        }
+      ],
+      "error": "",
+      "scenario_name": "ordinary_chat"
+    }
+  ],
+  "summary": {
+    "groups": [
+      {
+        "key": "mission_control::nvidia.agentic.coder-4b::{\"max_tokens\": 32, \"require_nemo_mcp_capabilities\": true}",
+        "provider": "mission_control",
+        "model": "nvidia.agentic.coder-4b",
+        "params": {
+          "max_tokens": 32,
+          "require_nemo_mcp_capabilities": true
+        },
+        "runs": 1,
+        "ok_runs": 1,
+        "empty_runs": 0,
+        "avg_elapsed_ms": 24849.1,
+        "median_elapsed_ms": 24849.1,
+        "avg_score": 75150.9
+      },
+      {
+        "key": "lmstudio::nvidia.agentic.coder-4b::{\"max_tokens\": 32, \"temperature\": 0.0, \"top_p\": 0.95}",
+        "provider": "lmstudio",
+        "model": "nvidia.agentic.coder-4b",
+        "params": {
+          "max_tokens": 32,
+          "temperature": 0.0,
+          "top_p": 0.95
+        },
+        "runs": 1,
+        "ok_runs": 1,
+        "empty_runs": 1,
+        "avg_elapsed_ms": 18378.9,
+        "median_elapsed_ms": 18378.9,
+        "avg_score": -1000000.0
+      }
+    ],
+    "winner": {
+      "key": "mission_control::nvidia.agentic.coder-4b::{\"max_tokens\": 32, \"require_nemo_mcp_capabilities\": true}",
+      "provider": "mission_control",
+      "model": "nvidia.agentic.coder-4b",
+      "params": {
+        "max_tokens": 32,
+        "require_nemo_mcp_capabilities": true
+      },
+      "runs": 1,
+      "ok_runs": 1,
+      "empty_runs": 0,
+      "avg_elapsed_ms": 24849.1,
+      "median_elapsed_ms": 24849.1,
+      "avg_score": 75150.9
+    }
+  }
+}

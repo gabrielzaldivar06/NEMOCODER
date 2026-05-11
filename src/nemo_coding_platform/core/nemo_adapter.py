@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import atexit
 import json
+import os
+import queue
+import subprocess
+import threading
+import time
 import uuid
 import urllib.parse
 import urllib.request
@@ -16,6 +22,11 @@ from nemo_coding_platform.core.contracts import ExecutionPhase
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType, PHASE_PORTFOLIOS
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore, StoredMemoryAtom
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase, tool_allowed_in_lifecycle
+from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, discover_vscode_mcp_server
+
+
+_STDIO_CLIENTS: dict[tuple[str, tuple[str, ...], str | None, tuple[tuple[str, str], ...]], _PersistentStdioMcpClient] = {}
+_STDIO_CLIENTS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +117,307 @@ class McpNemoAdapter:
                         return endpoint
         
         raise ConnectionError(f"Could not find MCP endpoint in SSE stream at {self.sse_url}")
+
+
+@dataclass(frozen=True, slots=True)
+class StdioMcpNemoAdapter:
+    server_name: str = "nemo"
+    tool_prefix: str = ""
+    timeout_seconds: float = 30.0
+
+    def call(self, phase: NemoLifecyclePhase, tool_name: str, **arguments: Any) -> tuple[StdioMcpNemoAdapter, NemoCallResult]:
+        call = NemoCall(phase, tool_name, dict(arguments))
+        if not tool_allowed_in_lifecycle(phase, tool_name):
+            raise PermissionError(f"NEMO tool {tool_name} is not allowed in lifecycle phase {phase}")
+        config = discover_vscode_mcp_server(self.server_name)
+        if config is None:
+            return self, NemoCallResult(call, False, {"error": f"VS Code MCP server {self.server_name!r} not found"})
+        try:
+            payload = _call_mcp_stdio_tool(
+                command=config.command,
+                args=config.args,
+                cwd=config.cwd,
+                env=config.env,
+                tool_name=f"{self.tool_prefix}{tool_name}",
+                arguments=arguments,
+                timeout_seconds=self.timeout_seconds,
+            )
+            return self, NemoCallResult(call, True, payload)
+        except Exception as error:  # noqa: BLE001
+            return self, NemoCallResult(call, False, {"error": str(error), "transport": "vscode_stdio", "server": self.server_name})
+
+
+def _call_mcp_stdio_tool(
+    *,
+    command: str,
+    args: tuple[str, ...],
+    cwd: str | None,
+    env: dict[str, str] | None,
+    tool_name: str,
+    arguments: dict[str, Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    return _call_mcp_stdio_tool_once(
+        command=command,
+        args=args,
+        cwd=cwd,
+        env=env,
+        tool_name=tool_name,
+        arguments=arguments,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+class _PersistentStdioMcpClient:
+    def __init__(self, *, command: str, args: tuple[str, ...], cwd: str | None, env: dict[str, str] | None) -> None:
+        self.command = command
+        self.args = args
+        self.cwd = cwd
+        self.env = dict(env or {})
+        self.process: subprocess.Popen[bytes] | None = None
+        self.messages: queue.Queue[dict[str, Any]] = queue.Queue()
+        self.lock = threading.Lock()
+        self.initialized = False
+
+    def call_tool(self, *, tool_name: str, arguments: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        with self.lock:
+            try:
+                self._ensure_started(timeout_seconds)
+                call_id = str(uuid.uuid4())
+                _write_mcp_stdio_message(
+                    self._process(),
+                    {
+                        "jsonrpc": "2.0",
+                        "id": call_id,
+                        "method": "tools/call",
+                        "params": {"name": tool_name, "arguments": arguments},
+                    },
+                )
+                response = _wait_for_mcp_response(self.messages, call_id, timeout_seconds)
+                if "error" in response:
+                    raise RuntimeError(json.dumps(response["error"], ensure_ascii=False))
+                return _mcp_tool_result_payload(response.get("result", {}))
+            except Exception:
+                self.shutdown()
+                raise
+
+    def _ensure_started(self, timeout_seconds: float) -> None:
+        if self.process is not None and self.process.poll() is None and self.initialized:
+            return
+        self.shutdown()
+        process_env = os.environ.copy()
+        process_env.update(self.env)
+        self.messages = queue.Queue()
+        self.process = subprocess.Popen(
+            [self.command, *self.args],
+            cwd=self.cwd or None,
+            env=process_env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        reader = threading.Thread(target=_read_mcp_stdio_messages, args=(self.process, self.messages), daemon=True)
+        reader.start()
+        init_id = str(uuid.uuid4())
+        _write_mcp_stdio_message(
+            self.process,
+            {
+                "jsonrpc": "2.0",
+                "id": init_id,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "nemocode", "version": "0.1"},
+                },
+            },
+        )
+        _wait_for_mcp_response(self.messages, init_id, timeout_seconds)
+        _write_mcp_stdio_message(self.process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        self.initialized = True
+
+    def _process(self) -> subprocess.Popen[bytes]:
+        if self.process is None or self.process.poll() is not None:
+            raise RuntimeError("MCP stdio process is not running")
+        return self.process
+
+    def shutdown(self) -> None:
+        self.initialized = False
+        if self.process is not None:
+            _terminate_mcp_stdio_process(self.process)
+        self.process = None
+
+
+def _shutdown_stdio_clients() -> None:
+    with _STDIO_CLIENTS_LOCK:
+        clients = list(_STDIO_CLIENTS.values())
+        _STDIO_CLIENTS.clear()
+    for client in clients:
+        client.shutdown()
+
+
+atexit.register(_shutdown_stdio_clients)
+
+
+def _call_mcp_stdio_tool_once(
+    *,
+    command: str,
+    args: tuple[str, ...],
+    cwd: str | None,
+    env: dict[str, str] | None,
+    tool_name: str,
+    arguments: dict[str, Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    process_env = os.environ.copy()
+    if env:
+        process_env.update(env)
+    process = subprocess.Popen(
+        [command, *args],
+        cwd=cwd or None,
+        env=process_env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    messages: queue.Queue[dict[str, Any]] = queue.Queue()
+    reader = threading.Thread(target=_read_mcp_stdio_messages, args=(process, messages), daemon=True)
+    reader.start()
+    try:
+        init_id = str(uuid.uuid4())
+        _write_mcp_stdio_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": init_id,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "nemocode", "version": "0.1"},
+                },
+            },
+        )
+        _wait_for_mcp_response(messages, init_id, timeout_seconds)
+        _write_mcp_stdio_message(process, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        call_id = str(uuid.uuid4())
+        _write_mcp_stdio_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": call_id,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": arguments},
+            },
+        )
+        response = _wait_for_mcp_response(messages, call_id, timeout_seconds)
+        if "error" in response:
+            raise RuntimeError(json.dumps(response["error"], ensure_ascii=False))
+        return _mcp_tool_result_payload(response.get("result", {}))
+    finally:
+        _terminate_mcp_stdio_process(process)
+
+
+def _terminate_mcp_stdio_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        process.terminate()
+        process.wait(timeout=2)
+    except Exception:  # noqa: BLE001
+        try:
+            process.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _write_mcp_stdio_message(process: subprocess.Popen[bytes], message: dict[str, Any]) -> None:
+    if process.stdin is None:
+        raise RuntimeError("MCP stdio process has no stdin")
+    data = json.dumps(message, separators=(",", ":")).encode("utf-8")
+    process.stdin.write(data + b"\n")
+    process.stdin.flush()
+
+
+def _read_mcp_stdio_messages(process: subprocess.Popen[bytes], messages: queue.Queue[dict[str, Any]]) -> None:
+    stdout = process.stdout
+    if stdout is None:
+        return
+    while True:
+        try:
+            line = stdout.readline()
+            if not line:
+                return
+            stripped = line.strip()
+            if stripped.startswith(b"{"):
+                decoded = json.loads(stripped.decode("utf-8"))
+                if isinstance(decoded, dict):
+                    messages.put(decoded)
+                continue
+            if not line.lower().startswith(b"content-length:"):
+                continue
+            length = int(line.split(b":", 1)[1].strip())
+            while True:
+                separator = stdout.readline()
+                if separator in {b"\r\n", b"\n", b""}:
+                    break
+            body = stdout.read(length)
+            if not body:
+                return
+            decoded = json.loads(body.decode("utf-8"))
+            if isinstance(decoded, dict):
+                messages.put(decoded)
+        except Exception as error:  # noqa: BLE001
+            messages.put({"error": {"message": str(error)}})
+            return
+
+
+def _wait_for_mcp_response(messages: queue.Queue[dict[str, Any]], response_id: str, timeout_seconds: float) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            message = messages.get(timeout=max(0.1, min(1.0, deadline - time.monotonic())))
+        except queue.Empty:
+            continue
+        if message.get("id") == response_id:
+            return message
+        if "error" in message and "id" not in message:
+            continue
+    raise TimeoutError(f"Timed out waiting for MCP stdio response {response_id}")
+
+
+def _mcp_tool_result_payload(result: object) -> dict[str, Any]:
+    current = result
+    for _ in range(3):
+        if not isinstance(current, dict):
+            return {"result": current}
+        content = current.get("content")
+        if not (isinstance(content, list) and content):
+            return current
+        first = content[0]
+        if not (isinstance(first, dict) and first.get("type") == "text"):
+            return current
+        text_payload = str(first.get("text") or "{}")
+        try:
+            parsed = json.loads(text_payload)
+        except json.JSONDecodeError:
+            return {"raw_text": text_payload}
+        if not isinstance(parsed, dict):
+            return {"result": parsed}
+        current = parsed
+    return current if isinstance(current, dict) else {"result": current}
 
 
 @dataclass(frozen=True, slots=True)

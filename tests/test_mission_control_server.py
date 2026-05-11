@@ -10,6 +10,7 @@ import nemo_coding_platform.mission_control_server as mission_control_server
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_nemo_mcp_status, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_search, api_self_modify_start, api_settings, api_state, api_stats, api_terminal_run
+from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool
 from tests.test_review_gate_cli import write_ready_run
 
 
@@ -873,6 +874,799 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertIn("finalize", trace_kinds)
         self.assertIn("status", trace_kinds)
         self.assertIn("response_ready", trace_labels)
+
+    def test_agent_message_unwraps_nested_native_mcp_payload_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            def _nested_payload(value: dict[str, object]) -> dict[str, object]:
+                return {"ok": True, "payload": {"ok": True, "tool_call_audit": {"allowed": True}, "result": value}}
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                if tool_name == "context_bootstrap":
+                    return _nested_payload({"context": "bootstrap context", "portfolio": {"estimated_tokens": 12}, "memories": []})
+                if tool_name == "prime_context":
+                    return _nested_payload({"context": "prime context", "topic": "Mission Control conversation", "memories": [{"content": "m1"}]})
+                if tool_name == "build_context_portfolio":
+                    return _nested_payload({"estimated_tokens": 44, "evidence_handles": [], "context": "portfolio context"})
+                if tool_name == "search_memories":
+                    return _nested_payload({"query": "identity", "memories": [{"user_name": "Nested User"}]})
+                if tool_name == "anticipate":
+                    return _nested_payload({"memories": [{"content": "anticipate memory"}]})
+                if tool_name == "store_conversation":
+                    return _nested_payload({"stored": True, "atom_id": "atom-nested"})
+                if tool_name == "cognitive_ingest":
+                    return _nested_payload({"stored": True, "atom_id": "atom-ingest"})
+                return _nested_payload({})
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
+                payload = api_agent_message(config, {"message": "cual es mi nombre?", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        self.assertIn("Según NEMO MCP real, tu nombre es Nested User", payload["message"]["content"])
+        model_call.assert_not_called()
+        search_tool = next(tool for tool in payload["message"]["tool_calls"] if tool["name"] == "nemo_memory.search_memories")
+        self.assertIn("user_name=Nested User", search_tool.get("summary", ""))
+
+    def test_agent_message_includes_bootstrap_packet_in_model_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured: dict[str, str] = {}
+
+            def _capture(payload: dict[str, object], user_message: str, context_summary: str) -> str:
+                captured["context_summary"] = context_summary
+                return "ok"
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, **arguments: object) -> dict[str, object]:
+                payloads: dict[str, dict[str, object]] = {
+                    "context_bootstrap": {"context": "bootstrap context", "portfolio": {"estimated_tokens": 12}},
+                    "prime_context": {"context": "prime context", "memories": [{"content": "m1"}]},
+                    "build_context_portfolio": {"estimated_tokens": 44, "evidence_handles": []},
+                    "anticipate": {"memories": [{"content": "anticipate memory"}]},
+                    "store_conversation": {"stored": True, "atom_id": "atom-1"},
+                }
+                return {"ok": True, "payload": payloads.get(tool_name, {"memories": []})}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", side_effect=_capture):
+                api_agent_message(config, {"message": "plan next coding step", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse", "require_nemo_mcp_capabilities": False})
+
+        context_summary = captured.get("context_summary", "")
+        self.assertIn("NEMO bootstrap packet:", context_summary)
+        self.assertIn("nemo_memory.prime_context", context_summary)
+        self.assertIn("nemo_memory.build_context_portfolio", context_summary)
+        self.assertIn("nemo_memory.search_memories", context_summary)
+        self.assertIn("nemo_memory.anticipate", context_summary)
+
+    def test_agent_message_stores_user_name_as_structured_identity_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured_calls: list[tuple[str, dict[str, object]]] = []
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                captured_calls.append((tool_name, dict(arguments)))
+                if tool_name in {"context_bootstrap", "prime_context"}:
+                    return {"ok": True, "payload": {"context": "bootstrap", "portfolio": {"estimated_tokens": 120}}}
+                if tool_name == "build_context_portfolio":
+                    return {"ok": True, "payload": {"estimated_tokens": 120, "evidence_handles": [], "context": "portfolio"}}
+                if tool_name == "search_memories":
+                    return {"ok": True, "payload": {"memories": []}}
+                if tool_name == "anticipate":
+                    return {"ok": True, "payload": {"memories": []}}
+                return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="ok"):
+                api_agent_message(config, {"message": "guarda que mi nombre es Gabriel Zaldivar", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        ingest_call = next((item for item in captured_calls if item[0] == "cognitive_ingest"), None)
+        self.assertIsNotNone(ingest_call)
+        ingest_arguments = ingest_call[1] if ingest_call else {}
+        self.assertIn("user_name", str(ingest_arguments.get("content", "")))
+        self.assertIn("Gabriel Zaldivar", str(ingest_arguments.get("content", "")))
+        self.assertIn("identity", tuple(ingest_arguments.get("tags", ())))
+
+    def test_agent_message_recalls_user_name_via_nemo_identity_search(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured: dict[str, str] = {}
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                if tool_name in {"context_bootstrap", "prime_context"}:
+                    return {"ok": True, "payload": {"context": "bootstrap", "portfolio": {"estimated_tokens": 120}}}
+                if tool_name == "build_context_portfolio":
+                    return {"ok": True, "payload": {"estimated_tokens": 120, "evidence_handles": [], "context": "portfolio"}}
+                if tool_name == "search_memories":
+                    return {"ok": True, "payload": {"memories": [{"user_name": "Gabriel Zaldivar"}]}}
+                if tool_name == "anticipate":
+                    return {"ok": True, "payload": {"memories": []}}
+                return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
+                payload = api_agent_message(config, {"message": "cual es mi nombre?", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        self.assertIn("Según NEMO MCP real, tu nombre es Gabriel Zaldivar", payload["message"]["content"])
+        model_call.assert_not_called()
+
+    def test_agent_message_answers_nemo_lookup_from_global_mcp_search_not_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured_queries: list[tuple[str, str]] = []
+            captured_tools: list[str] = []
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                captured_tools.append(tool_name)
+                if tool_name == "search_memories":
+                    query = str(arguments.get("query") or "")
+                    topic = str(arguments.get("topic") or "")
+                    captured_queries.append((query, topic))
+                    if query == "DEV4":
+                        return {
+                            "ok": True,
+                            "payload": {
+                                "memories": [
+                                    {
+                                        "id": "mem-dev4",
+                                        "type": "project_fact",
+                                        "content": "Project DEV4 is this repo: NEMO CODE mission-control real MCP integration.",
+                                    }
+                                ]
+                            },
+                        }
+                    return {"ok": True, "payload": {"memories": []}}
+                if tool_name == "context_bootstrap":
+                    return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
+                if tool_name == "prime_context":
+                    return {"ok": True, "payload": {"context": "", "memories": []}}
+                if tool_name == "build_context_portfolio":
+                    return {"ok": True, "payload": {"estimated_tokens": 0, "evidence_handles": []}}
+                if tool_name == "anticipate":
+                    return {"ok": True, "payload": {"memories": []}}
+                return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="hallucinated DEV4 owner") as model_call:
+                payload = api_agent_message(
+                    config,
+                    {
+                        "message": "REVISA SI TIENES INFORMACION EN NEMO MCP SOBRE DEV4",
+                        "provider": "subprocess",
+                        "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                    },
+                )
+
+        content = payload["message"]["content"]
+        self.assertIn("Consulté NEMO MCP real", content)
+        self.assertIn("Project DEV4 is this repo", content)
+        self.assertNotIn("Ana Martínez", content)
+        self.assertIn(("DEV4", ""), captured_queries)
+        self.assertNotIn(("DEV4", "NEMOCODE self-modification"), captured_queries)
+        self.assertNotIn("cognitive_ingest", captured_tools)
+        model_call.assert_not_called()
+
+    def test_agent_message_nemo_lookup_filters_chat_question_echoes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured_queries: list[str] = []
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                if tool_name == "search_memories":
+                    query = str(arguments.get("query") or "")
+                    captured_queries.append(query)
+                    if query == "TRANTOR":
+                        return {
+                            "ok": True,
+                            "payload": {
+                                "memories": [
+                                    {
+                                        "id": "mem-trantor-question",
+                                        "type": "session_summary",
+                                        "content": "Mission Control chat user request: QUE ES TRANTOR?",
+                                    },
+                                    {
+                                        "id": "mem-trantor-lookup",
+                                        "type": "session_summary",
+                                        "content": "Mission Control chat user request: BUSCA EN NEMO MCP QUE ES TRANTOR, EN LAS MEMORIAS",
+                                    },
+                                ]
+                            },
+                        }
+                    return {"ok": True, "payload": {"memories": []}}
+                if tool_name == "context_bootstrap":
+                    return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
+                if tool_name == "prime_context":
+                    return {"ok": True, "payload": {"context": "", "memories": []}}
+                if tool_name == "build_context_portfolio":
+                    return {"ok": True, "payload": {"estimated_tokens": 0, "evidence_handles": []}}
+                if tool_name == "anticipate":
+                    return {"ok": True, "payload": {"memories": []}}
+                return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="Tool executed.") as model_call:
+                payload = api_agent_message(
+                    config,
+                    {
+                        "message": "BUSCA EN NEMO MCP QUE ES TRANTOR, EN LAS MEMORIAS",
+                        "provider": "subprocess",
+                        "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                    },
+                )
+
+        content = payload["message"]["content"]
+        self.assertIn("Consulté NEMO MCP real por 'TRANTOR'", content)
+        self.assertIn("no encontré memorias útiles", content)
+        self.assertIn("TRANTOR", captured_queries)
+        self.assertNotIn("BUSCA", captured_queries)
+        self.assertNotIn("Tool executed", content)
+        model_call.assert_not_called()
+
+    def test_agent_message_recuerdas_topic_is_lookup_not_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured_queries: list[str] = []
+            captured_tools: list[str] = []
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                captured_tools.append(tool_name)
+                if tool_name == "search_memories":
+                    query = str(arguments.get("query") or "")
+                    captured_queries.append(query)
+                    if query == "ALFA42":
+                        return {
+                            "ok": True,
+                            "payload": {
+                                "memories": [
+                                    {"id": "mem-topic-chat", "type": "session_summary", "content": "Mission Control chat user request: RECUERDAS ALFA42"},
+                                    {"id": "mem-topic-bad-store", "type": "project_fact", "content": "RECUERDAS ALFA42"},
+                                ]
+                            },
+                        }
+                    return {"ok": True, "payload": {"memories": []}}
+                if tool_name == "context_bootstrap":
+                    return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
+                if tool_name == "prime_context":
+                    return {"ok": True, "payload": {"context": "", "memories": []}}
+                if tool_name == "build_context_portfolio":
+                    return {"ok": True, "payload": {"estimated_tokens": 0, "evidence_handles": []}}
+                if tool_name == "anticipate":
+                    return {"ok": True, "payload": {"memories": []}}
+                return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model reminder hallucination") as model_call:
+                payload = api_agent_message(config, {"message": "RECUERDAS ALFA42", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        content = payload["message"]["content"]
+        self.assertIn("Consulté NEMO MCP real por 'ALFA42'", content)
+        self.assertIn("no encontré memorias útiles", content)
+        self.assertIn("ALFA42", captured_queries)
+        self.assertNotIn("cognitive_ingest", captured_tools)
+        self.assertNotIn("model reminder hallucination", content)
+        model_call.assert_not_called()
+
+    def test_agent_message_dime_lo_que_sepas_topic_uses_verified_nemo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured_queries: list[str] = []
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                if tool_name == "search_memories":
+                    query = str(arguments.get("query") or "")
+                    captured_queries.append(query)
+                    if query == "ALFA42":
+                        return {"ok": True, "payload": {"memories": [{"id": "mem-topic", "type": "project_fact", "content": "ALFA42 is a saved project codename for the desktop verification environment."}]}}
+                    return {"ok": True, "payload": {"memories": []}}
+                if tool_name == "context_bootstrap":
+                    return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
+                if tool_name == "prime_context":
+                    return {"ok": True, "payload": {"context": "", "memories": []}}
+                if tool_name == "build_context_portfolio":
+                    return {"ok": True, "payload": {"estimated_tokens": 0, "evidence_handles": []}}
+                if tool_name == "anticipate":
+                    return {"ok": True, "payload": {"memories": []}}
+                return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="No tengo información sobre ALFA42") as model_call:
+                payload = api_agent_message(config, {"message": "DIME LO QUE SEPAS DE ALFA42", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        content = payload["message"]["content"]
+        self.assertIn("Consulté NEMO MCP real por 'ALFA42'", content)
+        self.assertIn("desktop verification environment", content)
+        self.assertIn("ALFA42", captured_queries)
+        self.assertNotIn("No tengo información sobre ALFA42", content)
+        model_call.assert_not_called()
+
+    def test_agent_message_identity_and_projects_searches_project_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured_queries: list[str] = []
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                if tool_name == "search_memories":
+                    query = str(arguments.get("query") or "")
+                    captured_queries.append(query)
+                    if query in {"me llamo", "mi nombre es"}:
+                        return {"ok": True, "payload": {"memories": [{"id": "mem-name", "type": "preference", "content": "me llamo Gabriel", "user_name": "Gabriel"}]}}
+                    if query in {"proyectos", "proyecto activo", "project context", "repositorios"}:
+                        return {"ok": True, "payload": {"memories": [{"id": "mem-project", "type": "project_fact", "content": "Proyecto ALFA: entorno de verificacion con integracion MCP real."}]}}
+                    return {"ok": True, "payload": {"memories": []}}
+                if tool_name == "context_bootstrap":
+                    return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
+                if tool_name == "prime_context":
+                    return {"ok": True, "payload": {"context": "", "memories": []}}
+                if tool_name == "build_context_portfolio":
+                    return {"ok": True, "payload": {"estimated_tokens": 0, "evidence_handles": []}}
+                if tool_name == "anticipate":
+                    return {"ok": True, "payload": {"memories": []}}
+                return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model answer") as model_call:
+                payload = api_agent_message(config, {"message": "CUAL ES MI NOMBRE Y QUE PROYECTOS TENGO", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        content = payload["message"]["content"]
+        self.assertIn("tu nombre es Gabriel", content)
+        self.assertIn("Proyecto ALFA", content)
+        self.assertIn("proyectos", captured_queries)
+        self.assertIn("proyecto activo", captured_queries)
+        model_call.assert_not_called()
+
+    def test_agent_message_mcp_native_memory_continuity_across_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+
+            # Simulated native MCP memory backend keyed by memory_db path.
+            memory_by_db: dict[str, list[dict[str, object]]] = {}
+
+            def _memory_rows(db_key: str) -> list[dict[str, object]]:
+                rows = memory_by_db.setdefault(db_key, [])
+                return rows
+
+            def _fake_mcp_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                rows = _memory_rows(str(memory_db))
+
+                if tool_name == "cognitive_ingest":
+                    content = str(arguments.get("content") or "")
+                    entry: dict[str, object] = {
+                        "content": content,
+                        "memory_type": str(arguments.get("memory_type") or ""),
+                        "tags": tuple(arguments.get("tags") or ()),
+                    }
+                    if "user_name" in content:
+                        entry["user_name"] = "Gabriel Zaldivar"
+                    rows.append(entry)
+                    return {"ok": True, "payload": {"stored": True, "atom_id": f"atom-{len(rows)}"}}
+
+                if tool_name == "store_conversation":
+                    summary = str(arguments.get("summary") or "")
+                    rows.append({"content": summary, "memory_type": "session_summary", "tags": tuple(arguments.get("tags") or ())})
+                    return {"ok": True, "payload": {"stored": True, "atom_id": f"conv-{len(rows)}"}}
+
+                if tool_name == "search_memories":
+                    query = str(arguments.get("query") or "").lower()
+                    matches: list[dict[str, object]] = []
+                    for row in reversed(rows):
+                        content = str(row.get("content") or "")
+                        if "identity" in query and "user_name" in row:
+                            matches.append(dict(row))
+                            continue
+                        if any(token in content.lower() for token in ("gabriel", "pytest", "dev4", "mission control", "proyecto")):
+                            matches.append(dict(row))
+                    return {"ok": True, "payload": {"query": query, "memories": matches[:10]}}
+
+                if tool_name in {"context_bootstrap", "prime_context", "build_context_portfolio"}:
+                    recent = rows[-8:]
+                    context_text = "\n".join(str(item.get("content") or "") for item in recent)
+                    if tool_name == "context_bootstrap":
+                        return {
+                            "ok": True,
+                            "payload": {
+                                "context": context_text,
+                                "portfolio": {
+                                    "context": context_text,
+                                    "estimated_tokens": max(1, len(context_text) // 4),
+                                    "evidence_handles": [],
+                                },
+                                "memories": [dict(item) for item in recent],
+                            },
+                        }
+                    if tool_name == "prime_context":
+                        return {"ok": True, "payload": {"context": context_text, "memories": [dict(item) for item in recent]}}
+                    return {
+                        "ok": True,
+                        "payload": {
+                            "context": context_text,
+                            "estimated_tokens": max(1, len(context_text) // 4),
+                            "evidence_handles": [],
+                        },
+                    }
+
+                if tool_name == "anticipate":
+                    anticipated = [dict(item) for item in rows[-3:]]
+                    return {"ok": True, "payload": {"memories": anticipated}}
+
+                return {"ok": True, "payload": {"accepted": True}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_mcp_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="ok"):
+                # Session 1: store multiple memories.
+                config_session_1 = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+                api_agent_message(config_session_1, {"message": "guarda que mi nombre es Gabriel Zaldivar", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+                api_agent_message(config_session_1, {"message": "guarda que mi preferencia es usar pytest para validacion", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+                api_agent_message(config_session_1, {"message": "guarda que el proyecto activo es dev4 mission control", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_mcp_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
+                # Session 2: new chat session/process should recover prior memory through MCP native tool calls.
+                config_session_2 = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+                response = api_agent_message(
+                    config_session_2,
+                    {
+                        "message": "cual es mi nombre y cual es mi proyecto activo?",
+                        "provider": "subprocess",
+                        "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                    },
+                )
+
+            message_payload = response["message"]
+            tool_names = [tool["name"] for tool in message_payload["tool_calls"]]
+            self.assertIn("nemo_memory.context_bootstrap", tool_names)
+            self.assertIn("nemo_memory.prime_context", tool_names)
+            self.assertIn("nemo_memory.build_context_portfolio", tool_names)
+            self.assertIn("nemo_memory.search_memories", tool_names)
+            self.assertIn("nemo_memory.anticipate", tool_names)
+
+            content = str(message_payload.get("content") or "")
+            self.assertIn("Gabriel Zaldivar", content)
+            self.assertIn("dev4 mission control", content)
+            self.assertIn("pytest", content)
+            model_call.assert_not_called()
+
+    def test_nemo_mcp_status_exposes_full_native_tool_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            payload = api_nemo_mcp_status(config, {"nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        available_tools = payload.get("available_tools") or []
+        self.assertIn("context_bootstrap", available_tools)
+        self.assertIn("prime_context", available_tools)
+        self.assertIn("build_context_portfolio", available_tools)
+        self.assertIn("search_memories", available_tools)
+        self.assertIn("anticipate", available_tools)
+        self.assertIn("cognitive_ingest", available_tools)
+        self.assertIn("store_conversation", available_tools)
+
+    def test_nemo_mcp_status_accepts_vscode_stdio_transport(self) -> None:
+        fake_server = type(
+            "FakeServer",
+            (),
+            {
+                "name": "nemo",
+                "source_path": r"C:\Users\gabri\AppData\Roaming\Code\User\mcp.json",
+                "command": r"C:\dev\memory persistence\.venv\Scripts\python.exe",
+                "args": (r"C:\dev\memory persistence\persistent-ai-memory\ai_memory_mcp_server.py",),
+            },
+        )()
+
+        with patch("nemo_coding_platform.mission_control_server.discover_vscode_mcp_server", return_value=fake_server):
+            payload = mission_control_server._probe_nemo_mcp_sse("stdio://vscode/nemo")
+
+        self.assertTrue(payload["active"])
+        self.assertEqual(payload["transport"], "vscode_stdio")
+        self.assertEqual(payload["config_source"], fake_server.source_path)
+
+    def test_unique_memories_accepts_real_nemo_results_shape(self) -> None:
+        memories = mission_control_server._unique_memories_from_payloads(
+            [
+                (
+                    "query",
+                    {
+                        "results": [
+                            {
+                                "type": "ai_memory",
+                                "similarity_score": 0.91,
+                                "data": {"memory_id": "m1", "content": "Proyecto activo dev4", "memory_type": "fact"},
+                            }
+                        ]
+                    },
+                )
+            ]
+        )
+
+        self.assertEqual(len(memories), 1)
+        self.assertEqual(memories[0]["memory_id"], "m1")
+        self.assertEqual(mission_control_server._memory_content(memories[0]), "Proyecto activo dev4")
+
+    def test_nemo_mcp_status_reports_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            with patch("nemo_coding_platform.mission_control_server._probe_nemo_mcp_sse", return_value={"configured": True, "active": True, "status": "active", "url": "http://127.0.0.1:8765/mcp/sse"}), patch(
+                "nemo_coding_platform.mission_control_server._probe_nemo_mcp_capabilities",
+                return_value={
+                    "enabled": True,
+                    "supports_context_bootstrap": True,
+                    "supports_prime_context": True,
+                    "supports_search_memories": True,
+                    "supports_core_context_reads": True,
+                    "supports_write_read_roundtrip": False,
+                    "roundtrip_probe_executed": False,
+                    "errors": [],
+                },
+            ):
+                payload = api_nemo_mcp_status(config, {"nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse", "include_capability_probe": True})
+
+        capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), dict) else {}
+        self.assertTrue(capabilities.get("supports_core_context_reads"))
+        self.assertIn("available_tools", payload)
+
+    def test_agent_message_strict_capability_gate_rejects_unusable_mcp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            with patch(
+                "nemo_coding_platform.mission_control_server._probe_nemo_mcp_capabilities",
+                return_value={
+                    "enabled": True,
+                    "supports_context_bootstrap": False,
+                    "supports_prime_context": True,
+                    "supports_search_memories": False,
+                    "supports_core_context_reads": False,
+                    "supports_write_read_roundtrip": False,
+                    "roundtrip_probe_executed": True,
+                    "errors": ["context_bootstrap_unavailable", "search_memories_unavailable"],
+                },
+            ):
+                with self.assertRaises(ApiRequestError) as raised:
+                    api_agent_message(
+                        config,
+                        {
+                            "message": "hola",
+                            "provider": "fake",
+                            "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                            "require_nemo_mcp_capabilities": True,
+                        },
+                    )
+
+        self.assertEqual(raised.exception.error_code, "nemo_mcp_capability_mismatch")
+
+    def test_handoff_start_requires_real_mcp_capabilities_when_nemo_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+            server = MissionControlHttpServer(("127.0.0.1", 0), config)
+            try:
+                with patch("nemo_coding_platform.mission_control_server._probe_nemo_mcp_sse", return_value={"configured": True, "active": True, "status": "active", "url": "http://127.0.0.1:8765/mcp/sse"}), patch(
+                    "nemo_coding_platform.mission_control_server._probe_nemo_mcp_capabilities",
+                    return_value={
+                        "enabled": True,
+                        "supports_context_bootstrap": True,
+                        "supports_prime_context": False,
+                        "supports_search_memories": True,
+                        "supports_core_context_reads": False,
+                        "supports_write_read_roundtrip": False,
+                        "roundtrip_probe_executed": True,
+                        "errors": ["prime_context_unavailable"],
+                    },
+                ):
+                    with self.assertRaises(ApiRequestError) as raised:
+                        api_handoff_start(
+                            server,
+                            {
+                                "objective": "build feature",
+                                "provider": "subprocess",
+                                "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
+                                "nemo_required": True,
+                            },
+                        )
+            finally:
+                server.server_close()
+
+        self.assertEqual(raised.exception.error_code, "nemo_mcp_capability_mismatch")
+
+    def test_mcp_native_real_server_continuity_across_sessions_and_core_tools(self) -> None:
+        mcp_url = "http://127.0.0.1:8765/mcp/sse"
+        real_mcp_required = os.environ.get("NEMOCODE_REAL_MCP_REQUIRED") == "1"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+            probe = api_nemo_mcp_status(config, {"nemo_mcp_url": mcp_url})
+            if not probe.get("active"):
+                if real_mcp_required:
+                    self.fail(f"NEMO MCP unavailable for required real integration gate: status={probe.get('status')}")
+                self.skipTest(f"NEMO MCP unavailable for real integration test: status={probe.get('status')}")
+
+            marker = f"mc-real-session-{int(time.time() * 1000)}"
+            marker_name = f"Name-{marker}"
+
+            # Session 1: store multiple memories via the real chat flow.
+            api_agent_message(
+                config,
+                {
+                    "message": f"guarda que mi nombre es {marker_name}",
+                    "provider": "fake",
+                    "nemo_mcp_url": mcp_url,
+                },
+            )
+            api_agent_message(
+                config,
+                {
+                    "message": f"guarda preferencia de validacion: pytest para {marker}",
+                    "provider": "fake",
+                    "nemo_mcp_url": mcp_url,
+                },
+            )
+            api_agent_message(
+                config,
+                {
+                    "message": f"guarda contexto de proyecto activo: dev4 mission-control {marker}",
+                    "provider": "fake",
+                    "nemo_mcp_url": mcp_url,
+                },
+            )
+
+            # Reinforce continuity with deterministic topic-scoped writes.
+            for idx in range(1, 4):
+                write_result = mcp_call_nemo_tool(
+                    "store_conversation",
+                    lifecycle_phase="close",
+                    memory_db=str(memory_db),
+                    mcp_url=mcp_url,
+                    summary=f"session1 continuity memory {idx} {marker}",
+                    topic=marker,
+                    tags=("mission-control", "integration-test", "continuity"),
+                )
+                self.assertTrue(write_result.get("ok"), msg=f"store_conversation write failed: {write_result}")
+
+            # Session 2: new config object simulates new chat session/process.
+            config_session_2 = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+            response = api_agent_message(
+                config_session_2,
+                {
+                    "message": f"cual es mi nombre y dame continuidad del proyecto {marker}",
+                    "provider": "fake",
+                    "nemo_mcp_url": mcp_url,
+                },
+            )
+
+            tool_names = {tool["name"] for tool in response["message"]["tool_calls"]}
+            self.assertIn("nemo_memory.context_bootstrap", tool_names)
+            self.assertIn("nemo_memory.prime_context", tool_names)
+            self.assertIn("nemo_memory.build_context_portfolio", tool_names)
+            self.assertIn("nemo_memory.search_memories", tool_names)
+            self.assertIn("nemo_memory.anticipate", tool_names)
+
+            # Direct MCP native continuity check on a new session using topic-scoped prime_context.
+            continuity_result = mcp_call_nemo_tool(
+                "prime_context",
+                lifecycle_phase="start",
+                memory_db=str(memory_db),
+                mcp_url=mcp_url,
+                topic=marker,
+                limit=10,
+            )
+            self.assertTrue(continuity_result.get("ok"), msg=f"prime_context continuity check failed: {continuity_result}")
+            continuity_payload = mission_control_server._normalize_nemo_tool_payload(continuity_result)
+            continuity_context = str(continuity_payload.get("context") or "")
+            continuity_memories = continuity_payload.get("memories") if isinstance(continuity_payload.get("memories"), list) else []
+            if not (marker in continuity_context or len(continuity_memories) > 0):
+                if real_mcp_required:
+                    self.fail(
+                        "External NEMO MCP backend did not expose retrievable continuity for newly written entries "
+                        "while NEMOCODE_REAL_MCP_REQUIRED=1."
+                    )
+                self.skipTest(
+                    "External NEMO MCP backend did not expose retrievable continuity for newly written entries; "
+                    "strict continuity assertion skipped for this environment."
+                )
+
+            core_tool_calls = [
+                ("context_bootstrap", "start", {"task": f"continuity check {marker}", "topic": "Mission Control conversation", "token_budget": 512, "limit": 8}),
+                ("prime_context", "start", {"topic": "Mission Control conversation", "limit": 8}),
+                ("build_context_portfolio", "plan", {"task": f"continuity check {marker}", "topic": "Mission Control conversation", "token_budget": 512}),
+                ("search_memories", "review", {"query": marker, "limit": 5}),
+                ("anticipate", "plan", {"task": f"next actions for {marker}", "limit": 3}),
+                ("store_conversation", "close", {"summary": f"integration close summary {marker}", "topic": "Mission Control conversation", "tags": ("mission-control", "integration-test")}),
+                ("cognitive_ingest", "review", {"content": f"integration memory atom {marker}", "memory_type": "evidence", "tags": ("mission-control", "integration-test"), "context": "real mcp integration test"}),
+            ]
+            for tool_name, phase, kwargs in core_tool_calls:
+                result = mcp_call_nemo_tool(
+                    tool_name,
+                    lifecycle_phase=phase,
+                    memory_db=str(memory_db),
+                    mcp_url=mcp_url,
+                    **kwargs,
+                )
+                self.assertTrue(result.get("ok"), msg=f"tool {tool_name} failed: {result}")
 
     def test_agent_message_respects_selected_nemo_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

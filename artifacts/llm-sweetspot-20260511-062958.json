@@ -1,0 +1,312 @@
+{
+  "generated_at": "2026-05-11T06:32:42.001613+00:00",
+  "config": {
+    "lmstudio_base_url": "http://localhost:1234/v1",
+    "mission_control_url": "http://127.0.0.1:8787",
+    "ollama_base_url": "http://localhost:11434",
+    "lm_models": [],
+    "ollama_models": [
+      "lmstudio-gemma-4-e4b-it-gguf-gemma-4-e4b-it-q4-k-m-66f570ab:latest",
+      "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+      "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+      "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest"
+    ],
+    "lmstudio_models_root": "C:\\Users\\gabri\\.lmstudio\\models",
+    "discovered_gguf_models": [],
+    "gguf_model_paths": [
+      "C:\\Users\\gabri\\.lmstudio\\models\\unsloth\\gemma-4-E4B-it-GGUF\\gemma-4-E4B-it-Q4_K_M.gguf",
+      "C:\\Users\\gabri\\.lmstudio\\models\\WithinUsAI\\Opus4.7-GODs.Ghost.Codex-4B.GGuF\\Opus4.7-GODs.Ghost.Codex.Distill.4B-Q8_0.gguf",
+      "C:\\Users\\gabri\\.lmstudio\\models\\w-ahmad\\Qwen3.5-9B-GGUF-MoQ\\Qwen3.5-9B-MoQ-3.65.gguf",
+      "C:\\Users\\gabri\\.lmstudio\\models\\mradermacher\\qwen2.5-7b-abliterated-by-zach0028-GGUF\\qwen2.5-7b-abliterated-by-zach0028.Q4_K_M.gguf"
+    ],
+    "max_tokens": [
+      32
+    ],
+    "temperatures": [
+      0.0
+    ],
+    "top_p": 0.95,
+    "ollama_num_ctx": [
+      2048
+    ],
+    "prompt_names": [
+      "tiny",
+      "code_tiny"
+    ],
+    "mission_scenarios": [
+      "ordinary_chat",
+      "memory_lookup",
+      "technical_short"
+    ],
+    "repeats": 1,
+    "include_mission_control": false,
+    "include_ollama": true,
+    "skip_lmstudio": true,
+    "import_gguf_to_ollama": true,
+    "ollama_tag_prefix": "lmstudio"
+  },
+  "ollama_imports": [
+    {
+      "ok": true,
+      "tag": "lmstudio-gemma-4-e4b-it-gguf-gemma-4-e4b-it-q4-k-m-66f570ab:latest",
+      "source_path": "C:\\Users\\gabri\\.lmstudio\\models\\unsloth\\gemma-4-E4B-it-GGUF\\gemma-4-E4B-it-Q4_K_M.gguf",
+      "modelfile": "artifacts\\ollama-modelfiles\\lmstudio-gemma-4-e4b-it-gguf-gemma-4-e4b-it-q4-k-m-66f570ab-latest.Modelfile",
+      "elapsed_ms": 22361.2,
+      "stdout": "",
+      "stderr": "7e179fd1040b8f751b1e5bdf849 100% \u001b[K\nparsing GGUF ⠼ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:ced37f54b80068fe65e95c6dd79ac88cddc227e179fd1040b8f751b1e5bdf849 100% \u001b[K\nparsing GGUF ⠴ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:ced37f54b80068fe65e95c6dd79ac88cddc227e179fd1040b8f751b1e5bdf849 100% \u001b[K\nparsing GGUF ⠦ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:ced37f54b80068fe65e95c6dd79ac88cddc227e179fd1040b8f751b1e5bdf849 100% \u001b[K\nparsing GGUF ⠧ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:ced37f54b80068fe65e95c6dd79ac88cddc227e179fd1040b8f751b1e5bdf849 100% \u001b[K\nparsing GGUF ⠇ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:ced37f54b80068fe65e95c6dd79ac88cddc227e179fd1040b8f751b1e5bdf849 100% \u001b[K\nparsing GGUF \u001b[K\nusing existing layer sha256:ced37f54b80068fe65e95c6dd79ac88cddc227e179fd1040b8f751b1e5bdf849 \u001b[K\nusing existing layer sha256:76ada76b335bd30aee3111335283230be4eec88b028015324676f19f0efb01c8 \u001b[K\nwriting manifest \u001b[K\nsuccess \u001b[K\u001b[?25h\u001b[?2026l\n",
+      "returncode": 0
+    },
+    {
+      "ok": true,
+      "tag": "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+      "source_path": "C:\\Users\\gabri\\.lmstudio\\models\\WithinUsAI\\Opus4.7-GODs.Ghost.Codex-4B.GGuF\\Opus4.7-GODs.Ghost.Codex.Distill.4B-Q8_0.gguf",
+      "modelfile": "artifacts\\ollama-modelfiles\\lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d-latest.Modelfile",
+      "elapsed_ms": 19414.2,
+      "stdout": "",
+      "stderr": " 100% \u001b[K\nparsing GGUF ⠹ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:c3f25e6fc3b49cfc953d15323cc19b33cb0d265c7052563fbd6f13d31d21964e 100% \u001b[K\nparsing GGUF ⠸ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:c3f25e6fc3b49cfc953d15323cc19b33cb0d265c7052563fbd6f13d31d21964e 100% \u001b[K\nparsing GGUF ⠼ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:c3f25e6fc3b49cfc953d15323cc19b33cb0d265c7052563fbd6f13d31d21964e 100% \u001b[K\nparsing GGUF ⠴ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:c3f25e6fc3b49cfc953d15323cc19b33cb0d265c7052563fbd6f13d31d21964e 100% \u001b[K\nparsing GGUF \u001b[K\nusing existing layer sha256:c3f25e6fc3b49cfc953d15323cc19b33cb0d265c7052563fbd6f13d31d21964e \u001b[K\nwriting manifest ⠋ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:c3f25e6fc3b49cfc953d15323cc19b33cb0d265c7052563fbd6f13d31d21964e 100% \u001b[K\nparsing GGUF \u001b[K\nusing existing layer sha256:c3f25e6fc3b49cfc953d15323cc19b33cb0d265c7052563fbd6f13d31d21964e \u001b[K\nwriting manifest \u001b[K\nsuccess \u001b[K\u001b[?25h\u001b[?2026l\n",
+      "returncode": 0
+    },
+    {
+      "ok": true,
+      "tag": "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+      "source_path": "C:\\Users\\gabri\\.lmstudio\\models\\w-ahmad\\Qwen3.5-9B-GGUF-MoQ\\Qwen3.5-9B-MoQ-3.65.gguf",
+      "modelfile": "artifacts\\ollama-modelfiles\\lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7-latest.Modelfile",
+      "elapsed_ms": 17562.0,
+      "stdout": "",
+      "stderr": "[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:d6bbb2df446fc84119c7c1f0cf51d9cdfeba3f67c5a1f0f4224e89bae657ca83 100% \u001b[K\nparsing GGUF ⠹ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:d6bbb2df446fc84119c7c1f0cf51d9cdfeba3f67c5a1f0f4224e89bae657ca83 100% \u001b[K\nparsing GGUF ⠸ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:d6bbb2df446fc84119c7c1f0cf51d9cdfeba3f67c5a1f0f4224e89bae657ca83 100% \u001b[K\nparsing GGUF ⠼ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:d6bbb2df446fc84119c7c1f0cf51d9cdfeba3f67c5a1f0f4224e89bae657ca83 100% \u001b[K\nparsing GGUF ⠴ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:d6bbb2df446fc84119c7c1f0cf51d9cdfeba3f67c5a1f0f4224e89bae657ca83 100% \u001b[K\nparsing GGUF ⠦ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:d6bbb2df446fc84119c7c1f0cf51d9cdfeba3f67c5a1f0f4224e89bae657ca83 100% \u001b[K\nparsing GGUF \u001b[K\nusing existing layer sha256:d6bbb2df446fc84119c7c1f0cf51d9cdfeba3f67c5a1f0f4224e89bae657ca83 \u001b[K\nwriting manifest \u001b[K\nsuccess \u001b[K\u001b[?25h\u001b[?2026l\n",
+      "returncode": 0
+    },
+    {
+      "ok": true,
+      "tag": "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+      "source_path": "C:\\Users\\gabri\\.lmstudio\\models\\mradermacher\\qwen2.5-7b-abliterated-by-zach0028-GGUF\\qwen2.5-7b-abliterated-by-zach0028.Q4_K_M.gguf",
+      "modelfile": "artifacts\\ollama-modelfiles\\lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6-latest.Modelfile",
+      "elapsed_ms": 19834.2,
+      "stdout": "",
+      "stderr": "269dd0 97% ⠦ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:3f147f206ffd468f065902e135c15d2d4d02c29570d53641ce2cbed037269dd0 98% ⠧ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:3f147f206ffd468f065902e135c15d2d4d02c29570d53641ce2cbed037269dd0 99% ⠇ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:3f147f206ffd468f065902e135c15d2d4d02c29570d53641ce2cbed037269dd0 100% \u001b[K\nparsing GGUF ⠋ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:3f147f206ffd468f065902e135c15d2d4d02c29570d53641ce2cbed037269dd0 100% \u001b[K\nparsing GGUF ⠙ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:3f147f206ffd468f065902e135c15d2d4d02c29570d53641ce2cbed037269dd0 100% \u001b[K\nparsing GGUF ⠹ \u001b[K\u001b[?25h\u001b[?2026l\u001b[?2026h\u001b[?25l\u001b[A\u001b[A\u001b[1Ggathering model components \u001b[K\ncopying file sha256:3f147f206ffd468f065902e135c15d2d4d02c29570d53641ce2cbed037269dd0 100% \u001b[K\nparsing GGUF \u001b[K\nusing existing layer sha256:3f147f206ffd468f065902e135c15d2d4d02c29570d53641ce2cbed037269dd0 \u001b[K\nwriting manifest \u001b[K\nsuccess \u001b[K\u001b[?25h\u001b[?2026l\n",
+      "returncode": 0
+    }
+  ],
+  "results": [
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma-4-e4b-it-gguf-gemma-4-e4b-it-q4-k-m-66f570ab:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 8067.2,
+      "empty": false,
+      "chars": 4,
+      "content_preview": "pong",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma-4-e4b-it-gguf-gemma-4-e4b-it-q4-k-m-66f570ab:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 6272.9,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 16296.8,
+      "empty": false,
+      "chars": 102,
+      "content_preview": "a el código en un solo archivo HTML.\n\n<!DOCTYPE html>\n<html lang=\"es\">\n<head>\n    <meta charset=\"UTF-8",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 10024.3,
+      "empty": false,
+      "chars": 90,
+      "content_preview": "\n\ndef add(a, b):\n    return a + b<|endoftext|># Ejemplo de uso\nprint(add(2, 3))  # Salida:",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 14452.0,
+      "empty": false,
+      "chars": 167,
+      "content_preview": "a el nombre de la persona que se encuentra en la foto\n\nNo puedo responder a esa solicitud. Como modelo de inteligencia artificial, no tengo la capacidad de identificar",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 8460.7,
+      "empty": false,
+      "chars": 72,
+      "content_preview": "\n\n```python\ndef add(a, b):\n    return a + b\n```<|endoftext|><|im_start|>",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 12925.7,
+      "empty": false,
+      "chars": 132,
+      "content_preview": "a en una frase el significado de la palabra \"sinfonía\" La sinfonía es una forma musical compuesta por varios movimientos que general",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 7609.6,
+      "empty": false,
+      "chars": 126,
+      "content_preview": " La funcion debe tener un docstring explicando su funcionamiento.\n\ndef add(x, y):\n    \"\"\"\n    Suma dos números x e y.\n    \n   ",
+      "error": "",
+      "prompt_name": "code_tiny"
+    }
+  ],
+  "summary": {
+    "groups": [
+      {
+        "key": "ollama::lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "avg_elapsed_ms": 10267.7,
+        "median_elapsed_ms": 10267.7,
+        "avg_score": 89732.35
+      },
+      {
+        "key": "ollama::lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-qwen3-5-9b-gguf-moq-qwen3-5-9b-moq-3-65-83ab8ec7:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "avg_elapsed_ms": 11456.4,
+        "median_elapsed_ms": 11456.4,
+        "avg_score": 88543.65
+      },
+      {
+        "key": "ollama::lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-opus4-7-gods-ghost-codex-4b-gguf-opus4-7-gods-ghost--ea67370d:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "avg_elapsed_ms": 13160.5,
+        "median_elapsed_ms": 13160.5,
+        "avg_score": 86839.45
+      },
+      {
+        "key": "ollama::lmstudio-gemma-4-e4b-it-gguf-gemma-4-e4b-it-q4-k-m-66f570ab:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-gemma-4-e4b-it-gguf-gemma-4-e4b-it-q4-k-m-66f570ab:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 1,
+        "avg_elapsed_ms": 7170.0,
+        "median_elapsed_ms": 7170.0,
+        "avg_score": -454033.6
+      }
+    ],
+    "winner": {
+      "key": "ollama::lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+      "provider": "ollama",
+      "model": "lmstudio-qwen2-5-7b-abliterated-by-zach0028-gguf-qwen2-5-7b-a-0d4df9f6:latest",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "runs": 2,
+      "ok_runs": 2,
+      "empty_runs": 0,
+      "avg_elapsed_ms": 10267.7,
+      "median_elapsed_ms": 10267.7,
+      "avg_score": 89732.35
+    }
+  }
+}

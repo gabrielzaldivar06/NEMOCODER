@@ -112,14 +112,17 @@
         "docs/specs/nemo-lifecycle.md"
       ],
       "tests": [
-        "tests/test_nemo_full_tool_contract.py"
+        "tests/test_nemo_full_tool_contract.py",
+        "tests/test_mission_control_server.py::MissionControlServerTests::test_mcp_native_real_server_continuity_across_sessions_and_core_tools",
+        "scripts/verify_real_nemo_mcp_sentinel.py"
       ],
       "anchors": [
         "src/nemo_coding_platform/core/memory.py:73",
         "src/nemo_coding_platform/core/memory.py:382",
-        "src/nemo_coding_platform/mission_control_server.py:1806"
+        "src/nemo_coding_platform/mission_control_server.py:2843",
+        "src/nemo_coding_platform/mission_control_server.py:3914"
       ],
-      "gap": "none"
+      "gap": "none for current operational MCP path; real MCP continuity release gate is opt-in via NEMOCODE_REAL_MCP_REQUIRED=1, and live sentinel verification proves write/read chat lookup against real NEMO MCP"
     },
     {
       "id": "FR7",
@@ -130,14 +133,16 @@
       ],
       "tests": [
         "tests/test_mcp_server.py",
-        "tests/test_mcp_adapter.py"
+        "tests/test_mcp_adapter.py",
+        "tests/test_ci_workflow_contract.py"
       ],
       "anchors": [
         "src/nemo_coding_platform/mcp_server.py:50",
         "src/nemo_coding_platform/mcp_server.py:90",
-        "src/nemo_coding_platform/mcp_server.py:205"
+        "src/nemo_coding_platform/mcp_server.py:205",
+        ".github/workflows/nemo-code-ci.yml"
       ],
-      "gap": "none"
+      "gap": "none; CI exposes required real MCP continuity gate for release dispatch"
     },
     {
       "id": "FR8",
@@ -256,14 +261,16 @@
       ],
       "tests": [
         "tests/test_nemo_full_tool_contract.py",
-        "tests/test_nemo_lifecycle.py"
+        "tests/test_nemo_lifecycle.py",
+        "tests/test_mission_control_server.py::MissionControlServerTests::test_handoff_start_requires_real_mcp_capabilities_when_nemo_required"
       ],
       "anchors": [
         "src/nemo_coding_platform/core/memory.py:382",
         "src/nemo_coding_platform/core/nemo_lifecycle.py:1",
-        "src/nemo_coding_platform/core/headless_runner.py:677"
+        "src/nemo_coding_platform/core/headless_runner.py:677",
+        "src/nemo_coding_platform/mission_control_server.py:1409"
       ],
-      "gap": "none"
+      "gap": "none; handoff now blocks when required MCP capabilities or write/read continuity fail"
     },
     {
       "id": "MVP17",
@@ -326,7 +333,8 @@
       "tests": [
         "tests.test_release_confidence_e2e",
         "tests.test_global_mvp_gate",
-        "tests.test_desktop_release_readiness_contract"
+        "tests.test_desktop_release_readiness_contract",
+        "tests.test_mission_control_server.MissionControlServerTests.test_mcp_native_real_server_continuity_across_sessions_and_core_tools when NEMOCODE_REAL_MCP_REQUIRED=1"
       ]
     },
     "long_handoff_operational_confidence": {
@@ -334,6 +342,17 @@
       "artifacts": [
         "artifacts/long-handoff-operational-confidence.json",
         "artifacts/long-handoff-operational-confidence.md"
+      ]
+    },
+    "live_real_mcp_sentinel": {
+      "script": "scripts/verify_real_nemo_mcp_sentinel.py",
+      "audit": "docs/prd/nemo-mcp-operational-audit-2026-05-10.md",
+      "assertions": [
+        "writes unique sentinel through Mission Control chat",
+        "reads sentinel back through NEMO MCP search_memories",
+        "requires mission_control.verified_nemo_answer",
+        "fails if lookup is delegated to lmstudio.chat_completions",
+        "neutralizes sentinel memories after verification"
       ]
     }
   }

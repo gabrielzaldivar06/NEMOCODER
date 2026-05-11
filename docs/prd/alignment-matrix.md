@@ -17,8 +17,8 @@ Legend:
 | FR3 Aider-Quality Editing | aligned | docs/specs/quality-mutation-pipeline.md | tests/test_quality_core_contract.py | src/nemo_coding_platform/core/mutations.py:24, src/nemo_coding_platform/core/mutations.py:37 | none |
 | FR4 OpenCode-Style Workflow | aligned | docs/specs/task-run-model.md, docs/specs/headless-run-mvp.md, docs/specs/desktop-ui-flows.md | tests/test_agent_runtime_contract.py, tests/test_desktop_ui_flows_contract.py, tests/test_mission_control_server.py | src/nemo_coding_platform/mission_control_server.py:2068, src/nemo_coding_platform/mission_control_server.py:1893 | none |
 | FR5 OpenHands-Style Autonomy | aligned | docs/specs/autonomy-model.md, docs/specs/full-handoff-autonomy.md | tests/test_autonomy_policy_contract.py, tests/test_agent_runtime_contract.py | src/nemo_coding_platform/core/product.py:25, src/nemo_coding_platform/core/product.py:132 | none |
-| FR6 NEMO Full Tool Integration | aligned | docs/specs/nemo-full-tooling.md, docs/specs/nemo-lifecycle.md | tests/test_nemo_full_tool_contract.py | src/nemo_coding_platform/core/memory.py:73, src/nemo_coding_platform/core/memory.py:382, src/nemo_coding_platform/mission_control_server.py:1806 | none |
-| FR7 MCP Extension Governance | aligned | docs/specs/mcp-extension-governance.md | tests/test_mcp_server.py, tests/test_mcp_adapter.py | src/nemo_coding_platform/mcp_server.py:50, src/nemo_coding_platform/mcp_server.py:90, src/nemo_coding_platform/mcp_server.py:205 | none |
+| FR6 NEMO Full Tool Integration | aligned | docs/specs/nemo-full-tooling.md, docs/specs/nemo-lifecycle.md | tests/test_nemo_full_tool_contract.py, tests/test_mission_control_server.py::MissionControlServerTests::test_mcp_native_real_server_continuity_across_sessions_and_core_tools, scripts/verify_real_nemo_mcp_sentinel.py | src/nemo_coding_platform/core/memory.py:73, src/nemo_coding_platform/core/memory.py:382, src/nemo_coding_platform/mission_control_server.py:2843, src/nemo_coding_platform/mission_control_server.py:3914 | none for current operational MCP path; real MCP continuity release gate is opt-in via `NEMOCODE_REAL_MCP_REQUIRED=1`, and live sentinel verification proves write/read chat lookup against real NEMO MCP |
+| FR7 MCP Extension Governance | aligned | docs/specs/mcp-extension-governance.md | tests/test_mcp_server.py, tests/test_mcp_adapter.py, tests/test_ci_workflow_contract.py | src/nemo_coding_platform/mcp_server.py:50, src/nemo_coding_platform/mcp_server.py:90, src/nemo_coding_platform/mcp_server.py:205, .github/workflows/nemo-code-ci.yml | none; CI exposes required real MCP continuity gate for release dispatch |
 | FR8 Artifact Trace | aligned | docs/specs/task-run-model.md, docs/specs/desktop-ui-flows.md | tests/test_desktop_ui_flows_contract.py, tests/test_agent_runtime_contract.py | src/nemo_coding_platform/core/task_run.py:76, src/nemo_coding_platform/core/review_package.py:82, src/nemo_coding_platform/core/persistence.py:84 | none |
 | FR9 Autonomous Background Tasks | aligned | docs/specs/autonomy-model.md, docs/specs/full-handoff-autonomy.md, docs/specs/worktree-runtime.md | tests/test_agent_runtime_contract.py, tests/test_desktop_ui_flows_contract.py | src/nemo_coding_platform/mission_control_server.py:2068, src/nemo_coding_platform/mission_control_server.py:2085, src/nemo_coding_platform/mission_control_server.py:2089 | none |
 | FR10 Evaluation and Replay | aligned | docs/specs/agent-evals.md | tests/test_agent_evals_contract.py, tests/test_evals_export.py | src/nemo_coding_platform/core/evals.py:147, src/nemo_coding_platform/core/persistence.py:84, src/nemo_coding_platform/core/persistence.py:316, src/nemo_coding_platform/cli.py:639 | none |
@@ -31,7 +31,7 @@ This section tracks global PRD alignment outside FR1-FR10: non-functional requir
 | --- | --- | --- | --- | --- | --- |
 | Section 11 Non-Functional Requirements | aligned | docs/specs/non-functional-contracts.md, docs/specs/quality-mutation-pipeline.md, docs/specs/worktree-runtime.md | tests/test_nfr_contract.py, tests/test_quality_core_contract.py, tests/test_agent_runtime_contract.py | src/nemo_coding_platform/mission_control_server.py:750, src/nemo_coding_platform/mission_control_server.py:1215, src/nemo_coding_platform/mission_control_server.py:1338 | none |
 | Section 12 Data Model | aligned | docs/specs/data-model-contracts.md, docs/specs/task-run-model.md, docs/specs/headless-run-mvp.md | tests/test_data_model_contract.py, tests/test_agent_runtime_contract.py, tests/test_product_contract.py | src/nemo_coding_platform/core/task_run.py:50, src/nemo_coding_platform/core/headless_runner.py:368, src/nemo_coding_platform/core/persistence.py:41 | none |
-| Section 13 NEMO Memory Lifecycle | aligned | docs/specs/nemo-lifecycle.md, docs/specs/nemo-full-tooling.md | tests/test_nemo_full_tool_contract.py, tests/test_nemo_lifecycle.py | src/nemo_coding_platform/core/memory.py:382, src/nemo_coding_platform/core/nemo_lifecycle.py:1, src/nemo_coding_platform/core/headless_runner.py:677 | none |
+| Section 13 NEMO Memory Lifecycle | aligned | docs/specs/nemo-lifecycle.md, docs/specs/nemo-full-tooling.md | tests/test_nemo_full_tool_contract.py, tests/test_nemo_lifecycle.py, tests/test_mission_control_server.py::MissionControlServerTests::test_handoff_start_requires_real_mcp_capabilities_when_nemo_required | src/nemo_coding_platform/core/memory.py:382, src/nemo_coding_platform/core/nemo_lifecycle.py:1, src/nemo_coding_platform/core/headless_runner.py:677, src/nemo_coding_platform/mission_control_server.py:1409 | none; handoff now blocks when required MCP capabilities or write/read continuity fail |
 | Section 17 Global MVP Acceptance | aligned | docs/specs/desktop-product-contract.md, docs/specs/desktop-ui-flows.md, docs/specs/agent-evals.md | tests/test_desktop_product_contract.py, tests/test_desktop_ui_flows_contract.py, tests/test_desktop_release_readiness_contract.py, tests/test_release_confidence_e2e.py, tests/test_global_mvp_gate.py | src/nemo_coding_platform/mission_control_server.py:3338, src/nemo_coding_platform/core/persistence.py:84, src/nemo_coding_platform/cli.py:969, apps/nemo-desktop/src/main.tsx:10 | none |
 
 ## SDD Critical Artifacts (Delta)
@@ -64,6 +64,15 @@ Operationalization evidence added on top of aligned FR/NFR coverage:
 - Blocking CI gate now enforces release confidence + RC readiness in one step:
 	- `.github/workflows/nemo-code-ci.yml`
 	- gate command includes `tests.test_release_confidence_e2e`, `tests.test_global_mvp_gate`, and `tests.test_desktop_release_readiness_contract`
+- Real MCP continuity release gate is available for local/release dispatch:
+	- set `NEMOCODE_REAL_MCP_REQUIRED=1` or workflow dispatch `real_mcp_gate=true`
+	- runs `tests.test_mission_control_server.MissionControlServerTests.test_mcp_native_real_server_continuity_across_sessions_and_core_tools`
+	- fails instead of skipping when the real NEMO MCP server is unavailable or does not expose retrievable write/read continuity
+- Live real MCP chat sentinel verifier is available for local operational checks:
+	- `scripts/verify_real_nemo_mcp_sentinel.py`
+	- writes a unique sentinel fact through Mission Control chat, reads it back through `BUSCA EN NEMO MCP...`, requires `nemo_memory.search_memories` plus `mission_control.verified_nemo_answer`, fails if lookup is delegated to `lmstudio.chat_completions`, and neutralizes the sentinel memories afterward
+- NEMO MCP operational audit captured current PRD alignment and caveats:
+	- `docs/prd/nemo-mcp-operational-audit-2026-05-10.md`
 - Long handoff operational confidence batch produced explicit RC autonomy decision:
 	- `artifacts/long-handoff-operational-confidence.json`
 	- `artifacts/long-handoff-operational-confidence.md`
@@ -86,6 +95,7 @@ Operationalization evidence added on top of aligned FR/NFR coverage:
 	- risky MCP actions are review-gated in central dispatcher
 	- denied actions return deterministic policy errors and are audit-traceable
 	- registry risk metadata is surfaced in MCP tool definitions
+	- required real MCP continuity gate is exposed by CI and verified by `tests/test_ci_workflow_contract.py`
 
 ## Machine-Readable Traceability
 
@@ -96,6 +106,8 @@ Operationalization evidence added on top of aligned FR/NFR coverage:
 - `python -m unittest tests.test_evals tests.test_evals_export tests.test_quality_core_contract -v`
 - `python -m unittest tests.test_desktop_ui_flows_contract tests.test_agent_evals_contract -v`
 - `python -m unittest tests.test_mcp_server tests.test_mcp_adapter -v`
+- `set NEMOCODE_REAL_MCP_REQUIRED=1 && python -m unittest tests.test_mission_control_server.MissionControlServerTests.test_mcp_native_real_server_continuity_across_sessions_and_core_tools`
+- `python scripts/verify_real_nemo_mcp_sentinel.py`
 - `python -m unittest tests.test_nfr_contract tests.test_data_model_contract -v`
 - `python -m unittest tests.test_desktop_release_readiness_contract -v`
 - `python -m unittest tests.test_release_confidence_e2e tests.test_global_mvp_gate tests.test_desktop_release_readiness_contract -v`

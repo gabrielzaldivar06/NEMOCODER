@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-05-11T06:11:12.290090+00:00",
+  "config": {
+    "lmstudio_base_url": "http://localhost:1234/v1",
+    "mission_control_url": "http://127.0.0.1:8787",
+    "ollama_base_url": "http://localhost:11434",
+    "lm_models": [],
+    "ollama_models": [],
+    "max_tokens": [
+      32
+    ],
+    "temperatures": [
+      0.0
+    ],
+    "top_p": 0.95,
+    "ollama_num_ctx": [
+      2048,
+      4096
+    ],
+    "prompt_names": [
+      "tiny"
+    ],
+    "mission_scenarios": [
+      "ordinary_chat",
+      "memory_lookup",
+      "technical_short"
+    ],
+    "repeats": 1,
+    "include_mission_control": false,
+    "include_ollama": true,
+    "skip_lmstudio": true
+  },
+  "results": [],
+  "summary": {
+    "groups": [],
+    "winner": null
+  }
+}

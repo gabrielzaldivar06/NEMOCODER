@@ -10,9 +10,15 @@ on:
         required: false
         default: false
         type: boolean
+      real_mcp_gate:
+        description: "Require real NEMO MCP continuity gate"
+        required: false
+        default: false
+        type: boolean
 
 env:
   INSTALLER_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.installer_mode && 'true' || vars.INSTALLER_MODE || 'false' }}
+  NEMOCODE_REAL_MCP_REQUIRED: ${{ github.event_name == 'workflow_dispatch' && inputs.real_mcp_gate && '1' || vars.NEMOCODE_REAL_MCP_REQUIRED || '0' }}
 
 jobs:
   backend-tests:
@@ -42,6 +48,11 @@ jobs:
           mkdir -p artifacts
           python -m unittest tests.test_release_confidence_e2e tests.test_global_mvp_gate tests.test_desktop_release_readiness_contract > artifacts/release-confidence.txt
           cat artifacts/release-confidence.txt
+
+      - name: Run required real NEMO MCP continuity gate
+        if: ${{ env.NEMOCODE_REAL_MCP_REQUIRED == '1' }}
+        run: |
+          python -m unittest tests.test_mission_control_server.MissionControlServerTests.test_mcp_native_real_server_continuity_across_sessions_and_core_tools
 
       - name: Generate release confidence evidence
         run: |

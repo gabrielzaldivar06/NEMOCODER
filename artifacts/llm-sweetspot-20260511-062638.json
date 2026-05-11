@@ -1,0 +1,401 @@
+{
+  "generated_at": "2026-05-11T06:28:51.123034+00:00",
+  "config": {
+    "lmstudio_base_url": "http://localhost:1234/v1",
+    "mission_control_url": "http://127.0.0.1:8787",
+    "ollama_base_url": "http://localhost:11434",
+    "lm_models": [],
+    "ollama_models": [
+      "lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest",
+      "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest"
+    ],
+    "lmstudio_models_root": "C:\\Users\\gabri\\.lmstudio\\models",
+    "discovered_gguf_models": [],
+    "gguf_model_paths": [
+      "C:\\Users\\gabri\\.lmstudio\\models\\WithinUsAI\\Gemma4-Overlooked.Thinker.Uncensored-E2B.gguf\\Gemma4-Overlooked.Thinker.Uncensored-E2B-Q4_K_M.gguf",
+      "C:\\Users\\gabri\\.lmstudio\\models\\DavidAU\\Gemma-3-it-4B-Uncensored-DBL-X-GGUF\\Gemma-3-it-4B-Uncensored-D_AU-Q4_k_s.gguf",
+      "C:\\Users\\gabri\\.lmstudio\\models\\WithinUsAI\\Nvidia.Agentic.Coder-4B-GGUF\\IBM-Agentic-Nvidia-Q4_K_M.gguf"
+    ],
+    "max_tokens": [
+      32
+    ],
+    "temperatures": [
+      0.0
+    ],
+    "top_p": 0.95,
+    "ollama_num_ctx": [
+      2048,
+      4096
+    ],
+    "prompt_names": [
+      "tiny",
+      "code_tiny"
+    ],
+    "mission_scenarios": [
+      "ordinary_chat",
+      "memory_lookup",
+      "technical_short"
+    ],
+    "repeats": 1,
+    "include_mission_control": false,
+    "include_ollama": true,
+    "skip_lmstudio": true,
+    "import_gguf_to_ollama": true,
+    "ollama_tag_prefix": "lmstudio"
+  },
+  "ollama_imports": [
+    {
+      "ok": false,
+      "tag": "lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest",
+      "source_path": "C:\\Users\\gabri\\.lmstudio\\models\\WithinUsAI\\Gemma4-Overlooked.Thinker.Uncensored-E2B.gguf\\Gemma4-Overlooked.Thinker.Uncensored-E2B-Q4_K_M.gguf",
+      "modelfile": "artifacts\\ollama-modelfiles\\lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5-latest.Modelfile",
+      "elapsed_ms": 27325.8,
+      "stdout": "",
+      "stderr": "'NoneType' object is not subscriptable",
+      "returncode": null
+    },
+    {
+      "ok": false,
+      "tag": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "source_path": "C:\\Users\\gabri\\.lmstudio\\models\\DavidAU\\Gemma-3-it-4B-Uncensored-DBL-X-GGUF\\Gemma-3-it-4B-Uncensored-D_AU-Q4_k_s.gguf",
+      "modelfile": "artifacts\\ollama-modelfiles\\lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d-latest.Modelfile",
+      "elapsed_ms": 12174.7,
+      "stdout": "",
+      "stderr": "'NoneType' object is not subscriptable",
+      "returncode": null
+    },
+    {
+      "ok": false,
+      "tag": "lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest",
+      "source_path": "C:\\Users\\gabri\\.lmstudio\\models\\WithinUsAI\\Nvidia.Agentic.Coder-4B-GGUF\\IBM-Agentic-Nvidia-Q4_K_M.gguf",
+      "modelfile": "artifacts\\ollama-modelfiles\\lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000-latest.Modelfile",
+      "elapsed_ms": 14281.6,
+      "stdout": "",
+      "stderr": "'NoneType' object is not subscriptable",
+      "returncode": null
+    }
+  ],
+  "results": [
+    {
+      "provider": "ollama",
+      "model": "lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 9328.5,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 6455.4,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 4096
+      },
+      "ok": true,
+      "elapsed_ms": 9389.3,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 4096
+      },
+      "ok": true,
+      "elapsed_ms": 6261.0,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 5661.4,
+      "empty": false,
+      "chars": 4,
+      "content_preview": "pong",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 5313.1,
+      "empty": false,
+      "chars": 96,
+      "content_preview": "```python\ndef add(x, y):\n  \"\"\"\n  Esta función suma dos números.\n\n  Args:\n    x: El primer número",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 4096
+      },
+      "ok": true,
+      "elapsed_ms": 4786.3,
+      "empty": false,
+      "chars": 4,
+      "content_preview": "pong",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 4096
+      },
+      "ok": true,
+      "elapsed_ms": 5414.6,
+      "empty": false,
+      "chars": 96,
+      "content_preview": "```python\ndef add(x, y):\n  \"\"\"\n  Esta función suma dos números.\n\n  Args:\n    x: El primer número",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 7415.4,
+      "empty": false,
+      "chars": 4,
+      "content_preview": "pong",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 2048
+      },
+      "ok": true,
+      "elapsed_ms": 4674.9,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "",
+      "prompt_name": "code_tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest",
+      "prompt": "Responde exactamente: pong",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 4096
+      },
+      "ok": true,
+      "elapsed_ms": 7265.9,
+      "empty": false,
+      "chars": 4,
+      "content_preview": "pong",
+      "error": "",
+      "prompt_name": "tiny"
+    },
+    {
+      "provider": "ollama",
+      "model": "lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest",
+      "prompt": "Devuelve solo una funcion Python llamada add que sume dos numeros.",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 4096
+      },
+      "ok": true,
+      "elapsed_ms": 4597.2,
+      "empty": true,
+      "chars": 0,
+      "content_preview": "",
+      "error": "",
+      "prompt_name": "code_tiny"
+    }
+  ],
+  "summary": {
+    "groups": [
+      {
+        "key": "ollama::lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest::{\"num_ctx\": 4096, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 4096
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "avg_elapsed_ms": 5100.5,
+        "median_elapsed_ms": 5100.5,
+        "avg_score": 94899.55
+      },
+      {
+        "key": "ollama::lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 0,
+        "avg_elapsed_ms": 5487.2,
+        "median_elapsed_ms": 5487.2,
+        "avg_score": 94512.75
+      },
+      {
+        "key": "ollama::lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest::{\"num_ctx\": 4096, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 4096
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 1,
+        "avg_elapsed_ms": 5931.5,
+        "median_elapsed_ms": 5931.5,
+        "avg_score": -453632.95
+      },
+      {
+        "key": "ollama::lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-gemma4-overlooked-thinker-uncensored-e2b-gguf-gemma4-2f4dcea5:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 1,
+        "avg_elapsed_ms": 6045.1,
+        "median_elapsed_ms": 6045.1,
+        "avg_score": -453707.7
+      },
+      {
+        "key": "ollama::lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest::{\"num_ctx\": 2048, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 2048
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 2,
+        "avg_elapsed_ms": 7891.9,
+        "median_elapsed_ms": 7891.9,
+        "avg_score": -1000000.0
+      },
+      {
+        "key": "ollama::lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest::{\"num_ctx\": 4096, \"num_predict\": 32, \"temperature\": 0.0}",
+        "provider": "ollama",
+        "model": "lmstudio-nvidia-agentic-coder-4b-gguf-ibm-agentic-nvidia-q4-k-1a707000:latest",
+        "params": {
+          "num_predict": 32,
+          "temperature": 0.0,
+          "num_ctx": 4096
+        },
+        "runs": 2,
+        "ok_runs": 2,
+        "empty_runs": 2,
+        "avg_elapsed_ms": 7825.1,
+        "median_elapsed_ms": 7825.1,
+        "avg_score": -1000000.0
+      }
+    ],
+    "winner": {
+      "key": "ollama::lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest::{\"num_ctx\": 4096, \"num_predict\": 32, \"temperature\": 0.0}",
+      "provider": "ollama",
+      "model": "lmstudio-gemma-3-it-4b-uncensored-dbl-x-gguf-gemma-3-it-4b-un-5f442a7d:latest",
+      "params": {
+        "num_predict": 32,
+        "temperature": 0.0,
+        "num_ctx": 4096
+      },
+      "runs": 2,
+      "ok_runs": 2,
+      "empty_runs": 0,
+      "avg_elapsed_ms": 5100.5,
+      "median_elapsed_ms": 5100.5,
+      "avg_score": 94899.55
+    }
+  }
+}
