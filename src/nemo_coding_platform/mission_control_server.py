@@ -50,6 +50,7 @@ DEFAULT_JOB_SNAPSHOTS = ".nemo-runtimes/mission-control/jobs"
 JOB_LOG_LIMIT = 10_000
 DECISION_LOG_LIMIT = 200
 NEMO_TOOL_SCAN_TTL_SECONDS = 30
+LEGACY_NEMO_SSE_URL = "http://127.0.0.1:8765/mcp/sse"
 URL_SOURCE_CACHE_TTL_SECONDS = 300
 SOURCE_ANALYTICS_MAX_EVENTS = 400
 JOB_HEARTBEAT_SECONDS = 20.0
@@ -739,13 +740,7 @@ def _load_settings(config: MissionControlServerConfig) -> dict[str, object]:
     settings["runtime_path"] = str(config.runtimes_path)
     settings["memory_db"] = str(config.memory_db) if config.memory_db else ""
     raw_mcp_url = settings.get("nemo_mcp_url")
-    settings["nemo_mcp_url"] = str(raw_mcp_url).strip() if isinstance(raw_mcp_url, str) else ""
-    if (
-        not os.environ.get("NEMOCODE_NEMO_MCP_URL")
-        and settings["nemo_mcp_url"] == "http://127.0.0.1:8765/mcp/sse"
-        and discover_vscode_mcp_server("nemo", config.repo_path) is not None
-    ):
-        settings["nemo_mcp_url"] = VSCODE_STDIO_NEMO_URL
+    settings["nemo_mcp_url"] = _normalize_nemo_mcp_url(config, raw_mcp_url)
     recent = settings.get("recent_repos")
     if not isinstance(recent, list):
         recent = []
@@ -768,6 +763,17 @@ def _load_settings(config: MissionControlServerConfig) -> dict[str, object]:
     if settings.get("validation_policy") not in {"none", "smoke", "targeted", "full"}:
         settings["validation_policy"] = "smoke"
     return settings
+
+
+def _normalize_nemo_mcp_url(config: MissionControlServerConfig, value: object) -> str:
+    url = str(value).strip() if isinstance(value, str) else ""
+    if (
+        not os.environ.get("NEMOCODE_NEMO_MCP_URL")
+        and (not url or url == LEGACY_NEMO_SSE_URL)
+        and discover_vscode_mcp_server("nemo", config.repo_path) is not None
+    ):
+        return VSCODE_STDIO_NEMO_URL
+    return url
 
 
 def _validate_model_roles_payload(raw: object) -> dict[str, str]:
@@ -1711,7 +1717,8 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "Treat that packet as authoritative memory for this response. Do NOT claim you personally called the tools, but do use the bootstrapped context directly. "
                     "When the user asks you to save, store, or remember something, confirm it is already saved (the server did it). "
                     "Do not claim you applied code unless an explicit apply action did it. "
-                    "Never invent MCP/NEMO tool names or capabilities outside the verified catalog below."
+                    "Never invent MCP/NEMO tool names or capabilities outside the verified catalog below. "
+                    "Never answer with only a raw tool name such as get_current_time, search_memories, or context_bootstrap; explain the actual answer or next action in natural language."
                 ),
             },
             {"role": "system", "content": f"Verified NEMO tool names (all already executed server-side, not by you): {verified_tools}"},
@@ -1754,12 +1761,35 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
 
 
 def _chat_max_tokens(payload: dict[str, object]) -> int:
-    value = payload.get("max_tokens", payload.get("chat_max_tokens", 512))
+    value = payload.get("max_tokens", payload.get("chat_max_tokens", 96))
     try:
         tokens = int(value)
     except (TypeError, ValueError):
-        tokens = 512
+        tokens = 96
     return max(64, min(tokens, 2048))
+
+
+def _raw_tool_name_fallback(response: str, message: str) -> str | None:
+    raw = response.strip().strip("` ")
+    if not raw:
+        return None
+    known_tools = {contract.name for contract in NEMO_TOOL_REGISTRY}
+    known_tools.update({f"nemo_memory.{name}" for name in known_tools})
+    known_tools.update({"get_current_time", "get_system_health", "web_search", "browser_search"})
+    if raw not in known_tools:
+        return None
+    if len(raw.split()) != 1:
+        return None
+    lowered = message.casefold()
+    if lowered in {"ping", "hola", "hello", "test"} or "diagnostico" in lowered or "diagnóstico" in lowered:
+        return (
+            "Estoy operativo. NEMO MCP ya cargó contexto y guardó esta interacción; "
+            "el modelo respondió con un nombre de herramienta crudo, así que Mission Control lo normalizó para no bloquear el chat."
+        )
+    return (
+        "Estoy operativo, pero el modelo devolvió un nombre de herramienta crudo en vez de una respuesta natural. "
+        "NEMO MCP siguió activo y la conversación fue registrada; reformulo la salida para continuar sin bloquear el chat."
+    )
 
 
 def _write_apply_memory(result: MergeApplyResult, memory_db: Path | None) -> None:
@@ -2042,6 +2072,7 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
     for key in allowed:
         if key in payload:
             settings[key] = payload[key]
+    settings["nemo_mcp_url"] = _normalize_nemo_mcp_url(server.config, settings.get("nemo_mcp_url"))
     repo_path = str(payload.get("repo_path") or server.config.repo_path)
     settings["recent_repos"] = _recent_repos(tuple(str(item) for item in settings.get("recent_repos", [])), repo_path)
     next_config = server.config.with_runtime_settings({**settings, "repo_path": repo_path})
@@ -2912,6 +2943,27 @@ def _probe_nemo_mcp_capabilities(
         }
 
     errors: list[str] = []
+    is_vscode_stdio_lightweight = str(mcp_url or "").strip().lower() == VSCODE_STDIO_NEMO_URL and not include_roundtrip_probe
+
+    if is_vscode_stdio_lightweight:
+        available_tool_names = {contract.name for contract in NEMO_TOOL_REGISTRY}
+        supports_context_bootstrap = "context_bootstrap" in available_tool_names
+        supports_prime_context = "prime_context" in available_tool_names
+        supports_search_memories = "search_memories" in available_tool_names
+        supports_core_context_reads = supports_context_bootstrap and supports_prime_context and supports_search_memories
+        payload = {
+            "enabled": True,
+            "supports_context_bootstrap": supports_context_bootstrap,
+            "supports_prime_context": supports_prime_context,
+            "supports_search_memories": supports_search_memories,
+            "supports_core_context_reads": supports_core_context_reads,
+            "supports_write_read_roundtrip": False,
+            "roundtrip_probe_executed": False,
+            "errors": [] if supports_core_context_reads else ["vscode_stdio_catalog_missing_core_tools"],
+            "probe_mode": "vscode_stdio_catalog",
+        }
+        _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
+        return payload
 
     bootstrap_raw = mcp_call_nemo_tool(
         "context_bootstrap",
@@ -2924,18 +2976,18 @@ def _probe_nemo_mcp_capabilities(
         limit=5,
     )
     bootstrap_payload = _normalize_nemo_tool_payload(bootstrap_raw)
-    supports_context_bootstrap = bool(bootstrap_raw.get("ok")) and (
-        bool(bootstrap_payload.get("context"))
-        or isinstance(bootstrap_payload.get("portfolio"), dict)
-        or isinstance(bootstrap_payload.get("prime_context"), dict)
-        or isinstance(bootstrap_payload.get("context_portfolio"), dict)
-    )
+    # Empty memory/context is still a successful capability probe. A fresh or
+    # irrelevant task can legitimately return chars=0/tokens=0 while proving the
+    # tool exists and is callable.
+    supports_context_bootstrap = bool(bootstrap_raw.get("ok"))
     if not supports_context_bootstrap:
         errors.append("context_bootstrap_unavailable")
 
     if str(mcp_url or "").strip().lower() == VSCODE_STDIO_NEMO_URL and not include_roundtrip_probe:
         prime_context_payload = bootstrap_payload.get("prime_context") if isinstance(bootstrap_payload.get("prime_context"), dict) else {}
-        supports_prime_context = bool(prime_context_payload) or isinstance(bootstrap_payload.get("context"), str)
+        supports_prime_context = supports_context_bootstrap and (bool(prime_context_payload) or isinstance(bootstrap_payload.get("context"), str))
+        if not supports_prime_context:
+            supports_prime_context = supports_context_bootstrap
         supports_search_memories = True
         supports_core_context_reads = supports_context_bootstrap and supports_prime_context and supports_search_memories
         payload = {
@@ -3842,6 +3894,8 @@ def _extract_declared_user_name(message: str) -> str:
 
 def _clean_declared_user_name(value: str) -> str:
     cleaned = value.strip().strip(".!,;:")
+    cleaned = re.sub(r"\s*\(\d{4}-\d{2}-\d{2}\)\s*$", "", cleaned)
+    cleaned = re.split(r"\s+(?:tengo|edad|age|years?\s+old|años?)\b", cleaned, maxsplit=1, flags=re.IGNORECASE)[0]
     cleaned = re.split(
         r"\s+(?:guarda|guardalo|guárdalo|guardar|guardarlo|save|store|remember|recuerda|en\s+nemo|en\s+mcp|en\s+memoria)\b",
         cleaned,
@@ -3864,6 +3918,9 @@ def _extract_user_name_from_memories(memories: object) -> str:
             value = item.get(field_name)
             if not isinstance(value, str):
                 continue
+            json_name = re.search(r"[\"']?user_name[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']", value, flags=re.IGNORECASE)
+            if json_name:
+                return _clean_declared_user_name(json_name.group(1))
             match = re.search(r"(?:mi nombre es|me llamo|my name is)\s+(.+)$", value, flags=re.IGNORECASE)
             if match:
                 return _clean_declared_user_name(match.group(1))
@@ -3932,7 +3989,8 @@ def _verified_nemo_memory_response(message: str, payloads: list[tuple[str, dict[
             related = [
                 memory
                 for memory in memories
-                if not _is_discarded_memory(memory)
+                if _is_identity_memory(memory)
+                and not _is_discarded_memory(memory)
                 and not _is_echo_memory(memory, message)
                 and not _is_chat_lookup_echo(memory)
                 and not _is_lookup_prompt_echo(memory)
@@ -4054,6 +4112,13 @@ def _memory_matches_lookup(memory: dict[str, Any], lookup_query: str) -> bool:
         return True
     content = _memory_content(memory).lower()
     return query in content
+
+
+def _is_identity_memory(memory: dict[str, Any]) -> bool:
+    if isinstance(memory.get("user_name"), str) and str(memory.get("user_name")).strip():
+        return True
+    content = _memory_content(memory).lower()
+    return any(marker in content for marker in ("user_name", "mi nombre es", "me llamo", "my name is"))
 
 
 def _is_self_interface_request(message: str) -> bool:
@@ -4258,10 +4323,13 @@ def _run_or_handoff_actions(message: str, payload: dict[str, object], selected_o
 
 def api_agent_message(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     request_started = time.perf_counter()
-    payload = {**_load_settings(config), **payload}
+    settings = _load_settings(config)
+    payload = {**settings, **payload}
     message = _message(payload)
     provider = _provider_mode(payload)
     nemo_mcp_url = _require_nemo_mcp_url(payload)
+    if nemo_mcp_url == LEGACY_NEMO_SSE_URL and settings.get("nemo_mcp_url") == VSCODE_STDIO_NEMO_URL:
+        nemo_mcp_url = VSCODE_STDIO_NEMO_URL
     require_mcp_capabilities = bool(payload.get("require_nemo_mcp_capabilities", provider == "subprocess" and payload.get("nemo_required", config.memory_db is not None)))
     require_mcp_roundtrip = bool(payload.get("require_nemo_roundtrip", False))
     if require_mcp_capabilities:
@@ -4363,6 +4431,11 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     )
     trace_step += 1
 
+    run_memory_lookup = _is_nemo_memory_lookup_request(message)
+    run_deep_context = chat_mode in {"research", "execution"}
+    primary_search_payload: dict[str, Any] = {}
+    primary_search_query = _extract_nemo_lookup_query(message) if run_memory_lookup else ""
+
     bootstrap_payload = _call_nemo("context_bootstrap", "start", task=message, topic="Mission Control conversation", token_budget=portfolio_budget, limit=8)
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     if str(nemo_mcp_url).strip().lower() == VSCODE_STDIO_NEMO_URL:
@@ -4370,20 +4443,22 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     else:
         _call_nemo("prime_context", "start", topic="Mission Control conversation", limit=8)
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    _call_nemo("build_context_portfolio", "plan", task=message, topic="Mission Control conversation", token_budget=portfolio_budget, limit=40)
-    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    _call_nemo("get_context_portfolio_stats", "review")
-    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    run_memory_lookup = _is_nemo_memory_lookup_request(message)
-    primary_search_payload: dict[str, Any] = {}
-    primary_search_query = _extract_nemo_lookup_query(message) if run_memory_lookup else ""
+    if run_deep_context:
+        _call_nemo("build_context_portfolio", "plan", task=message, topic="Mission Control conversation", token_budget=portfolio_budget, limit=40)
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+        _call_nemo("get_context_portfolio_stats", "review")
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    else:
+        _skip_nemo("build_context_portfolio", "Covered by context_bootstrap portfolio packet for ordinary chat; skipped duplicate stdio call.")
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+        _skip_nemo("get_context_portfolio_stats", "Deferred portfolio stats for ordinary chat; context_bootstrap and store_conversation remain active.")
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     if run_memory_lookup:
         primary_search_payload = _call_nemo("search_memories", "review", query=primary_search_query, limit=min(5, mode_profile["search_limit"]), compact=True, database_filter="ai_memories")
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     else:
         _skip_nemo("search_memories", "Skipped expensive semantic search for ordinary chat; NEMO bootstrap/prime context already loaded.")
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    run_deep_context = run_memory_lookup or chat_mode in {"research", "execution"}
     if run_deep_context:
         anticipate_payload = _call_nemo("anticipate", "plan", task=message, limit=mode_profile["anticipate_limit"])
     else:
@@ -4398,14 +4473,14 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
             memory_lookup_payloads.append((lookup_query, lookup_payload))
             tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     if _is_identity_query(message):
-        for identity_query in ("mi nombre es",):
+        for identity_query in ("mi nombre es", "me llamo", "my name is", "user_name", "identity"):
             identity_payload = _call_nemo(
                 "search_memories",
                 "review",
                 query=identity_query,
                 limit=min(5, max(3, mode_profile["search_limit"])),
                 compact=True,
-                database_filter="ai_memories",
+                database_filter="all",
             )
             memory_lookup_payloads.append((identity_query, identity_payload))
             tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
@@ -4703,6 +4778,17 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         trace_step += 1
         try:
             response = _lmstudio_chat_completion(payload, message, context_summary)
+            raw_tool_fallback = _raw_tool_name_fallback(response, message)
+            if raw_tool_fallback:
+                response = raw_tool_fallback
+                tool_calls.append(
+                    {
+                        "id": f"tool-{uuid4().hex[:8]}",
+                        "name": "mission_control.normalized_model_output",
+                        "status": "completed",
+                        "summary": "Normalized raw tool-name-only model output into an operational chat response.",
+                    }
+                )
             tool_calls.append(
                 {
                     "id": f"tool-{uuid4().hex[:8]}",

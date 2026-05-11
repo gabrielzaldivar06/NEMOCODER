@@ -41,6 +41,7 @@ def mcp_call_nemo_tool(
 ) -> dict[str, Any]:
     """MCP tool for calling any registered NEMO memory/tool-plane operation."""
     try:
+        arguments.pop("approve_review", None)
         phase = NemoLifecyclePhase(lifecycle_phase) if lifecycle_phase else _default_lifecycle_phase(tool_name)
         adapter = _get_adapter(memory_db, mcp_url=mcp_url, mcp_prefix=mcp_prefix)
         _, result = adapter.call(phase, tool_name, **arguments)

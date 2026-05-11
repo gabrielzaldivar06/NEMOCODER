@@ -15,6 +15,13 @@ from tests.test_review_gate_cli import write_ready_run
 
 
 class MissionControlServerTests(unittest.TestCase):
+    def test_chat_max_tokens_defaults_to_interactive_budget(self) -> None:
+        self.assertEqual(mission_control_server._chat_max_tokens({}), 96)
+
+    def test_chat_max_tokens_clamps_invalid_and_small_values(self) -> None:
+        self.assertEqual(mission_control_server._chat_max_tokens({"max_tokens": "invalid"}), 96)
+        self.assertEqual(mission_control_server._chat_max_tokens({"max_tokens": 12}), 64)
+
     def test_api_search_requires_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1012,6 +1019,64 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertIn("Según NEMO MCP real, tu nombre es Gabriel Zaldivar", payload["message"]["content"])
         model_call.assert_not_called()
 
+    def test_agent_message_recalls_user_name_from_archived_conversation_compact_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            captured_filters: list[str] = []
+
+            def _fake_call(tool_name: str, lifecycle_phase: str | None = None, memory_db: str = ".nemo-memory.db", mcp_url: str = "", approve_review: bool = False, **arguments: object) -> dict[str, object]:
+                if tool_name == "search_memories":
+                    query = str(arguments.get("query") or "")
+                    captured_filters.append(str(arguments.get("database_filter") or ""))
+                    if query == "me llamo":
+                        return {"ok": True, "payload": {"results": ["[1.05|imp:?|archived_conversation] hola me llamo gabriel tengo 34 años (2026-03-21)"]}}
+                    return {"ok": True, "payload": {"results": []}}
+                if tool_name == "context_bootstrap":
+                    return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
+                if tool_name == "prime_context":
+                    return {"ok": True, "payload": {"context": "", "memories": []}}
+                if tool_name == "build_context_portfolio":
+                    return {"ok": True, "payload": {"estimated_tokens": 0, "evidence_handles": []}}
+                if tool_name == "anticipate":
+                    return {"ok": True, "payload": {"memories": []}}
+                return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
+
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
+                payload = api_agent_message(config, {"message": "DIME COMO ME LLAMO", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
+
+        self.assertIn("tu nombre es gabriel", payload["message"]["content"])
+        self.assertIn("all", captured_filters)
+        model_call.assert_not_called()
+
+    def test_nemo_mcp_tool_call_does_not_forward_approve_review_to_stdio_adapter(self) -> None:
+        captured_arguments: dict[str, object] = {}
+
+        class FakeAdapter:
+            def call(self, phase: object, tool_name: str, **arguments: object) -> tuple[object, object]:
+                captured_arguments.update(arguments)
+                result = type("Result", (), {"ok": True, "payload": {"memories": []}})()
+                return self, result
+
+        with patch("nemo_coding_platform.nemocode_mcp_tools._get_adapter", return_value=FakeAdapter()):
+            payload = mcp_call_nemo_tool(
+                "search_memories",
+                lifecycle_phase="review",
+                mcp_url=mission_control_server.VSCODE_STDIO_NEMO_URL,
+                approve_review=True,
+                query="me llamo",
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("approve_review", captured_arguments)
+        self.assertEqual(captured_arguments["query"], "me llamo")
+
     def test_agent_message_answers_nemo_lookup_from_global_mcp_search_not_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1471,6 +1536,100 @@ class MissionControlServerTests(unittest.TestCase):
         capabilities = payload.get("capabilities") if isinstance(payload.get("capabilities"), dict) else {}
         self.assertTrue(capabilities.get("supports_core_context_reads"))
         self.assertIn("available_tools", payload)
+
+    def test_stdio_capability_probe_accepts_empty_bootstrap_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            mission_control_server._NEMO_MCP_CAPABILITY_CACHE.clear()
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool") as mocked_call:
+                payload = mission_control_server._probe_nemo_mcp_capabilities(
+                    config,
+                    mcp_url=mission_control_server.VSCODE_STDIO_NEMO_URL,
+                    include_roundtrip_probe=False,
+                )
+
+        self.assertTrue(payload["supports_context_bootstrap"])
+        self.assertTrue(payload["supports_core_context_reads"])
+        self.assertEqual(payload["errors"], [])
+        mocked_call.assert_not_called()
+
+    def test_settings_normalizes_legacy_sse_to_vscode_stdio(self) -> None:
+        fake_server = type(
+            "FakeServer",
+            (),
+            {
+                "name": "nemo",
+                "source_path": r"C:\Users\gabri\AppData\Roaming\Code\User\mcp.json",
+                "command": r"C:\dev\memory persistence\.venv\Scripts\python.exe",
+                "args": (r"C:\dev\memory persistence\persistent-ai-memory\ai_memory_mcp_server.py",),
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+            server = type("Server", (), {"config": config, "jobs": HandoffJobManager()})()
+
+            with patch("nemo_coding_platform.mission_control_server.discover_vscode_mcp_server", return_value=fake_server):
+                payload = api_settings(server, {"nemo_mcp_url": mission_control_server.LEGACY_NEMO_SSE_URL})
+
+        self.assertEqual(payload["settings"]["nemo_mcp_url"], mission_control_server.VSCODE_STDIO_NEMO_URL)
+
+    def test_agent_message_normalizes_stale_legacy_sse_payload_for_capability_gate(self) -> None:
+        fake_server = type(
+            "FakeServer",
+            (),
+            {
+                "name": "nemo",
+                "source_path": r"C:\Users\gabri\AppData\Roaming\Code\User\mcp.json",
+                "command": r"C:\dev\memory persistence\.venv\Scripts\python.exe",
+                "args": (r"C:\dev\memory persistence\persistent-ai-memory\ai_memory_mcp_server.py",),
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            runtimes = root / "runtimes"
+            memory_db = root / "nemo.sqlite"
+            repo.mkdir()
+            runtimes.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
+
+            with patch("nemo_coding_platform.mission_control_server.discover_vscode_mcp_server", return_value=fake_server), patch(
+                "nemo_coding_platform.mission_control_server._probe_nemo_mcp_capabilities",
+                return_value={
+                    "enabled": True,
+                    "supports_context_bootstrap": True,
+                    "supports_prime_context": True,
+                    "supports_search_memories": True,
+                    "supports_core_context_reads": True,
+                    "supports_write_read_roundtrip": False,
+                    "roundtrip_probe_executed": False,
+                    "errors": [],
+                },
+            ) as mocked_probe, patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", return_value={"ok": True, "payload": {}}):
+                api_agent_message(
+                    config,
+                    {
+                        "message": "Prueba del nuevo chat integrado: responde breve y confirma NEMO MCP.",
+                        "provider": "fake",
+                        "nemo_mcp_url": mission_control_server.LEGACY_NEMO_SSE_URL,
+                        "require_nemo_mcp_capabilities": True,
+                    },
+                )
+
+        self.assertEqual(mocked_probe.call_args.kwargs["mcp_url"], mission_control_server.VSCODE_STDIO_NEMO_URL)
 
     def test_agent_message_strict_capability_gate_rejects_unusable_mcp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

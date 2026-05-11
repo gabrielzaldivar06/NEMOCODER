@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, Hand, HardDrive, Home, MessageSquareText, PanelBottom, Play, Plus, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Wrench, Target, Zap, CheckSquare } from "lucide-react";
+import { AlertTriangle, Archive, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, Hand, HardDrive, Home, MessageSquarePlus, MessageSquareText, PanelBottom, Play, Plus, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Trash2, Wrench, Target, Zap, CheckSquare } from "lucide-react";
 import "./styles.css";
 import { usePlanState } from "./hooks/usePlanState";
 import { usePlanNemoSync } from "./hooks/usePlanNemoSync";
@@ -438,9 +438,17 @@ function normalizeFilePreview(payload: FilePreview): FilePreview {
     mergeable: payload.mergeable ?? false,
   };
 }
+const LEGACY_NEMO_SSE_URL = "http://127.0.0.1:8765/mcp/sse";
+const DEFAULT_NEMO_MCP_URL = "stdio://vscode/nemo";
+
+function normalizeNemoMcpUrl(value: string | undefined): string {
+  const trimmed = (value ?? "").trim();
+  return !trimmed || trimmed === LEGACY_NEMO_SSE_URL ? DEFAULT_NEMO_MCP_URL : trimmed;
+}
 
 function normalizeSettings(settings: Partial<MissionState["settings"]> | undefined): MissionState["settings"] {
-  return { ...initialState.settings, ...(settings ?? {}) };
+  const merged = { ...initialState.settings, ...(settings ?? {}) };
+  return { ...merged, nemo_mcp_url: normalizeNemoMcpUrl(merged.nemo_mcp_url) };
 }
 
 function normalizeRun(run: MissionRun): MissionRun {
@@ -492,7 +500,7 @@ const initialState: MissionState = {
     default_model: "nvidia.agentic.coder-4b",
     provider: "subprocess",
     memory_db: ".nemo-runtimes/nemo-memory.sqlite",
-    nemo_mcp_url: "http://127.0.0.1:8765/mcp/sse",
+    nemo_mcp_url: DEFAULT_NEMO_MCP_URL,
     runtime_path: "c:/dev/dev4/.nemo-runtimes",
     timeout_seconds: 120,
     max_runtime_minutes: 120,
@@ -507,9 +515,12 @@ const initialState: MissionState = {
 };
 
 const CHAT_SESSION_STORAGE_KEY = "mission-control-chat-session-v1";
+const CHAT_ARCHIVE_STORAGE_KEY = "mission-control-chat-archives-v1";
 const DEFAULT_SESSION_NEMO_TOOLS = [
+  "context_bootstrap",
   "prime_context",
   "build_context_portfolio",
+  "get_context_portfolio_stats",
   "search_memories",
   "anticipate",
   "store_conversation",
@@ -523,6 +534,12 @@ type ChatSessionSnapshot = {
   queuedAgentPrompts: string[];
   missionStats: MissionStatsState | null;
   selectedNemoTools: string[];
+};
+type ChatArchiveEntry = {
+  id: string;
+  created_at: string;
+  title: string;
+  messages: AgentMessage[];
 };
 
 function statusLabel(status: string): string {
@@ -1001,7 +1018,7 @@ export function App() {
   };
 
   const loadNemoMcpStatus = () => {
-    postJson<NemoMcpWatcherState>("/api/nemo/mcp-status", { nemo_mcp_url: settingsDraft.nemo_mcp_url || "", selected_nemo_tools: selectedNemoTools })
+    postJson<NemoMcpWatcherState>("/api/nemo/mcp-status", { nemo_mcp_url: normalizeNemoMcpUrl(settingsDraft.nemo_mcp_url), selected_nemo_tools: selectedNemoTools })
       .then((payload) => {
         setNemoMcpStatus(payload);
         if (Array.isArray(payload.selected_tools) && payload.selected_tools.length > 0) {
@@ -1203,7 +1220,7 @@ export function App() {
       heartbeat_minutes: settingsDraft.heartbeat_minutes,
       max_heartbeats: settingsDraft.max_heartbeats,
       token_budget: settingsDraft.token_budget,
-      nemo_mcp_url: settingsDraft.nemo_mcp_url || initialState.settings.nemo_mcp_url,
+      nemo_mcp_url: normalizeNemoMcpUrl(settingsDraft.nemo_mcp_url),
       nemo_mcp_prefix: "nemo.",
       require_nemo_mcp_capabilities: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
       require_nemo_roundtrip: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
@@ -1286,9 +1303,9 @@ export function App() {
         source_json: shouldAttachRunContextToMessage(content) ? selectedRun?.source_json : undefined,
         chat_mode: routeChatMode(content, Boolean(selectedRun?.source_json)),
         selected_nemo_tools: selectedNemoTools,
-        nemo_mcp_url: settingsDraft.nemo_mcp_url || initialState.settings.nemo_mcp_url,
+        nemo_mcp_url: normalizeNemoMcpUrl(settingsDraft.nemo_mcp_url),
         require_nemo_mcp_capabilities: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
-        require_nemo_roundtrip: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
+        require_nemo_roundtrip: false,
         provider: settingsDraft.provider,
         model_base_url: settingsDraft.model_base_url,
         default_model: settingsDraft.default_model,
@@ -1323,6 +1340,11 @@ export function App() {
           return;
         }
         setStatus(error.message);
+        setAgentMessages((current) => [...current, {
+          id: `assistant-error-${Date.now()}`,
+          role: "assistant",
+          content: `No pude completar la respuesta: ${error.message}`,
+        }]);
       })
       .finally(() => {
         setAgentBusy(false);
@@ -1450,7 +1472,7 @@ export function App() {
         heartbeat_minutes: settingsDraft.heartbeat_minutes,
         max_heartbeats: settingsDraft.max_heartbeats,
         token_budget: settingsDraft.token_budget,
-        nemo_mcp_url: settingsDraft.nemo_mcp_url || initialState.settings.nemo_mcp_url,
+        nemo_mcp_url: normalizeNemoMcpUrl(settingsDraft.nemo_mcp_url),
         nemo_mcp_prefix: "nemo.",
         selected_nemo_tools: selectedNemoTools,
       })
@@ -1668,15 +1690,44 @@ export function App() {
     if (confirm("¿Borrar todo el historial del chat del agente?")) {
       setAgentMessages([]);
       setAgentDraft("");
+      setHomeAgentDraft("");
       setQueuedAgentPrompts([]);
       setStatus("Chat limpiado ✓");
     }
   };
 
-  const startNewChat = () => {
-    if (confirm("¿Iniciar un nuevo chat? El historial actual se archivará.")) {
+  const archiveAgentChat = () => {
+    if (agentMessages.length === 0) {
+      setStatus("No hay mensajes para archivar");
+      return;
+    }
+    const firstUserMessage = agentMessages.find((message) => message.role === "user")?.content.trim();
+    const entry: ChatArchiveEntry = {
+      id: `chat-${Date.now()}`,
+      created_at: new Date().toISOString(),
+      title: firstUserMessage ? firstUserMessage.slice(0, 80) : "Chat archivado",
+      messages: agentMessages,
+    };
+    try {
+      const raw = window.localStorage.getItem(CHAT_ARCHIVE_STORAGE_KEY);
+      const existing = raw ? JSON.parse(raw) as ChatArchiveEntry[] : [];
+      const nextArchives = [entry, ...(Array.isArray(existing) ? existing : [])].slice(0, 20);
+      window.localStorage.setItem(CHAT_ARCHIVE_STORAGE_KEY, JSON.stringify(nextArchives));
       setAgentMessages([]);
       setAgentDraft("");
+      setHomeAgentDraft("");
+      setQueuedAgentPrompts([]);
+      setStatus("Chat archivado ✓");
+    } catch {
+      setStatus("No se pudo archivar el chat localmente");
+    }
+  };
+
+  const startNewChat = () => {
+    if (confirm("¿Iniciar un nuevo chat? El historial actual se cerrará sin borrar los archivos del proyecto.")) {
+      setAgentMessages([]);
+      setAgentDraft("");
+      setHomeAgentDraft("");
       setQueuedAgentPrompts([]);
       setStatus("Nuevo chat iniciado ✓");
     }
@@ -2192,6 +2243,9 @@ export function App() {
           running={agentBusy}
           queuedPrompt={queuedAgentPrompt}
           queuedPrompts={queuedAgentPrompts}
+          onStartNewChat={startNewChat}
+          onArchiveChat={archiveAgentChat}
+          onClearChat={clearAgentChat}
           onSelectRun={(run) => { selectRun(run); setActiveSection("runs"); }}
         />}
 
@@ -2397,7 +2451,7 @@ export function App() {
   );
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onSelectRun: (run: MissionRun) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void }) {
   const recentRuns = state.runs.slice(0, 4);
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
   const [blockedListCollapsed, setBlockedListCollapsed] = useState<boolean>(false);
@@ -2481,79 +2535,23 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
         <div className="home-kicker"><Bot size={16} /> NEMO PRIME</div>
         <h2>Hola, Nemo</h2>
         <p>Describe la tarea, deja que los agentes trabajen en sandbox y revisa el diff con memoria operativa al lado.</p>
-        <div className="home-prompt">
-          <input
-            ref={attachmentInputRef}
-            type="file"
-            accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.md,.json"
-            multiple
-            className="hidden-file-input"
-            onChange={attachMedia}
-          />
-          <textarea
-            value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") onSubmit();
-            }}
-            placeholder="Habla con el agente..."
-          />
-          <div className="prompt-actions">
-            <button onClick={openAttachmentPicker} title="Adjuntar imagenes, documentos o multimedia"><Plus size={16} /></button>
-            <button onClick={onOpenComposer} title="Configurar handoff"><Hand size={16} /></button>
-            <label className="provider-switch real" title="Modo del agente">
-              <Bot size={15} />
-              <select value={provider} onChange={(event) => onProviderChange(event.target.value)}>
-                <option value="subprocess">{providerLabel}</option>
-              </select>
-            </label>
-            <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
-            <div className={`send-halo ${sendHaloOpen ? "open" : ""}`} onMouseLeave={() => setSendHaloOpen(false)}>
-              <button className="send-intent" onClick={() => running ? runHaloAction("stop") : runHaloAction("send")} disabled={!running && !canSendDraft} onMouseEnter={() => setSendHaloOpen(true)} onFocus={() => setSendHaloOpen(true)} title={running ? "Detener respuesta del agente" : "Enviar al agente"}>
-                {running ? <Square size={16} /> : <ArrowUp size={18} />}
-              </button>
-              <div className="send-halo-menu" aria-label="Acciones del agente">
-                <button className="send-halo-option plan" onClick={() => runHaloAction("plan")} disabled={!canSendDraft && !running} title="Modo plan" aria-label="Modo plan" data-label="Plan">
-                  <Target size={13} />
-                  <span>Plan</span>
-                </button>
-                <button className="send-halo-option queue" onClick={() => runHaloAction("queue")} disabled={!canSendDraft} title="Poner en cola" aria-label="Poner en cola" data-label="En cola">
-                  <Clock3 size={13} />
-                  <span>En cola</span>
-                </button>
-                <button className="send-halo-option steer" onClick={() => runHaloAction("steer")} disabled={!canSendDraft} title="Steer prioritario" aria-label="Steer prioritario" data-label="Steer">
-                  <Wrench size={13} />
-                  <span>Steer</span>
-                </button>
-                <button className="send-halo-option stop" onClick={() => runHaloAction("stop")} disabled={!running} title="Detener" aria-label="Detener" data-label="Stop">
-                  <Square size={13} />
-                  <span>Stop</span>
-                </button>
+        <section className="home-conversation-stage" aria-label="Conversacion con agente">
+          <div className="home-conversation-header">
+            <div className="home-conversation-title">
+              <MessageSquareText size={16} aria-hidden="true" />
+              <div>
+                <strong>Chat de misión</strong>
+                <small>{providerLabel}</small>
               </div>
             </div>
+            <div className="home-session-actions" aria-label="Controles de chat">
+              <button onClick={onStartNewChat} title="Iniciar nuevo chat"><MessageSquarePlus size={14} /> Nuevo</button>
+              <button onClick={onArchiveChat} title="Archivar historial actual"><Archive size={14} /> Archivar</button>
+              <button className="danger" onClick={onClearChat} title="Eliminar historial actual"><Trash2 size={14} /> Eliminar</button>
+              <span className="home-conversation-count" aria-label={`${visibleMessages.length} mensajes recientes`}>{visibleMessages.length}</span>
+            </div>
           </div>
-          {pendingAttachments.length > 0 && <div className="attachment-strip" aria-label="Adjuntos preparados">
-            {pendingAttachments.map((file) => (
-              <button key={`${file.name}-${file.size}`} className="attachment-chip" onClick={() => removeAttachment(file.name)} title={`Quitar adjunto: ${file.name}`}>
-                <Files size={12} />
-                <span>{file.name}</span>
-              </button>
-            ))}
-          </div>}
-          {pendingAttachments.length > 0 && <div className="home-queue-note">Adjuntos preparados para modelos multimodales. Falta conectarlos al envio del agente.</div>}
-          {running && <div className="home-queue-note">El agente esta respondiendo. Puedes seguir enviando mensajes; se encolan automaticamente.</div>}
-          {queuedPrompt && <div className="home-queue-note pending">En cola: {queuedPrompt}</div>}
-          {queuedPrompts.length > 1 && <div className="home-queue-note">Pendientes: {queuedPrompts.length}</div>}
-        </div>
-        <section className="home-conversation-stage" aria-label="Conversacion con agente">
-          <AgentLiveStatus busy={running} queuedPrompt={queuedPrompt} messages={messages} compact />
-          <div className="home-conversation-header">
-            <MessageSquareText size={16} aria-hidden="true" />
-            <span className="home-conversation-count" aria-label={`${visibleMessages.length} mensajes recientes`}>
-              {visibleMessages.length}
-            </span>
-          </div>
-          <div className="home-chat-preview">
+          <div className="home-chat-preview unified">
             {visibleMessages.length === 0 ? <span className="empty-inline">Sin mensajes recientes.</span> : visibleMessages.map((message) => {
               const renderedContent = message.role === "assistant" ? parseAgentMessageDecorations(message.content).cleanedContent : message.content;
               return <article className={message.role} key={message.id}>
@@ -2561,6 +2559,72 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
                 <MessageRichText content={renderedContent} animate={false} />
               </article>;
             })}
+            {(running || queuedPrompt) && <div className="home-inline-status"><AgentLiveStatus busy={running} queuedPrompt={queuedPrompt} messages={messages} compact /></div>}
+          </div>
+          {(pendingAttachments.length > 0 || queuedPrompt || queuedPrompts.length > 1) && <div className="home-chat-notes">
+            {pendingAttachments.length > 0 && <span>Adjuntos preparados para envio multimodal.</span>}
+            {queuedPrompt && <span>En cola: {queuedPrompt}</span>}
+            {queuedPrompts.length > 1 && <span>Pendientes: {queuedPrompts.length}</span>}
+          </div>}
+          <div className="home-prompt home-chat-composer">
+            <input
+              ref={attachmentInputRef}
+              type="file"
+              accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.md,.json"
+              multiple
+              className="hidden-file-input"
+              onChange={attachMedia}
+            />
+            {pendingAttachments.length > 0 && <div className="attachment-strip" aria-label="Adjuntos preparados">
+              {pendingAttachments.map((file) => (
+                <button key={`${file.name}-${file.size}`} className="attachment-chip" onClick={() => removeAttachment(file.name)} title={`Quitar adjunto: ${file.name}`}>
+                  <Files size={12} />
+                  <span>{file.name}</span>
+                </button>
+              ))}
+            </div>}
+            <textarea
+              value={draft}
+              onChange={(event) => onDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") onSubmit();
+              }}
+              placeholder="Escribe a NEMO Code..."
+            />
+            <div className="prompt-actions integrated">
+              <button onClick={openAttachmentPicker} title="Adjuntar imagenes, documentos o multimedia"><Plus size={16} /></button>
+              <button onClick={onOpenComposer} title="Configurar handoff"><Hand size={16} /></button>
+              <label className="provider-switch real" title="Modo del agente">
+                <Bot size={15} />
+                <select value={provider} onChange={(event) => onProviderChange(event.target.value)}>
+                  <option value="subprocess">{providerLabel}</option>
+                </select>
+              </label>
+              <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
+              <div className={`send-halo ${sendHaloOpen ? "open" : ""}`} onMouseLeave={() => setSendHaloOpen(false)}>
+                <button className="send-intent" onClick={() => running ? runHaloAction("stop") : runHaloAction("send")} disabled={!running && !canSendDraft} onMouseEnter={() => setSendHaloOpen(true)} onFocus={() => setSendHaloOpen(true)} title={running ? "Detener respuesta del agente" : "Enviar al agente"}>
+                  {running ? <Square size={16} /> : <ArrowUp size={18} />}
+                </button>
+                <div className="send-halo-menu" aria-label="Acciones del agente">
+                  <button className="send-halo-option plan" onClick={() => runHaloAction("plan")} disabled={!canSendDraft && !running} title="Modo plan" aria-label="Modo plan" data-label="Plan">
+                    <Target size={13} />
+                    <span>Plan</span>
+                  </button>
+                  <button className="send-halo-option queue" onClick={() => runHaloAction("queue")} disabled={!canSendDraft} title="Poner en cola" aria-label="Poner en cola" data-label="En cola">
+                    <Clock3 size={13} />
+                    <span>En cola</span>
+                  </button>
+                  <button className="send-halo-option steer" onClick={() => runHaloAction("steer")} disabled={!canSendDraft} title="Steer prioritario" aria-label="Steer prioritario" data-label="Steer">
+                    <Wrench size={13} />
+                    <span>Steer</span>
+                  </button>
+                  <button className="send-halo-option stop" onClick={() => runHaloAction("stop")} disabled={!running} title="Detener" aria-label="Detener" data-label="Stop">
+                    <Square size={13} />
+                    <span>Stop</span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
         <InsightSection title="Memoria y contexto" summary={`${atomCount} atoms / ${evidenceCount} evidence / ${feedbackCount} feedback`} open={false}>
