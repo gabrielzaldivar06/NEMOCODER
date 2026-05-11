@@ -1,12 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, Archive, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, Hand, HardDrive, Home, MessageSquarePlus, MessageSquareText, PanelBottom, Play, Plus, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Trash2, Wrench, Target, Zap, CheckSquare } from "lucide-react";
+import { AlertTriangle, Archive, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, HardDrive, Home, MessageSquarePlus, MessageSquareText, PanelBottom, Play, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Trash2, Wrench, CheckSquare } from "lucide-react";
 import "./styles.css";
+import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
+import { CommandDock } from "./components/CommandDock";
+import { MissionTimeline } from "./components/MissionTimeline";
+import { ObjectiveDefinition } from "./components/ObjectiveDefinition";
+import { PlanProgress } from "./components/PlanProgress";
+import { TelemetryColumn } from "./components/TelemetryColumn";
+import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
 import { usePlanState } from "./hooks/usePlanState";
 import { usePlanNemoSync } from "./hooks/usePlanNemoSync";
 import { ExecutionPlan, ObjectiveState, PlanStep } from "./services/planNemoClient";
-import { ObjectiveDefinition } from "./components/ObjectiveDefinition";
-import { PlanProgress } from "./components/PlanProgress";
 
 type TimelineEvent = {
   sequence: number | null;
@@ -573,18 +578,6 @@ function reviewDecisionLabel(run: MissionRun): string {
   if (run.review_status === "awaiting_review") return "listo para decidir";
   if (run.review_status === "running") return "en ejecucion";
   return "seguimiento";
-}
-
-function toQueueBucket(status: string): "blocked" | "queued" | "ready" {
-  if (status === "blocked") return "blocked";
-  if (status === "awaiting_review") return "ready";
-  return "queued";
-}
-
-function queueBucketLabel(bucket: "blocked" | "queued" | "ready"): string {
-  if (bucket === "blocked") return "Bloqueado";
-  if (bucket === "ready") return "Listo";
-  return "En cola";
 }
 
 function handoffValidationCommand(value: unknown): string {
@@ -2452,15 +2445,8 @@ export function App() {
 }
 
 function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void }) {
-  const recentRuns = state.runs.slice(0, 4);
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
-  const [blockedListCollapsed, setBlockedListCollapsed] = useState<boolean>(false);
-  const [sendHaloOpen, setSendHaloOpen] = useState<boolean>(false);
-  const [expandedQueueItems, setExpandedQueueItems] = useState<Record<string, boolean>>({});
-  const [dismissedQueueItems, setDismissedQueueItems] = useState<Record<string, boolean>>({});
-  const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
-  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
-  const visibleMessages = messages.slice(-8);
+  const { artifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft } = useGeneratedArtifacts({ messages, draft, onDraftChange });
   const atomCount = nemoState?.health.atom_count ?? 0;
   const evidenceCount = nemoState?.health.evidence_count ?? 0;
   const feedbackCount = nemoState?.health.feedback_count ?? 0;
@@ -2468,339 +2454,87 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const statsJobTotal = missionStats?.jobs?.total ?? 0;
   const totalRuns = Math.max(state.runs.length, statsJobTotal);
   const queueCount = state.approval_queue.length;
-  const runKpis = cognitiveStats?.run_kpis;
   const memoryKpis = cognitiveStats?.memory_kpis;
   const sourceStats = missionStats?.sources;
   const sourceReads = sourceStats?.total_reads ?? 0;
-  const sourceUrls = sourceStats?.unique_urls ?? 0;
   const sourceCacheHitRate = sourceStats && sourceStats.total_reads > 0 ? Math.round((sourceStats.cache_hit_rate ?? 0) * 100) : 0;
-  const topSources = sourceStats?.top_sources ?? [];
   const providerLabel = modelName.trim() ? `LM Studio: ${modelName}` : "LM Studio real";
   const canSendDraft = draft.trim().length > 0;
-  const visibleQueue = state.approval_queue.filter((run) => !dismissedQueueItems[run.source_json]);
-  const queueByBucket = {
-    blocked: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "blocked"),
-    queued: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "queued"),
-    ready: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "ready"),
-  };
-  const queueSummary = `${visibleQueue.length} pendientes, ${queueByBucket.ready.length} por validacion, ${queueByBucket.queued.length} por contexto`;
-
-  const openAttachmentPicker = () => {
-    attachmentInputRef.current?.click();
-  };
-
-  const attachMedia = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const nextFiles = Array.from(event.target.files ?? []);
-    if (nextFiles.length === 0) return;
-    setPendingAttachments((current) => {
-      const seen = new Set(current.map((file) => `${file.name}-${file.size}-${file.type}`));
-      const merged = [...current];
-      for (const file of nextFiles) {
-        const key = `${file.name}-${file.size}-${file.type}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          merged.push(file);
-        }
-      }
-      return merged;
-    });
-    event.target.value = "";
-  };
-
-  const removeAttachment = (name: string) => {
-    setPendingAttachments((current) => current.filter((file) => file.name !== name));
-  };
-
-  const runHaloAction = (mode: "send" | "queue" | "steer" | "plan" | "stop") => {
-    if (mode === "stop") {
-      onStop();
-      setSendHaloOpen(false);
-      return;
-    }
-    onSubmit(mode);
-    setSendHaloOpen(false);
-  };
-
-  const toggleQueueItem = (run: MissionRun) => {
-    setExpandedQueueItems((current) => ({ ...current, [run.source_json]: !current[run.source_json] }));
-  };
-
-  const dismissQueueItem = (run: MissionRun) => {
-    setDismissedQueueItems((current) => ({ ...current, [run.source_json]: true }));
-  };
+  const activeRun = blockedReviewRuns[0] ?? state.approval_queue[0] ?? state.runs[0];
 
   return (
-    <section className="mission-home">
-      <div className="home-main">
-        <div className="home-kicker"><Bot size={16} /> NEMO PRIME</div>
-        <h2>Hola, Nemo</h2>
-        <p>Describe la tarea, deja que los agentes trabajen en sandbox y revisa el diff con memoria operativa al lado.</p>
-        <section className="home-conversation-stage" aria-label="Conversacion con agente">
-          <div className="home-conversation-header">
-            <div className="home-conversation-title">
-              <MessageSquareText size={16} aria-hidden="true" />
-              <div>
-                <strong>Chat de misión</strong>
-                <small>{providerLabel}</small>
-              </div>
-            </div>
-            <div className="home-session-actions" aria-label="Controles de chat">
-              <button onClick={onStartNewChat} title="Iniciar nuevo chat"><MessageSquarePlus size={14} /> Nuevo</button>
-              <button onClick={onArchiveChat} title="Archivar historial actual"><Archive size={14} /> Archivar</button>
-              <button className="danger" onClick={onClearChat} title="Eliminar historial actual"><Trash2 size={14} /> Eliminar</button>
-              <span className="home-conversation-count" aria-label={`${visibleMessages.length} mensajes recientes`}>{visibleMessages.length}</span>
-            </div>
-          </div>
-          <div className="home-chat-preview unified">
-            {visibleMessages.length === 0 ? <span className="empty-inline">Sin mensajes recientes.</span> : visibleMessages.map((message) => {
-              const renderedContent = message.role === "assistant" ? parseAgentMessageDecorations(message.content).cleanedContent : message.content;
-              return <article className={message.role} key={message.id}>
-                <span>{message.role === "assistant" ? "agent" : "you"}</span>
-                <MessageRichText content={renderedContent} animate={false} />
-              </article>;
-            })}
-            {(running || queuedPrompt) && <div className="home-inline-status"><AgentLiveStatus busy={running} queuedPrompt={queuedPrompt} messages={messages} compact /></div>}
-          </div>
-          {(pendingAttachments.length > 0 || queuedPrompt || queuedPrompts.length > 1) && <div className="home-chat-notes">
-            {pendingAttachments.length > 0 && <span>Adjuntos preparados para envio multimodal.</span>}
-            {queuedPrompt && <span>En cola: {queuedPrompt}</span>}
-            {queuedPrompts.length > 1 && <span>Pendientes: {queuedPrompts.length}</span>}
-          </div>}
-          <div className="home-prompt home-chat-composer">
-            <input
-              ref={attachmentInputRef}
-              type="file"
-              accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.md,.json"
-              multiple
-              className="hidden-file-input"
-              onChange={attachMedia}
-            />
-            {pendingAttachments.length > 0 && <div className="attachment-strip" aria-label="Adjuntos preparados">
-              {pendingAttachments.map((file) => (
-                <button key={`${file.name}-${file.size}`} className="attachment-chip" onClick={() => removeAttachment(file.name)} title={`Quitar adjunto: ${file.name}`}>
-                  <Files size={12} />
-                  <span>{file.name}</span>
-                </button>
-              ))}
-            </div>}
-            <textarea
-              value={draft}
-              onChange={(event) => onDraftChange(event.target.value)}
-              onKeyDown={(event) => {
-                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") onSubmit();
-              }}
-              placeholder="Escribe a NEMO Code..."
-            />
-            <div className="prompt-actions integrated">
-              <button onClick={openAttachmentPicker} title="Adjuntar imagenes, documentos o multimedia"><Plus size={16} /></button>
-              <button onClick={onOpenComposer} title="Configurar handoff"><Hand size={16} /></button>
-              <label className="provider-switch real" title="Modo del agente">
-                <Bot size={15} />
-                <select value={provider} onChange={(event) => onProviderChange(event.target.value)}>
-                  <option value="subprocess">{providerLabel}</option>
-                </select>
-              </label>
-              <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
-              <div className={`send-halo ${sendHaloOpen ? "open" : ""}`} onMouseLeave={() => setSendHaloOpen(false)}>
-                <button className="send-intent" onClick={() => running ? runHaloAction("stop") : runHaloAction("send")} disabled={!running && !canSendDraft} onMouseEnter={() => setSendHaloOpen(true)} onFocus={() => setSendHaloOpen(true)} title={running ? "Detener respuesta del agente" : "Enviar al agente"}>
-                  {running ? <Square size={16} /> : <ArrowUp size={18} />}
-                </button>
-                <div className="send-halo-menu" aria-label="Acciones del agente">
-                  <button className="send-halo-option plan" onClick={() => runHaloAction("plan")} disabled={!canSendDraft && !running} title="Modo plan" aria-label="Modo plan" data-label="Plan">
-                    <Target size={13} />
-                    <span>Plan</span>
-                  </button>
-                  <button className="send-halo-option queue" onClick={() => runHaloAction("queue")} disabled={!canSendDraft} title="Poner en cola" aria-label="Poner en cola" data-label="En cola">
-                    <Clock3 size={13} />
-                    <span>En cola</span>
-                  </button>
-                  <button className="send-halo-option steer" onClick={() => runHaloAction("steer")} disabled={!canSendDraft} title="Steer prioritario" aria-label="Steer prioritario" data-label="Steer">
-                    <Wrench size={13} />
-                    <span>Steer</span>
-                  </button>
-                  <button className="send-halo-option stop" onClick={() => runHaloAction("stop")} disabled={!running} title="Detener" aria-label="Detener" data-label="Stop">
-                    <Square size={13} />
-                    <span>Stop</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-        <InsightSection title="Memoria y contexto" summary={`${atomCount} atoms / ${evidenceCount} evidence / ${feedbackCount} feedback`} open={false}>
-          <CognitiveStatsPanel cognitiveStats={cognitiveStats} onRefresh={onRefreshCognitiveStats} />
-          <div className="mini-list">
-            <span>Portfolio: {nemoState?.context_portfolio?.estimated_tokens ?? "-"} token(s)</span>
-            <span>Atoms: {memoryKpis?.atom_count ?? atomCount} / Corrections: {memoryKpis?.correction_count ?? 0}</span>
-            <span>Apply success: {runKpis ? `${Math.round(runKpis.apply_success_rate * 100)}%` : "-"}</span>
-            <span>Blocked rate: {runKpis ? `${Math.round(runKpis.blocked_rate * 100)}%` : "-"}</span>
-          </div>
-        </InsightSection>
-        <div className="suggestion-row">
-          {[
-            "Implementar feature desde PRD",
-            "Crear tests de regresión",
-            "Optimizar flujo de apply/rollback",
-          ].map((item) => <button key={item} onClick={() => onDraftChange(item)}>{item}</button>)}
+    <section className="mission-home mission-home-v2">
+      <div className="mission-v2-header">
+        <div className="mission-brand-mark"><Bot size={18} /><span /></div>
+        <div>
+          <strong>NEMO CODE</strong>
+          <small>Autonomous coding system</small>
         </div>
+        <div className="mission-v2-status"><i /> Autonomous run</div>
+        <div className="mission-v2-chain" aria-label="Handoff chain compacta">
+          {["planner", "coder", "reviewer", "tester", "deploy"].map((node, index) => <span className={index === 1 ? "active" : ""} key={node} />)}
+        </div>
+        <div className="mission-session-actions" aria-label="Controles de sesión">
+          <button onClick={onStartNewChat} title="Nuevo chat"><MessageSquarePlus size={13} /></button>
+          <button onClick={onArchiveChat} title="Archivar chat"><Archive size={13} /></button>
+          <button className="danger" onClick={onClearChat} title="Eliminar chat"><Trash2 size={13} /></button>
+        </div>
+        <button className="mission-v2-steer" onClick={() => onSubmit("steer")} disabled={!canSendDraft}><Wrench size={13} /> Steer</button>
       </div>
+      <div className="mission-v2-grid">
+        <MissionTimeline
+          messages={messages}
+          running={running}
+          queuedPrompt={queuedPrompt}
+          cleanAssistantContent={(content) => parseAgentMessageDecorations(content).cleanedContent}
+          renderRichText={(content) => <MessageRichText content={content} animate={false} compact />}
+          renderMcpEvidence={(tools) => <HomeMcpEvidence tools={tools as AgentToolCall[]} />}
+          liveStatus={<AgentLiveStatus busy={running} queuedPrompt={queuedPrompt} messages={messages} compact />}
+          commandDock={<CommandDock
+            draft={draft}
+            provider={provider}
+            providerLabel={providerLabel}
+            running={running}
+            queuedPrompt={queuedPrompt}
+            queuedPrompts={queuedPrompts}
+            onDraftChange={onDraftChange}
+            onSubmit={onSubmit}
+            onStop={onStop}
+            onProviderChange={onProviderChange}
+            onOpenComposer={onOpenComposer}
+            onOpenMemory={onOpenMemory}
+          />}
+        />
 
-      <aside className="home-status">
-        <div className="status-title">
-          <button className={`status-title-button ${blockedRuns ? "interactive" : ""}`} onClick={() => blockedReviewRuns[0] && onSelectRun(blockedReviewRuns[0])} disabled={!blockedReviewRuns[0]} title={blockedReviewRuns[0] ? "Abrir el primer run bloqueado" : "Sin runs bloqueados"}>
-            <span><Home size={15} /> Sistema</span>
-            <strong>{blockedRuns ? `${blockedRuns} bloqueado(s)` : "Todo en orden"}</strong>
-          </button>
-          {blockedReviewRuns.length > 0 && <>
-            <div className="status-title-actions">
-              <button className="status-action status-action-primary" onClick={() => onSelectRun(blockedReviewRuns[0])}>
-                <AlertTriangle size={12} /> Revisar bloqueados
-              </button>
-              <button className={`status-action status-action-toggle ${blockedListCollapsed ? "collapsed" : ""}`} onClick={() => setBlockedListCollapsed((value) => !value)}>
-                <ChevronDown size={12} /> {blockedListCollapsed ? "Mostrar lista" : "Ocultar lista"}
-              </button>
-            </div>
-            <div className={`status-links ${blockedListCollapsed ? "collapsed" : "expanded"}`} aria-label="Runs bloqueados">
-              <div className="status-links-inner">
-                {blockedReviewRuns.slice(0, 3).map((run) => (
-                  <button key={run.source_json} className="status-link-chip" onClick={() => onSelectRun(run)} title={`${run.objective} | ${run.risk_flags.join(", ") || "sin riesgo detallado"}`}>
-                    <AlertTriangle size={12} />
-                    <span>{run.objective}</span>
-                    <small>{run.risk_flags[0] ? run.risk_flags[0].replaceAll("_", " ") : `${run.risk_flags.length} riesgos`}</small>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </>}
-        </div>
-        <StatusGauge label="Contexto" value={contextLabel} percent={Math.min(100, Math.max(18, atomCount * 2))} tone="blue" />
-        <StatusGauge label="Memoria" value={`${atomCount} atoms`} percent={Math.min(100, Math.max(20, atomCount * 3))} tone="green" />
-        <StatusGauge label="Feedback" value={`${feedbackCount} eventos`} percent={Math.min(100, Math.max(18, feedbackCount * 12))} tone="violet" />
+        <ArtifactWorkbench
+          artifacts={artifacts}
+          activeId={activeArtifactId}
+          onSelect={setActiveArtifactId}
+          onAttachToPrompt={attachArtifactToDraft}
+          renderMarkdown={(content) => <MessageRichText content={content} animate={false} compact />}
+        />
 
-        <InsightSection title="Resumen inteligente" summary={`${totalRuns} runs / ${queueCount} en cola / ${blockedRuns} bloqueados`} open>
-          <div className="metric-grid">
-            <Metric icon={<TerminalSquare size={16} />} label="Runs" value={totalRuns} />
-            <Metric icon={<ShieldCheck size={16} />} label="Ready" value={readyRuns} />
-            <Metric icon={<AlertTriangle size={16} />} label="Blocked" value={blockedRuns} />
-            <Metric icon={<GitPullRequest size={16} />} label="Queue" value={queueCount} />
-          </div>
-          <div className="mini-list">
-            <span>Estado: {blockedRuns > 0 ? "requiere atencion" : "estable"}</span>
-            <span>Mensaje: {status}</span>
-          </div>
-        </InsightSection>
-
-        <InsightSection title="Fuentes web" summary={`${sourceReads} lecturas / ${sourceUrls} URLs / cache ${sourceCacheHitRate}%`} open={false}>
-          <div className="panel-title" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Globe size={16} /> Source Analytics</span>
-            <button onClick={onRefreshMissionStats} title="Reload source analytics" style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><RefreshCw size={13} /></button>
-          </div>
-          <div className="metric-grid">
-            <Metric icon={<Globe size={16} />} label="Reads" value={sourceReads} />
-            <Metric icon={<Database size={16} />} label="URLs" value={sourceUrls} />
-            <Metric icon={<CheckCircle2 size={16} />} label="Cache hit" value={`${sourceCacheHitRate}%`} />
-            <Metric icon={<Target size={16} />} label="Top listed" value={topSources.length} />
-          </div>
-          <div className="mini-list">
-            {sourceStats ? Object.entries(sourceStats.by_mode || {}).map(([mode, count]) => <span key={mode}>{mode}: {count}</span>) : <span>Esperando muestras de fuentes desde el chat del agente.</span>}
-          </div>
-          <div className="recent-card">
-            <strong>Top fuentes</strong>
-            {topSources.length === 0 ? <span className="empty-inline">Sin fuentes registradas todavía.</span> : topSources.slice(0, 5).map((item) => {
-              const itemCacheRate = item.reads > 0 ? Math.round((item.cache_hit_rate || 0) * 100) : 0;
-              return (
-                <div className="recent-run" key={item.url}>
-                  <span>{item.title || item.url}</span>
-                  <small>{item.reads} lecturas · cache {itemCacheRate}% · rank {item.rank_score}</small>
-                </div>
-              );
-            })}
-          </div>
-        </InsightSection>
-
-        <InsightSection title="Actividad y decisiones" summary={`${recentRuns.length} runs recientes / ${messages.slice(-4).length} mensajes`} open={false}>
-          <div className="recent-card">
-            <strong>Actividad reciente</strong>
-            {recentRuns.length === 0 ? <span className="empty-inline">Sin runs todavía.</span> : recentRuns.map((run) => (
-              <div className="recent-run" key={run.source_json}>
-                <span>{run.objective}</span>
-                <small>{statusLabel(run.review_status)}</small>
-              </div>
-            ))}
-          </div>
-          <div className="home-chat-preview" aria-label="Conversacion reciente del agente">
-            {messages.slice(-4).length === 0 ? <span className="empty-inline">Sin mensajes recientes.</span> : messages.slice(-4).map((message) => {
-              const renderedContent = message.role === "assistant" ? parseAgentMessageDecorations(message.content).cleanedContent : message.content;
-              return <article className={message.role} key={message.id}>
-                <span>{message.role === "assistant" ? "agent" : "you"}</span>
-                <MessageRichText content={renderedContent} animate={false} compact />
-              </article>;
-            })}
-          </div>
-        </InsightSection>
-        <div className="agent-stack">
-          <strong>Agentes activos <span>{readyRuns}</span></strong>
-          <AgentPulse name="Planner" detail="Analizando requisitos" tone="green" />
-          <AgentPulse name="Coder" detail="Editando sandbox" tone="blue" />
-          <AgentPulse name="Reviewer" detail={`${evidenceCount} evidence handle(s)`} tone="violet" />
-        </div>
-        {visibleQueue.length > 0 && (
-          <div className="home-approval-queue">
-            <strong><ChevronDown size={14} /> Approval Queue <span className="queue-count">{visibleQueue.length}</span></strong>
-            <div className="queue-summary" aria-label="Resumen de cola">
-              <span>{queueSummary}</span>
-              {queueByBucket.blocked.length > 0 && <b>{queueByBucket.blocked.length} bloqueado(s)</b>}
-            </div>
-            {(["blocked", "queued", "ready"] as const).map((bucket) => (
-              <div className={`queue-group ${bucket}`} key={bucket}>
-                <header>
-                  <span>{queueBucketLabel(bucket)}</span>
-                  <small>{queueByBucket[bucket].length}</small>
-                </header>
-                {queueByBucket[bucket].length === 0 ? (
-                  <div className="queue-group-empty">Sin items</div>
-                ) : queueByBucket[bucket].map((run) => {
-                  const expanded = expandedQueueItems[run.source_json] ?? false;
-                  const tone = statusTone(run.review_status);
-                  const narratives = queueRunNarratives(run).slice(0, 2);
-                  return (
-                    <article key={run.source_json} className={`queue-item-card tone-${tone} ${expanded ? "expanded" : "collapsed"}`}>
-                      <button className="queue-item-top" onClick={() => toggleQueueItem(run)} title={run.objective}>
-                        <span className="queue-item-objective">{shortenObjective(run.objective)}</span>
-                        <span className={`pill ${tone}`}>{statusLabel(run.review_status)}</span>
-                        <ChevronDown size={13} className={`queue-expand-icon ${expanded ? "up" : "down"}`} />
-                      </button>
-                      <div className="queue-item-reason">{queuePrimaryReason(run)}</div>
-                      <div className={`queue-item-details ${expanded ? "expanded" : "collapsed"}`}>
-                        <div className="queue-item-meta">
-                          <span>{run.changed_files.length} archivo(s)</span>
-                          <span>{run.risk_flags.length} riesgo(s)</span>
-                          <span>{reviewDecisionLabel(run)}</span>
-                        </div>
-                        <div className="queue-risk-briefs">
-                          {narratives.map((item, index) => <article className="queue-risk-brief" key={`${run.source_json}-narrative-${index}`}>
-                            <strong>{item.title}</strong>
-                            <p>{item.reason}</p>
-                            <small>Impacto: {item.impact}</small>
-                            <small>Siguiente: {item.nextStep}</small>
-                          </article>)}
-                        </div>
-                        <div className="queue-item-ctas">
-                          <button onClick={() => onSelectRun(run)}>Revisar</button>
-                          <button onClick={() => onSelectRun(run)}>Abrir diff</button>
-                          <button onClick={() => onSelectRun(run)}>Continuar</button>
-                          <button className="danger" onClick={() => dismissQueueItem(run)}>Descartar</button>
-                        </div>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="working-strip"><span>{status}</span><span title="Notificaciones"><Bell size={14} /></span></div>
-      </aside>
+        <TelemetryColumn
+          activeRun={activeRun}
+          visibleQueue={state.approval_queue}
+          totalRuns={totalRuns}
+          readyRuns={readyRuns}
+          blockedRuns={blockedRuns}
+          queueCount={queueCount}
+          running={running}
+          contextLabel={contextLabel}
+          memoryAtomCount={memoryKpis?.atom_count ?? atomCount}
+          evidenceCount={evidenceCount}
+          feedbackCount={feedbackCount}
+          sourceReads={sourceReads}
+          sourceCacheHitRate={sourceCacheHitRate}
+          status={status}
+          onSelectRun={onSelectRun}
+          onOpenMemory={onOpenMemory}
+          onRefreshCognitiveStats={onRefreshCognitiveStats}
+          onRefreshMissionStats={onRefreshMissionStats}
+        />
+      </div>
     </section>
   );
 }
@@ -4087,6 +3821,29 @@ function _normalizeToolDisplayName(name: string): string {
   return parts[0];
 }
 
+function _isNemoMemoryToolName(name: string): boolean {
+  const canonical = _canonicalizeToolName(name).toLowerCase();
+  return canonical.startsWith("nemo_memory.") || canonical.startsWith("nemo.");
+}
+
+function HomeMcpEvidence({ tools }: { tools: AgentToolCall[] }) {
+  const memoryTools = tools.filter((tool) => _isNemoMemoryToolName(tool.name));
+  if (memoryTools.length === 0) return null;
+  const completed = memoryTools.filter((tool) => tool.status === "completed");
+  const names = Array.from(new Set(completed.map((tool) => _normalizeToolDisplayName(tool.name)))).slice(0, 3);
+  const skipped = memoryTools.filter((tool) => tool.status === "skipped").length;
+  const label = completed.length > 0 ? "NEMO MCP verificado" : "NEMO MCP consultado";
+  const detail = names.length > 0 ? names.join(" · ") : `${memoryTools.length} llamadas`;
+
+  return (
+    <div className="home-chat-mcp-proof" title={`${memoryTools.length} llamadas NEMO MCP${skipped ? `, ${skipped} optimizadas` : ""}`}>
+      <Database size={12} aria-hidden="true" />
+      <strong>{label}</strong>
+      <small>{detail}{skipped ? ` · ${skipped} omitidas por eficiencia` : ""}</small>
+    </div>
+  );
+}
+
 function _collectRecentToolNames(messages: AgentMessage[]): string[] {
   const collected: string[] = [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -4257,13 +4014,16 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
   const lines = content.split("\n");
   const blocks: React.ReactNode[] = [];
   let listItems: string[] = [];
+  let listType: "ul" | "ol" = "ul";
   let codeLines: string[] = [];
   let inCode = false;
 
   const flushList = () => {
     if (!listItems.length) return;
-    blocks.push(<ul key={`l-${blocks.length}`}>{listItems.map((item, index) => <li key={`i-${index}`}>{renderInlineRichText(item)}</li>)}</ul>);
+    const children = listItems.map((item, index) => <li key={`i-${index}`}>{renderInlineRichText(item)}</li>);
+    blocks.push(listType === "ol" ? <ol key={`l-${blocks.length}`}>{children}</ol> : <ul key={`l-${blocks.length}`}>{children}</ul>);
     listItems = [];
+    listType = "ul";
   };
 
   const flushCode = () => {
@@ -4289,7 +4049,15 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
       return;
     }
     if (/^[-*]\s+/.test(trimmed)) {
+      if (listItems.length > 0 && listType !== "ul") flushList();
+      listType = "ul";
       listItems.push(trimmed.replace(/^[-*]\s+/, ""));
+      return;
+    }
+    if (/^\d+[.)]\s+/.test(trimmed)) {
+      if (listItems.length > 0 && listType !== "ol") flushList();
+      listType = "ol";
+      listItems.push(trimmed.replace(/^\d+[.)]\s+/, ""));
       return;
     }
     flushList();
