@@ -3450,6 +3450,26 @@ button { font: inherit; }
 }
 .phase-progress-meta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .phase-progress-meta b { color: #dffcf4; font-size: 10px; }
+.telemetry-sparkline {
+  height: 42px;
+  display: flex;
+  align-items: end;
+  gap: 3px;
+  padding: 8px 7px 6px;
+  border: 1px solid rgba(94, 234, 212, 0.1);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(25, 242, 168, 0.035) 1px, transparent 1px),
+    rgba(1, 7, 7, 0.48);
+  background-size: 18px 100%, auto;
+}
+.telemetry-sparkline i {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 999px 999px 2px 2px;
+  background: linear-gradient(180deg, rgba(103, 232, 249, 0.95), rgba(25, 242, 168, 0.22));
+  box-shadow: 0 0 10px rgba(25, 242, 168, 0.1);
+}
 .signal-wave { height: 38px; display: flex; align-items: center; gap: 5px; }
 .signal-wave span { flex: 1; height: 8px; border-radius: 999px; background: linear-gradient(180deg, rgba(25, 242, 168, 0.95), rgba(45, 212, 191, 0.2)); animation: signalPulse 1200ms ease-in-out infinite; }
 .signal-wave span:nth-child(2n) { height: 22px; animation-delay: 120ms; }
@@ -3458,6 +3478,35 @@ button { font: inherit; }
 .telemetry-metrics span { border: 1px solid rgba(94, 234, 212, 0.1); background: rgba(1, 7, 7, 0.68); border-radius: 10px; padding: 7px; color: #7f9f98; font-size: 10px; text-transform: uppercase; }
 .telemetry-metrics b { display: block; margin-top: 3px; color: #effff9; font-size: 14px; }
 .handoff-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.handoff-chain-map {
+  position: relative;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px;
+}
+.handoff-chain-map::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 50%;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(25, 242, 168, 0.2), rgba(96, 165, 250, 0.22), rgba(177, 140, 255, 0.18));
+}
+.handoff-chain-map i {
+  position: relative;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  border: 1px solid rgba(94, 234, 212, 0.24);
+  border-radius: 999px;
+  background: #020807;
+}
+.handoff-chain-map i.complete { background: rgba(25, 242, 168, 0.22); border-color: rgba(25, 242, 168, 0.8); box-shadow: 0 0 14px rgba(25, 242, 168, 0.24); }
+.handoff-chain-map i.active { background: rgba(96, 165, 250, 0.24); border-color: #67e8f9; box-shadow: 0 0 16px rgba(103, 232, 249, 0.3); }
+.handoff-chain-map i.attention { background: rgba(248, 113, 113, 0.22); border-color: #fca5a5; box-shadow: 0 0 14px rgba(248, 113, 113, 0.26); }
 .handoff-row svg { color: #53706a; }
 .handoff-row.active svg { color: var(--accent); filter: drop-shadow(0 0 10px var(--glow)); }
 .handoff-row strong { display: block; color: #dffcf4; font-size: 12px; }
@@ -3468,6 +3517,24 @@ button { font: inherit; }
 .memory-constellation::after { content: ""; position: absolute; width: 96px; height: 96px; border: 1px solid rgba(45, 212, 191, 0.2); border-radius: 999px; animation: memoryOrbit 12s linear infinite; }
 .memory-constellation::after { width: 132px; height: 132px; border-color: rgba(124, 58, 237, 0.18); animation-duration: 18s; animation-direction: reverse; }
 .memory-constellation i { position: absolute; width: 4px; height: 4px; border-radius: 999px; background: var(--accent); box-shadow: 0 0 12px var(--glow); transform-origin: 0 0; }
+.memory-load-ring {
+  width: 74px;
+  height: 74px;
+  justify-self: center;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at center, rgba(2, 8, 8, 0.94) 0 58%, transparent 59%),
+    conic-gradient(var(--accent) var(--memory-load), rgba(94, 234, 212, 0.1) 0);
+  box-shadow: 0 0 28px rgba(25, 242, 168, 0.12), inset 0 0 22px rgba(25, 242, 168, 0.05);
+}
+.memory-load-ring span {
+  color: #dffcf4;
+  font-family: "DM Mono", "SF Mono", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 900;
+}
 .queue-card button { width: 100%; }
 .queue-card button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .telemetry-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }

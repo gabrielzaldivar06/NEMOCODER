@@ -1,4 +1,5 @@
 import { ArrowUp, Circle } from "lucide-react";
+import type React from "react";
 
 export type TelemetryRun = {
   objective: string;
@@ -70,6 +71,14 @@ function activePhaseTelemetry(run: TelemetryRun | undefined, running: boolean): 
   return { tone: "planning", label: "Plan", progress: 22, detail: run.review_status || "queued" };
 }
 
+function sparkValues(seed: number): number[] {
+  return Array.from({ length: 14 }, (_, index) => 18 + ((seed + index * 17 + (index % 3) * 11) % 62));
+}
+
+function memoryFieldLoad(memoryAtomCount: number, evidenceCount: number, feedbackCount: number): number {
+  return Math.max(8, Math.min(99, Math.round(memoryAtomCount * 0.9 + evidenceCount * 3 + feedbackCount * 4)));
+}
+
 export function TelemetryColumn<RunType extends TelemetryRun>({ activeRun, visibleQueue, totalRuns, readyRuns, blockedRuns, queueCount, running, contextLabel, memoryAtomCount, evidenceCount, feedbackCount, sourceReads, sourceCacheHitRate, status, onSelectRun, onOpenMemory, onRefreshCognitiveStats, onRefreshMissionStats }: TelemetryColumnProps<RunType>) {
   const queueByBucket = {
     queued: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "queued"),
@@ -77,12 +86,17 @@ export function TelemetryColumn<RunType extends TelemetryRun>({ activeRun, visib
   };
   const queueSummary = `${visibleQueue.length} pendientes, ${queueByBucket.ready.length} por validacion, ${queueByBucket.queued.length} por contexto`;
   const phaseTelemetry = activePhaseTelemetry(activeRun, running);
+  const memoryLoad = memoryFieldLoad(memoryAtomCount, evidenceCount, feedbackCount);
+  const runSeed = totalRuns + readyRuns * 3 + blockedRuns * 7 + queueCount * 11;
 
   return (
     <aside className="mission-telemetry" aria-label="Mission telemetry">
       <section className="telemetry-card active-run-card">
         <header><span>Active run</span><b>{phaseTelemetry.label}</b></header>
         <strong>{activeRun?.objective ?? "Esperando objetivo"}</strong>
+        <div className="telemetry-sparkline" aria-label="Active run activity sparkline">
+          {sparkValues(runSeed).map((value, index) => <i key={index} style={{ height: `${value}%` }} />)}
+        </div>
         <div className={`phase-progress ${phaseTelemetry.tone}`} aria-label={`Run phase ${phaseTelemetry.label}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={phaseTelemetry.progress} role="progressbar">
           <span style={{ width: `${phaseTelemetry.progress}%` }} />
         </div>
@@ -98,6 +112,9 @@ export function TelemetryColumn<RunType extends TelemetryRun>({ activeRun, visib
       </section>
       <section className="telemetry-card handoff-card">
         <header><span>Handoff chain</span><b>Auto</b></header>
+        <div className="handoff-chain-map" aria-label="Handoff chain mini map">
+          {["Planner", "Engineer", "Tester", "Deploy"].map((step, index) => <i key={step} className={index === 1 && running ? "active" : index < Math.max(1, readyRuns) ? "complete" : blockedRuns > 0 && index === 2 ? "attention" : ""} title={step} />)}
+        </div>
         {[
           ["Planner", "Mission Architect", readyRuns > 0 ? "complete" : "ready"],
           ["Engineer", "Core Executor", running ? "active" : "ready"],
@@ -107,6 +124,7 @@ export function TelemetryColumn<RunType extends TelemetryRun>({ activeRun, visib
       </section>
       <section className="telemetry-card memory-field-card">
         <header><span>Memory field</span><b>{contextLabel}</b></header>
+        <div className="memory-load-ring" aria-label={`Memory field load ${memoryLoad}%`} style={{ "--memory-load": `${memoryLoad}%` } as React.CSSProperties}><span>{memoryLoad}%</span></div>
         <div className="memory-constellation" aria-hidden="true">
           {Array.from({ length: 18 }).map((_, index) => <i key={index} style={{ transform: `rotate(${index * 20}deg) translate(${28 + (index % 4) * 10}px)` }} />)}
         </div>

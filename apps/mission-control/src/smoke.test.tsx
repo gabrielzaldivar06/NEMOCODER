@@ -409,6 +409,9 @@ describe("mission-control app", () => {
     const progress = screen.getByRole("progressbar", { name: /Run phase Review/i });
     expect(progress).toHaveClass("reviewing");
     expect(progress).toHaveAttribute("aria-valuenow", "78");
+    expect(screen.getByLabelText(/Active run activity sparkline/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Handoff chain mini map/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Memory field load/i)).toBeInTheDocument();
     expect(screen.getByText("review")).toBeInTheDocument();
     expect(screen.getByText("78%")).toBeInTheDocument();
   });
