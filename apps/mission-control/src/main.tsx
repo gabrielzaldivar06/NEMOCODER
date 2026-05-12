@@ -2208,17 +2208,38 @@ export function App() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const shellActiveRun = selectedRun ?? state.approval_queue[0] ?? state.runs[0];
+  const shellMemoryLabel = nemoState?.context_portfolio?.estimated_tokens ? `${nemoState.context_portfolio.estimated_tokens}t` : (nemoState?.health.status ?? "ready");
+  const shellRuntimeLabel = shellActiveRun?.run_id ? `Run ${shellActiveRun.run_id.slice(0, 8)}` : "Standing by";
+  const shellPhaseLabel = shellActiveRun?.execution_phase || shellActiveRun?.runtime_state || status;
+  const shellNavItems: Array<{ section: AppSection; label: string; title: string; icon: React.ReactNode }> = [
+    { section: "home", label: "Home", title: "Home", icon: <Home size={19} /> },
+    { section: "runs", label: "Runs", title: "Runs", icon: <Files size={19} /> },
+    { section: "versioning", label: "Git", title: "Versionado", icon: <GitBranch size={19} /> },
+    { section: "terminal", label: "Term", title: "Terminal", icon: <TerminalSquare size={19} /> },
+    { section: "browser", label: "Web", title: "Browser", icon: <Globe size={19} /> },
+    { section: "extensions", label: "Tools", title: "Extensions", icon: <Puzzle size={19} /> },
+    { section: "memory", label: "Memory", title: "Memoria", icon: <Database size={19} /> },
+    { section: "settings", label: "Core", title: "Ajustes", icon: <Settings size={19} /> },
+  ];
+
   return (
     <main className="ide-shell">
-      <aside className="activity-bar" aria-label="Activity bar">
-        <button className={`activity ${activeSection === "home" ? "active" : ""}`} title="Home" onClick={() => setActiveSection("home")}><Home size={20} /></button>
-        <button className={`activity ${activeSection === "runs" ? "active" : ""}`} title="Runs" onClick={() => setActiveSection("runs")}><Files size={20} /></button>
-        <button className={`activity ${activeSection === "versioning" ? "active" : ""}`} title="Versionado" onClick={() => setActiveSection("versioning")}><GitBranch size={20} /></button>
-        <button className={`activity ${activeSection === "terminal" ? "active" : ""}`} title="Terminal" onClick={() => setActiveSection("terminal")}><TerminalSquare size={20} /></button>
-        <button className={`activity ${activeSection === "browser" ? "active" : ""}`} title="Browser" onClick={() => setActiveSection("browser")}><Globe size={20} /></button>
-        <button className={`activity ${activeSection === "extensions" ? "active" : ""}`} title="Extensions" onClick={() => setActiveSection("extensions")}><Puzzle size={20} /></button>
-        <button className={`activity ${activeSection === "memory" ? "active" : ""}`} title="Memoria" onClick={() => setActiveSection("memory")}><Database size={20} /></button>
-        <button className={`activity ${activeSection === "settings" ? "active" : ""}`} title="Ajustes" onClick={() => setActiveSection("settings")}><Settings size={20} /></button>
+      <aside className="activity-bar" aria-label="Primary navigation">
+        <div className="activity-brand" aria-hidden="true"><Bot size={24} /></div>
+        <nav className="activity-nav" aria-label="Primary sections">
+          {shellNavItems.map((item) => (
+            <button key={item.section} className={`activity ${activeSection === item.section ? "active" : ""}`} title={item.title} onClick={() => setActiveSection(item.section)}>
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="activity-system" aria-label="System status">
+          <span>NEMO</span>
+          <i />
+          <small>{shellMemoryLabel}</small>
+        </div>
       </aside>
 
       <aside className="explorer">
@@ -2286,6 +2307,21 @@ export function App() {
       </aside>
 
       <section className="workbench">
+        <header className="cockpit-topbar" aria-label="Mission control status">
+          <div className="cockpit-title">
+            <strong>Space Code</strong>
+            <span>Autonomous coding with external NEMO memory</span>
+          </div>
+          <div className="cockpit-live"><i /> Autonomous run</div>
+          <div className="cockpit-run-readout">
+            <span>{shellRuntimeLabel}</span>
+            <b>{shellPhaseLabel}</b>
+          </div>
+          <div className="cockpit-chain" aria-label="Handoff chain progress">
+            {[0, 1, 2, 3, 4, 5].map((step) => <i key={step} className={step <= Math.min(5, state.approval_queue.length + readyRuns) ? "active" : ""} />)}
+          </div>
+          <button className="cockpit-steer" onClick={() => setActiveSection("memory")}><Database size={13} /> Memory {shellMemoryLabel}</button>
+        </header>
         {composerOpen && <HandoffComposer draft={handoffDraft} onChange={setHandoffDraft} onSubmit={startHandoff} onClose={() => setComposerOpen(false)} running={handoffRunning} />}
 
         {activeSection === "home" && <MissionHome

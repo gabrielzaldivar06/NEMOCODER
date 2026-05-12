@@ -435,6 +435,8 @@ describe("mission-control app", () => {
   it("renders the shell without crashing", async () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: /Space Code/i })).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Primary navigation/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Mission control status/i)).toBeInTheDocument();
     expect(await screen.findByText(/Agent Runs/i)).toBeInTheDocument();
   });
 
