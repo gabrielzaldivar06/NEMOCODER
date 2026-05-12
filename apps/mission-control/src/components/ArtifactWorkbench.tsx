@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Code2, Copy, Download, Eye, Image, Info, Paperclip, Puzzle, Zap } from "lucide-react";
+import { Braces, Code2, Copy, Download, Eye, FileText, History, Image, Info, Layers3, Paperclip, Puzzle, Zap } from "lucide-react";
 
 export type GeneratedArtifactKind = "html" | "svg" | "markdown" | "json" | "mermaid" | "react" | "image_request" | "code";
 
@@ -20,7 +20,23 @@ export type GeneratedArtifact = {
   persisted?: boolean;
 };
 
-type ArtifactViewMode = "preview" | "source" | "inspect";
+type ArtifactViewMode = "preview" | "source" | "inspect" | "compare";
+
+type ArtifactDiffRow = {
+  kind: "same" | "added" | "removed" | "changed";
+  leftLine?: number;
+  rightLine?: number;
+  left?: string;
+  right?: string;
+};
+
+type ArtifactDiffResult = {
+  rows: ArtifactDiffRow[];
+  added: number;
+  removed: number;
+  changed: number;
+  omitted: number;
+};
 
 type ArtifactMessageSource = {
   id: string;
@@ -139,6 +155,88 @@ function artifactLineCount(artifact: GeneratedArtifact): number {
   return artifact.content.split(/\r?\n/).length;
 }
 
+function artifactKindIcon(kind: GeneratedArtifactKind): ReactNode {
+  if (kind === "image_request") return <Image size={15} />;
+  if (kind === "json") return <Braces size={15} />;
+  if (kind === "markdown") return <FileText size={15} />;
+  if (kind === "html" || kind === "svg" || kind === "react") return <Layers3 size={15} />;
+  return <Code2 size={15} />;
+}
+
+function shortArtifactHash(artifact: GeneratedArtifact): string {
+  return (artifact.contentHash ?? artifact.id).replace(/^artifact-/, "").slice(0, 8);
+}
+
+function formatArtifactTime(value: string | undefined): string {
+  if (!value) return "session";
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "session";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(timestamp);
+}
+
+function previousArtifactVersion(activeArtifact: GeneratedArtifact | undefined, versionSiblings: GeneratedArtifact[]): GeneratedArtifact | undefined {
+  if (!activeArtifact || versionSiblings.length < 2) return undefined;
+  const activeIndex = versionSiblings.findIndex((artifact) => artifact.id === activeArtifact.id);
+  if (activeIndex <= 0) return undefined;
+  return versionSiblings[activeIndex - 1];
+}
+
+export function buildArtifactLineDiff(previous: GeneratedArtifact, current: GeneratedArtifact, maxRows = 180): ArtifactDiffResult {
+  const previousLines = previous.content.split(/\r?\n/);
+  const currentLines = current.content.split(/\r?\n/);
+  const totalRows = Math.max(previousLines.length, currentLines.length);
+  const rows: ArtifactDiffRow[] = [];
+  let added = 0;
+  let removed = 0;
+  let changed = 0;
+
+  for (let index = 0; index < Math.min(totalRows, maxRows); index += 1) {
+    const left = previousLines[index];
+    const right = currentLines[index];
+    if (left === right) {
+      rows.push({ kind: "same", leftLine: index + 1, rightLine: index + 1, left, right });
+    } else if (left === undefined) {
+      added += 1;
+      rows.push({ kind: "added", rightLine: index + 1, right });
+    } else if (right === undefined) {
+      removed += 1;
+      rows.push({ kind: "removed", leftLine: index + 1, left });
+    } else {
+      changed += 1;
+      rows.push({ kind: "changed", leftLine: index + 1, rightLine: index + 1, left, right });
+    }
+  }
+
+  if (totalRows > maxRows) {
+    for (let index = maxRows; index < totalRows; index += 1) {
+      if (previousLines[index] === undefined) added += 1;
+      else if (currentLines[index] === undefined) removed += 1;
+      else if (previousLines[index] !== currentLines[index]) changed += 1;
+    }
+  }
+
+  return { rows, added, removed, changed, omitted: Math.max(0, totalRows - maxRows) };
+}
+
+function ArtifactCompareView({ previous, current }: { previous: GeneratedArtifact; current: GeneratedArtifact }) {
+  const diff = buildArtifactLineDiff(previous, current);
+  return <div className="artifact-compare">
+    <div className="artifact-compare-head">
+      <div><span>Previous</span><strong>v{previous.version ?? "?"}</strong><small>#{shortArtifactHash(previous)}</small></div>
+      <div><span>Current</span><strong>v{current.version ?? "draft"}</strong><small>#{shortArtifactHash(current)}</small></div>
+      <div><span>Delta</span><strong>+{diff.added} / -{diff.removed}</strong><small>{diff.changed} changed</small></div>
+    </div>
+    <div className="artifact-diff-table" role="table" aria-label="Comparacion de versiones del artifact">
+      {diff.rows.map((row, index) => <div className={`artifact-diff-row ${row.kind}`} role="row" key={`${row.kind}-${index}`}>
+        <span className="artifact-diff-line">{row.leftLine ?? ""}</span>
+        <span className="artifact-diff-line">{row.rightLine ?? ""}</span>
+        <code>{row.kind === "added" ? row.right : row.kind === "removed" ? row.left : row.kind === "changed" ? `${row.left ?? ""}  ->  ${row.right ?? ""}` : row.right}</code>
+      </div>)}
+      {diff.omitted > 0 && <div className="artifact-diff-omitted">{diff.omitted.toLocaleString()} additional lines omitted</div>}
+    </div>
+  </div>;
+}
+
 function parseImageRequest(content: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(content) as Record<string, unknown>;
@@ -224,6 +322,7 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
   const versionSiblings = activeArtifact?.versionGroup ? artifacts
     .filter((artifact) => artifact.versionGroup === activeArtifact.versionGroup)
     .sort((left, right) => (left.version ?? 0) - (right.version ?? 0)) : [];
+  const previousArtifact = previousArtifactVersion(activeArtifact, versionSiblings);
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
 
@@ -260,6 +359,7 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
   const viewOptions: Array<{ mode: ArtifactViewMode; label: string; icon: ReactNode; disabled?: boolean }> = [
     { mode: "preview", label: "Preview", icon: <Eye size={13} />, disabled: !renderable },
     { mode: "source", label: "Source", icon: <Code2 size={13} /> },
+    { mode: "compare", label: "Compare", icon: <History size={13} />, disabled: !previousArtifact },
     { mode: "inspect", label: "Inspect", icon: <Info size={13} /> },
   ];
 
@@ -292,6 +392,19 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
           </div>}
         </div>
         {activeArtifact && <div className="artifact-canvas">
+          <div className="artifact-active-summary">
+            <div className="artifact-active-icon" aria-hidden="true">{artifactKindIcon(activeArtifact.kind)}</div>
+            <div className="artifact-active-copy">
+              <span>{activeArtifact.kind}</span>
+              <strong>{activeArtifact.title}</strong>
+            </div>
+            <div className="artifact-active-pills" aria-label="Metadata del artifact activo">
+              <span>{activeArtifact.version ? `v${activeArtifact.version}` : "draft"}</span>
+              <span>{activeArtifact.persisted ? "indexed" : "session"}</span>
+              <span>#{shortArtifactHash(activeArtifact)}</span>
+              <span>{formatArtifactTime(activeArtifact.updatedAt ?? activeArtifact.createdAt)}</span>
+            </div>
+          </div>
           <div className="artifact-canvas-bar">
             <div className="artifact-canvas-meta">
               <span>{activeArtifact.language}</span>
@@ -311,6 +424,8 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <MermaidPreview content={activeArtifact.content} />
             ) : viewMode === "preview" && activeArtifact.kind === "image_request" ? (
               <ImageRequestPreview artifact={activeArtifact} />
+            ) : viewMode === "compare" && previousArtifact ? (
+              <ArtifactCompareView previous={previousArtifact} current={activeArtifact} />
             ) : viewMode === "inspect" ? (
               <div className="artifact-inspector">
                 <section>
@@ -327,6 +442,7 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
                   <div><dt>Origin</dt><dd>{activeArtifact.messageId}</dd></div>
                   <div><dt>Stable ID</dt><dd>{activeArtifact.registryId ?? activeArtifact.id}</dd></div>
                   <div><dt>Hash</dt><dd>{activeArtifact.contentHash ?? "unindexed"}</dd></div>
+                  <div><dt>Updated</dt><dd>{formatArtifactTime(activeArtifact.updatedAt ?? activeArtifact.createdAt)}</dd></div>
                 </dl>
               </div>
             ) : (
@@ -337,7 +453,12 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
       </> : <div className="artifact-empty">
         <Puzzle size={18} aria-hidden="true" />
         <strong>Sin artifact activo</strong>
-        <span>HTML / SVG / Markdown / JSON / Code</span>
+        <span>Pide una interfaz, dashboard, diagrama o reporte visual para abrir el canvas.</span>
+        <div className="artifact-empty-prompts" aria-label="Ejemplos de artifact">
+          <code>html_artifact dashboard</code>
+          <code>mermaid architecture</code>
+          <code>image_request concept</code>
+        </div>
       </div>}
     </aside>
   );

@@ -497,7 +497,7 @@ function extractIterationLines(logs: string[] = []): string[] {
 
 const initialState: MissionState = {
   schema_version: 1,
-  product: "Spacecode Mission Control",
+  product: "Space Code Mission Control",
   repo_path: "c:/dev/dev4",
   runtimes_path: "c:/dev/dev4/.spacecode-runtimes",
   repos: ["c:/dev/dev4"],
@@ -2162,8 +2162,8 @@ export function App() {
         <div className="brand-row">
           <Bot size={20} />
           <div>
-            <h1>Spacecode</h1>
-            <p>Spacecode engine + external NEMO memory</p>
+            <h1>Space Code</h1>
+            <p>Space Code engine + external NEMO memory</p>
           </div>
         </div>
 
@@ -2479,12 +2479,14 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
       <div className="mission-v2-header">
         <div className="mission-brand-mark"><Bot size={18} /><span /></div>
         <div>
-          <strong>Spacecode</strong>
+          <strong>Space Code</strong>
           <small>Autonomous coding system</small>
         </div>
         <div className="mission-v2-status"><i /> Autonomous run</div>
-        <div className="mission-v2-chain" aria-label="Handoff chain compacta">
-          {["planner", "coder", "reviewer", "tester", "deploy"].map((node, index) => <span className={index === 1 ? "active" : ""} key={node} />)}
+        <div className="mission-v2-ops" aria-label="Estado operacional compacto">
+          <span><b>NEMO</b>{contextLabel}</span>
+          <span><b>Artifacts</b>{artifacts.length}</span>
+          <span><b>Queue</b>{queueCount}</span>
         </div>
         <div className="mission-session-actions" aria-label="Controles de sesión">
           <button onClick={onStartNewChat} title="Nuevo chat"><MessageSquarePlus size={13} /></button>
@@ -2656,7 +2658,7 @@ function HandoffComposer({ draft, onChange, onSubmit, onClose, running }: { draf
         <label>
           Provider
           <select value={draft.provider} onChange={(event) => update("provider", event.target.value)} disabled={running}>
-            <option value="subprocess">Spacecode + LM Studio</option>
+            <option value="subprocess">Space Code + LM Studio</option>
           </select>
         </label>
         <label>
@@ -3826,9 +3828,6 @@ function _canonicalizeToolName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) return "tool";
   if (trimmed.startsWith("spacecode.")) return trimmed.slice("spacecode.".length);
-  if (!trimmed.startsWith("nemocode.")) return trimmed;
-  const leaf = trimmed.slice("nemocode.".length);
-  if (_LEGACY_MEMORY_TOOL_NAMES.has(leaf)) return `nemo_memory.${leaf}`;
   return trimmed;
 }
 
@@ -3849,16 +3848,26 @@ function HomeMcpEvidence({ tools }: { tools: AgentToolCall[] }) {
   const memoryTools = tools.filter((tool) => _isNemoMemoryToolName(tool.name));
   if (memoryTools.length === 0) return null;
   const completed = memoryTools.filter((tool) => tool.status === "completed");
-  const names = Array.from(new Set(completed.map((tool) => _normalizeToolDisplayName(tool.name)))).slice(0, 3);
-  const skipped = memoryTools.filter((tool) => tool.status === "skipped").length;
+  const skippedTools = memoryTools.filter((tool) => tool.status === "skipped");
+  const failedTools = memoryTools.filter((tool) => tool.status === "failed");
+  const names = Array.from(new Set(completed.map((tool) => _normalizeToolDisplayName(tool.name)))).slice(0, 4);
+  const skipped = skippedTools.length;
+  const failed = failedTools.length;
   const label = completed.length > 0 ? "NEMO MCP verificado" : "NEMO MCP consultado";
   const detail = names.length > 0 ? names.join(" · ") : `${memoryTools.length} llamadas`;
 
   return (
-    <div className="home-chat-mcp-proof" title={`${memoryTools.length} llamadas NEMO MCP${skipped ? `, ${skipped} optimizadas` : ""}`}>
-      <Database size={12} aria-hidden="true" />
-      <strong>{label}</strong>
-      <small>{detail}{skipped ? ` · ${skipped} omitidas por eficiencia` : ""}</small>
+    <div className={`home-chat-mcp-proof ${failed ? "has-failures" : ""}`} title={`${memoryTools.length} llamadas NEMO MCP${skipped ? `, ${skipped} optimizadas` : ""}${failed ? `, ${failed} fallidas` : ""}`}>
+      <div className="mcp-proof-head">
+        <Database size={13} aria-hidden="true" />
+        <strong>{label}</strong>
+        <small>{memoryTools.length} llamadas</small>
+      </div>
+      <div className="mcp-proof-body">
+        <span className="mcp-proof-completed"><CheckCircle2 size={11} />{detail}</span>
+        {skipped > 0 && <span className="mcp-proof-skipped"><Clock3 size={11} />{skipped} optimizadas</span>}
+        {failed > 0 && <span className="mcp-proof-failed"><AlertTriangle size={11} />{failed} fallidas</span>}
+      </div>
     </div>
   );
 }
@@ -4011,7 +4020,7 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
             <Wrench size={13} />
             <div>
               <strong>{_canonicalizeToolName(tool.name)}{tool.source === "inline" ? " (detected)" : ""}</strong>
-              {(tool.alias_name || (tool.name.startsWith("spacecode.") || tool.name.startsWith("nemocode.") ? tool.name : "")) && <small>alias: {tool.alias_name || tool.name}</small>}
+              {(tool.alias_name || (tool.name.startsWith("spacecode.") ? tool.name : "")) && <small>alias: {tool.alias_name || tool.name}</small>}
               <span>{tool.status} / {tool.summary}</span>
             </div>
           </div>

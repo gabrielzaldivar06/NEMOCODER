@@ -3,11 +3,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./main";
+import { buildArtifactLineDiff } from "./components/ArtifactWorkbench";
+import { buildArtifactPromptAttachment } from "./hooks/useGeneratedArtifacts";
 import { planNemoClient } from "./services/planNemoClient";
 
 const statePayload: any = {
   schema_version: 1,
-  product: "Spacecode Mission Control",
+  product: "Space Code Mission Control",
   repo_path: ".",
   runtimes_path: ".nemo-runtimes",
   repos: [],
@@ -226,9 +228,64 @@ beforeEach(() => {
 });
 
 describe("mission-control app", () => {
+  it("builds compact artifact version diffs", () => {
+    const diff = buildArtifactLineDiff({
+      id: "artifact-v1",
+      messageId: "message-1",
+      title: "Canvas",
+      kind: "html",
+      language: "html_artifact",
+      content: "<main>\n<h1>Old</h1>\n</main>",
+      tokenEstimate: 8,
+      version: 1,
+    }, {
+      id: "artifact-v2",
+      messageId: "message-2",
+      title: "Canvas",
+      kind: "html",
+      language: "html_artifact",
+      content: "<main>\n<h1>New</h1>\n<p>Added</p>\n</main>",
+      tokenEstimate: 12,
+      version: 2,
+    });
+
+    expect(diff.changed).toBe(2);
+    expect(diff.added).toBe(1);
+    expect(diff.removed).toBe(0);
+    expect(diff.rows.some((row) => row.kind === "changed" && row.left?.includes("Old") && row.right?.includes("New"))).toBe(true);
+  });
+
+  it("builds artifact attachments with metadata and exact content", () => {
+    const attachment = buildArtifactPromptAttachment({
+      id: "artifact-1",
+      messageId: "message-1",
+      title: "AAA Verification Canvas",
+      kind: "html",
+      language: "html_artifact",
+      content: "<main><h1>Space Code</h1></main>",
+      tokenEstimate: 12,
+      registryId: "artifact-stable-1",
+      contentHash: "abc123ef",
+      version: 2,
+      versionGroup: "group-1",
+      createdAt: "2026-05-11T00:00:00Z",
+      updatedAt: "2026-05-11T01:00:00Z",
+      persisted: true,
+    });
+
+    expect(attachment).toContain("Itera sobre este artifact de Space Code");
+    expect(attachment).toContain("Artifact: AAA Verification Canvas");
+    expect(attachment).toContain("Version: v2");
+    expect(attachment).toContain("Stable ID: artifact-stable-1");
+    expect(attachment).toContain("Hash: abc123ef");
+    expect(attachment).toContain("Contenido actual del artifact:");
+    expect(attachment).toContain("````html_artifact");
+    expect(attachment).toContain("<main><h1>Space Code</h1></main>");
+  });
+
   it("renders the shell without crashing", async () => {
     render(<App />);
-    expect(await screen.findByRole("heading", { name: /Spacecode/i })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Space Code/i })).toBeInTheDocument();
     expect(await screen.findByText(/Agent Runs/i)).toBeInTheDocument();
   });
 
@@ -299,7 +356,7 @@ describe("mission-control app", () => {
     expect((stageCall?.[1] as RequestInit | undefined)?.method).toBe("POST");
   });
 
-  it("routes plan persistence through the Spacecode backend NEMO tool bridge", async () => {
+  it("routes plan persistence through the Space Code backend NEMO tool bridge", async () => {
     await planNemoClient.syncObjectiveToNemo({
       objective_id: "objective-1",
       title: "Persist safely",

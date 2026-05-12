@@ -14,6 +14,50 @@ type UseGeneratedArtifactsOptions = {
   onDraftChange: (objective: string) => void;
 };
 
+const MAX_ATTACHED_ARTIFACT_CHARS = 24000;
+
+function artifactVersionLabel(artifact: GeneratedArtifact | PersistedGeneratedArtifact): string {
+  return "version" in artifact && artifact.version ? `v${artifact.version}` : "draft";
+}
+
+function artifactReferenceId(artifact: GeneratedArtifact | PersistedGeneratedArtifact): string {
+  return "registryId" in artifact && artifact.registryId ? artifact.registryId : artifact.id;
+}
+
+function artifactReferenceHash(artifact: GeneratedArtifact | PersistedGeneratedArtifact): string {
+  return "contentHash" in artifact && artifact.contentHash ? artifact.contentHash : "unindexed";
+}
+
+function artifactUpdatedAt(artifact: GeneratedArtifact | PersistedGeneratedArtifact): string {
+  return "updatedAt" in artifact && artifact.updatedAt ? artifact.updatedAt : "session";
+}
+
+function artifactFenceLanguage(artifact: GeneratedArtifact | PersistedGeneratedArtifact): string {
+  return artifact.language || artifact.kind || "text";
+}
+
+export function buildArtifactPromptAttachment(artifact: GeneratedArtifact | PersistedGeneratedArtifact): string {
+  const content = artifact.content.length > MAX_ATTACHED_ARTIFACT_CHARS
+    ? `${artifact.content.slice(0, MAX_ATTACHED_ARTIFACT_CHARS)}\n\n[artifact truncated at ${MAX_ATTACHED_ARTIFACT_CHARS.toLocaleString()} chars; ask to narrow the edit if needed]`
+    : artifact.content;
+
+  return [
+    `Itera sobre este artifact de Space Code usando el contenido actual como fuente exacta.`,
+    `Artifact: ${artifact.title}`,
+    `Tipo: ${artifact.kind}/${artifact.language}`,
+    `Version: ${artifactVersionLabel(artifact)}`,
+    `Stable ID: ${artifactReferenceId(artifact)}`,
+    `Hash: ${artifactReferenceHash(artifact)}`,
+    `Tokens estimados: ${artifact.tokenEstimate}`,
+    `Actualizado: ${artifactUpdatedAt(artifact)}`,
+    "",
+    "Contenido actual del artifact:",
+    `\`\`\`\`${artifactFenceLanguage(artifact)}`,
+    content,
+    "````",
+  ].join("\n");
+}
+
 export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGeneratedArtifactsOptions) {
   const generatedArtifacts = useMemo(() => collectGeneratedArtifacts(messages), [messages]);
   const [artifacts, setArtifacts] = useState<PersistedGeneratedArtifact[]>(() => loadArtifactRegistry());
@@ -32,8 +76,7 @@ export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGen
   }, [artifacts]);
 
   const attachArtifactToDraft = (artifact: GeneratedArtifact | PersistedGeneratedArtifact) => {
-    const versionLabel = "version" in artifact ? ` v${artifact.version}` : "";
-    const reference = `Itera sobre el artifact "${artifact.title}"${versionLabel} (${artifact.kind}/${artifact.language}, ${artifact.tokenEstimate} tokens).`;
+    const reference = buildArtifactPromptAttachment(artifact);
     onDraftChange(draft.trim() ? `${draft.trim()}\n\n${reference}` : reference);
   };
 
