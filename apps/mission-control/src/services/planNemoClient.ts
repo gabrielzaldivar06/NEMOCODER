@@ -119,7 +119,7 @@ class PlanNemoClient {
           }),
           memory_type: "objective",
           tags: ["spacecode", "planning", "long-term-goal", `objective:${objective.objective_id}`],
-          context: "Spacecode Mission Control objective sync",
+          context: "Space Code Mission Control objective sync",
         },
         "review"
       );
@@ -152,7 +152,7 @@ class PlanNemoClient {
           }),
           memory_type: "plan",
           tags: ["spacecode", "planning", "executable", `plan:${plan.plan_id}`, `objective:${plan.objective_id}`],
-          context: "Spacecode Mission Control execution plan sync",
+          context: "Space Code Mission Control execution plan sync",
         },
         "review"
       );
@@ -190,7 +190,7 @@ class PlanNemoClient {
           }),
           memory_type: step.learnings.length > 0 ? "learning" : "decision",
           tags: ["spacecode", "planning", "step-outcome", `step:${step.step_id}`, `plan:${plan.plan_id}`, `objective:${plan.objective_id}`],
-          context: "Spacecode Mission Control step outcome sync",
+          context: "Space Code Mission Control step outcome sync",
         },
         "review"
       );
@@ -213,7 +213,7 @@ class PlanNemoClient {
           content: JSON.stringify(summary),
           memory_type: "learning",
           tags: ["spacecode", "planning", "completion", "summary", `objective:${summary.objective_id}`, `plan:${summary.plan_id}`],
-          context: "Spacecode Mission Control plan completion summary",
+          context: "Space Code Mission Control plan completion summary",
         },
         "review"
       );
@@ -230,7 +230,7 @@ class PlanNemoClient {
     try {
       await this.callNemoTool(
         "search_memories",
-        { query: "Spacecode completed execution plans", tags_include: ["spacecode", "planning"], limit, compact: true },
+        { query: "Space Code completed execution plans", tags_include: ["spacecode", "planning"], limit, compact: true },
         "review"
       );
     } catch (error) {
@@ -246,7 +246,7 @@ class PlanNemoClient {
     try {
       const result = await this.callNemoTool<{ memories?: Array<{ content?: string; text?: string }> }>(
         "search_memories",
-        { query: `Spacecode plan learnings ${query}`.trim(), tags_include: ["spacecode", "planning", "learning"], limit: 10, compact: true },
+        { query: `Space Code plan learnings ${query}`.trim(), tags_include: ["spacecode", "planning", "learning"], limit: 10, compact: true },
         "review"
       );
       return (result.memories || []).map((memory) => String(memory.content || memory.text || "")).filter(Boolean);
@@ -267,7 +267,7 @@ class PlanNemoClient {
       const result = await this.callNemoTool<{ context?: string; portfolio?: { context?: string }; context_portfolio?: { context?: string } }>(
         "build_context_portfolio",
         {
-          task: "execute Spacecode plan step",
+          task: "execute Space Code plan step",
           topic: "spacecode_mission_control_planning",
           tags_include: ["spacecode", "planning", `plan:${planId}`],
           token_budget: tokenBudget,
