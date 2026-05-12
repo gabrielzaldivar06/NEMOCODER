@@ -3058,7 +3058,7 @@ button { font: inherit; }
 .mission-v2-grid {
   min-height: 720px;
   display: grid;
-  grid-template-columns: minmax(360px, 0.72fr) minmax(560px, 1.28fr) minmax(300px, 0.58fr);
+  grid-template-columns: minmax(286px, 0.72fr) minmax(420px, 1.38fr) minmax(250px, 0.64fr);
   gap: 16px;
   align-items: stretch;
 }
