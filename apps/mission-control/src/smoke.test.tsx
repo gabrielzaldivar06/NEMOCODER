@@ -318,6 +318,35 @@ describe("mission-control app", () => {
     expect(onRemoveArtifact).toHaveBeenCalledWith("artifact-html");
   });
 
+  it("renders multimedia artifacts in the center stage preview", () => {
+    const onSelect = vi.fn();
+    const artifacts = [
+      { ...buildRegistryArtifact("artifact-game", "2026-05-11T03:00:00Z"), kind: "html" as const, language: "html", title: "Playable Canvas", content: "<main><canvas id='game'></canvas><script>window.ready=true;</script></main>" },
+      { ...buildRegistryArtifact("artifact-image", "2026-05-11T02:00:00Z"), kind: "image" as const, language: "image", title: "Concept Frame", content: JSON.stringify({ src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E", alt: "Concept frame", caption: "Frame preview" }) },
+      { ...buildRegistryArtifact("artifact-video", "2026-05-11T01:00:00Z"), kind: "video" as const, language: "video", title: "Gameplay Capture", content: JSON.stringify({ src: "https://example.com/demo.mp4", caption: "Gameplay preview" }) },
+      { ...buildRegistryArtifact("artifact-audio", "2026-05-11T00:00:00Z"), kind: "audio" as const, language: "audio", title: "Sound Pass", content: "https://example.com/sound.mp3" },
+    ];
+
+    render(<ArtifactWorkbench artifacts={artifacts} activeId="artifact-image" onSelect={onSelect} onAttachToPrompt={vi.fn()} onRemoveArtifact={vi.fn()} onToggleFavorite={vi.fn()} renderMarkdown={(content) => <p>{content}</p>} />);
+
+    expect(screen.getByAltText("Concept frame")).toBeInTheDocument();
+    expect(screen.getByText("Frame preview")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Gameplay Capture/i }));
+    expect(onSelect).toHaveBeenCalledWith("artifact-video");
+    cleanup();
+
+    render(<ArtifactWorkbench artifacts={artifacts} activeId="artifact-video" onSelect={vi.fn()} onAttachToPrompt={vi.fn()} onRemoveArtifact={vi.fn()} onToggleFavorite={vi.fn()} renderMarkdown={(content) => <p>{content}</p>} />);
+    expect(document.querySelector("video")?.getAttribute("src")).toBe("https://example.com/demo.mp4");
+    cleanup();
+
+    render(<ArtifactWorkbench artifacts={artifacts} activeId="artifact-audio" onSelect={vi.fn()} onAttachToPrompt={vi.fn()} onRemoveArtifact={vi.fn()} onToggleFavorite={vi.fn()} renderMarkdown={(content) => <p>{content}</p>} />);
+    expect(document.querySelector("audio")?.getAttribute("src")).toBe("https://example.com/sound.mp3");
+    cleanup();
+
+    render(<ArtifactWorkbench artifacts={artifacts} activeId="artifact-game" onSelect={vi.fn()} onAttachToPrompt={vi.fn()} onRemoveArtifact={vi.fn()} onToggleFavorite={vi.fn()} renderMarkdown={(content) => <p>{content}</p>} />);
+    expect(document.querySelector("iframe")?.getAttribute("sandbox")).toBe("allow-scripts");
+  });
+
   it("exposes command dock controls with accessible labels", () => {
     render(<CommandDock draft="Ship the next sprint" provider="subprocess" providerLabel="Local runtime" running={false} queuedPrompt={null} queuedPrompts={[]} onDraftChange={vi.fn()} onSubmit={vi.fn()} onStop={vi.fn()} onProviderChange={vi.fn()} onOpenComposer={vi.fn()} onOpenMemory={vi.fn()} />);
 
@@ -617,6 +646,6 @@ describe("mission-control app", () => {
     fireEvent.click(await screen.findByTitle(/Versionado/i));
     fireEvent.click(await screen.findByRole("button", { name: /^Push$/i }));
 
-    expect(await screen.findByText(/git push failed/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/git push failed/i)).length).toBeGreaterThan(0);
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Braces, Code2, Copy, Download, Eye, FileText, History, Image, Info, Layers3, Paperclip, Pin, Puzzle, Search, Trash2, Zap } from "lucide-react";
+import { Braces, Code2, Copy, Download, Eye, FileText, Film, Headphones, History, Image, Info, Layers3, Paperclip, Pin, Puzzle, Search, Trash2, Zap } from "lucide-react";
 import { buildArtifactLineDiff, type GeneratedArtifact, type GeneratedArtifactKind } from "../services/artifactUtils";
 
 type ArtifactViewMode = "preview" | "source" | "inspect" | "compare";
@@ -28,7 +28,7 @@ function artifactSrcDoc(artifact: GeneratedArtifact): string {
 }
 
 function isRenderableArtifact(artifact: GeneratedArtifact | undefined): boolean {
-  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "image_request"].includes(artifact.kind));
+  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "image", "video", "audio", "image_request"].includes(artifact.kind));
 }
 
 function artifactFileExtension(artifact: GeneratedArtifact): string {
@@ -36,6 +36,9 @@ function artifactFileExtension(artifact: GeneratedArtifact): string {
   if (artifact.kind === "svg") return "svg";
   if (artifact.kind === "markdown") return "md";
   if (artifact.kind === "json") return "json";
+  if (artifact.kind === "image") return "media";
+  if (artifact.kind === "video") return "mp4";
+  if (artifact.kind === "audio") return "mp3";
   if (artifact.kind === "mermaid") return "mmd";
   if (artifact.kind === "react") return "jsx";
   return artifact.language && artifact.language !== "text" ? artifact.language.replace(/[^a-z0-9]+/gi, "").toLowerCase() || "txt" : "txt";
@@ -46,6 +49,9 @@ function artifactMimeType(artifact: GeneratedArtifact): string {
   if (artifact.kind === "svg") return "image/svg+xml";
   if (artifact.kind === "markdown") return "text/markdown";
   if (artifact.kind === "json") return "application/json";
+  if (artifact.kind === "image") return "image/*";
+  if (artifact.kind === "video") return "video/mp4";
+  if (artifact.kind === "audio") return "audio/mpeg";
   return "text/plain";
 }
 
@@ -60,6 +66,9 @@ function artifactLineCount(artifact: GeneratedArtifact): number {
 
 function artifactKindIcon(kind: GeneratedArtifactKind): ReactNode {
   if (kind === "image_request") return <Image size={15} />;
+  if (kind === "image") return <Image size={15} />;
+  if (kind === "video") return <Film size={15} />;
+  if (kind === "audio") return <Headphones size={15} />;
   if (kind === "json") return <Braces size={15} />;
   if (kind === "markdown") return <FileText size={15} />;
   if (kind === "html" || kind === "svg" || kind === "react") return <Layers3 size={15} />;
@@ -162,6 +171,38 @@ function ImageRequestPreview({ artifact }: { artifact: GeneratedArtifact }) {
     <button onClick={generateImage} disabled={status === "running"} title="Generar imagen local"><Zap size={13} /><span>{status === "running" ? "Generating" : status === "done" ? "Regenerate" : "Generate"}</span></button>
     {error && <small>{error}</small>}
   </div>;
+}
+
+function parseMediaArtifact(content: string): { src: string; poster?: string; alt?: string; caption?: string; type?: string } {
+  const trimmed = content.trim();
+  try {
+    const parsed = JSON.parse(trimmed) as { src?: string; url?: string; poster?: string; alt?: string; caption?: string; type?: string };
+    return { src: String(parsed.src || parsed.url || ""), poster: parsed.poster, alt: parsed.alt, caption: parsed.caption, type: parsed.type };
+  } catch {
+    return { src: trimmed, caption: trimmed.startsWith("data:") ? "Embedded media artifact" : trimmed };
+  }
+}
+
+function MediaPreview({ artifact }: { artifact: GeneratedArtifact }) {
+  const media = parseMediaArtifact(artifact.content);
+  if (!media.src) return <pre><code>{artifact.content}</code></pre>;
+  if (artifact.kind === "video") {
+    return <figure className="artifact-media artifact-media-video">
+      <video controls playsInline poster={media.poster} src={media.src} title={artifact.title} />
+      {media.caption && <figcaption>{media.caption}</figcaption>}
+    </figure>;
+  }
+  if (artifact.kind === "audio") {
+    return <figure className="artifact-media artifact-media-audio">
+      <div className="artifact-audio-orb"><Headphones size={26} /></div>
+      <audio controls src={media.src} title={artifact.title} />
+      {media.caption && <figcaption>{media.caption}</figcaption>}
+    </figure>;
+  }
+  return <figure className="artifact-media artifact-media-image">
+    <img src={media.src} alt={media.alt || artifact.title} />
+    {media.caption && <figcaption>{media.caption}</figcaption>}
+  </figure>;
 }
 
 function MermaidPreview({ content }: { content: string }) {
@@ -315,6 +356,8 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
           <div className={`artifact-stage ${viewMode}`}>
             {viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
               <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={artifactSrcDoc(activeArtifact)} />
+            ) : viewMode === "preview" && (activeArtifact.kind === "image" || activeArtifact.kind === "video" || activeArtifact.kind === "audio") ? (
+              <MediaPreview artifact={activeArtifact} />
             ) : viewMode === "preview" && activeArtifact.kind === "markdown" ? (
               <div className="artifact-markdown">{renderMarkdown(activeArtifact.content)}</div>
             ) : viewMode === "preview" && activeArtifact.kind === "mermaid" ? (

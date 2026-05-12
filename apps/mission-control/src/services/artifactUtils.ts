@@ -1,4 +1,4 @@
-export type GeneratedArtifactKind = "html" | "svg" | "markdown" | "json" | "mermaid" | "react" | "image_request" | "code";
+export type GeneratedArtifactKind = "html" | "svg" | "markdown" | "json" | "mermaid" | "react" | "image" | "video" | "audio" | "image_request" | "code";
 
 export type GeneratedArtifact = {
   id: string;
@@ -55,6 +55,9 @@ export function artifactKindFromBlock(language: string, content: string): Genera
   if (["json", "jsonc"].includes(normalized)) return "json";
   if (normalized === "mermaid") return "mermaid";
   if (["react_artifact", "jsx", "tsx"].includes(normalized)) return "react";
+  if (["image", "img", "png", "jpg", "jpeg", "gif", "webp", "avif"].includes(normalized)) return "image";
+  if (["video", "mp4", "webm", "mov"].includes(normalized)) return "video";
+  if (["audio", "mp3", "wav", "ogg", "m4a"].includes(normalized)) return "audio";
   if (normalized === "image_request") return "image_request";
   return "code";
 }
@@ -62,7 +65,7 @@ export function artifactKindFromBlock(language: string, content: string): Genera
 function artifactTitle(kind: GeneratedArtifactKind, language: string, content: string, index: number): string {
   const titleMatch = content.match(ARTIFACT_TITLE_REGEX);
   if (titleMatch?.[1]) return titleMatch[1].trim();
-  const label = kind === "html" ? "Interactive HTML" : kind === "svg" ? "SVG Scene" : kind === "markdown" ? "Document" : kind === "json" ? "Data" : kind === "mermaid" ? "Diagram" : kind === "react" ? "React Component" : kind === "image_request" ? "Image Request" : "Code";
+  const label = kind === "html" ? "Interactive HTML" : kind === "svg" ? "SVG Scene" : kind === "markdown" ? "Document" : kind === "json" ? "Data" : kind === "mermaid" ? "Diagram" : kind === "react" ? "React Component" : kind === "image" ? "Image" : kind === "video" ? "Video" : kind === "audio" ? "Audio" : kind === "image_request" ? "Image Request" : "Code";
   const suffix = language && language !== kind ? ` / ${language}` : "";
   return `${label}${suffix} ${index + 1}`;
 }
@@ -96,7 +99,7 @@ export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): Ge
 export function stripGeneratedArtifactBlocks(content: string): string {
   const stripped = content.replace(/```([^\n`]*)\n([\s\S]*?)```/g, (block, language, body) => {
     const kind = artifactKindFromBlock(String(language).trim().split(/\s+/)[0] || "text", String(body));
-    return ["html", "svg", "markdown", "json", "mermaid", "react", "image_request", "code"].includes(kind) ? "" : block;
+    return ["html", "svg", "markdown", "json", "mermaid", "react", "image", "video", "audio", "image_request", "code"].includes(kind) ? "" : block;
   }).trim();
   return stripped || "Artifact generado.";
 }
