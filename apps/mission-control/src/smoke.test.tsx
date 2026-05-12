@@ -329,6 +329,10 @@ describe("mission-control app", () => {
 
     render(<ArtifactWorkbench artifacts={artifacts} activeId="artifact-image" onSelect={onSelect} onAttachToPrompt={vi.fn()} onRemoveArtifact={vi.fn()} onToggleFavorite={vi.fn()} renderMarkdown={(content) => <p>{content}</p>} />);
 
+    expect(screen.getByLabelText(/Live render telemetry/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Artifact runtime deck/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Active artifact source preview/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Artifact performance telemetry/i)).toBeInTheDocument();
     expect(screen.getByAltText("Concept frame")).toBeInTheDocument();
     expect(screen.getByText("Frame preview")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Gameplay Capture/i }));
@@ -345,6 +349,21 @@ describe("mission-control app", () => {
 
     render(<ArtifactWorkbench artifacts={artifacts} activeId="artifact-game" onSelect={vi.fn()} onAttachToPrompt={vi.fn()} onRemoveArtifact={vi.fn()} onToggleFavorite={vi.fn()} renderMarkdown={(content) => <p>{content}</p>} />);
     expect(document.querySelector("iframe")?.getAttribute("sandbox")).toBe("allow-scripts");
+  });
+
+  it("keeps artifact runtime telemetry visible in standby", () => {
+    render(<ArtifactWorkbench artifacts={[]} activeId={null} onSelect={vi.fn()} onAttachToPrompt={vi.fn()} onRemoveArtifact={vi.fn()} onToggleFavorite={vi.fn()} renderMarkdown={(content) => <p>{content}</p>} />);
+
+    expect(screen.getByLabelText(/Live render telemetry/i)).toHaveTextContent(/standby/i);
+    expect(screen.getByLabelText(/Standby artifact canvas/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/NEMO live render standby scene/i)).toBeInTheDocument();
+    expect(screen.getByText(/Mission render armed/i)).toBeInTheDocument();
+    expect(screen.getByText(/shader graph/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Artifact runtime deck/i)).toBeInTheDocument();
+    expect(screen.getByText(/Awaiting generated artifact/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Artifact performance telemetry/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle(/Center target/i));
+    expect(screen.getByText(/Target centered/i)).toBeInTheDocument();
   });
 
   it("exposes command dock controls with accessible labels", () => {
@@ -484,6 +503,45 @@ describe("mission-control app", () => {
 
     expect(await screen.findByLabelText("NEMO memory orbit copy")).toBeInTheDocument();
     expect(await screen.findByRole("complementary", { name: /Mission telemetry/i })).toBeInTheDocument();
+  });
+
+  it("collapses and restores home cockpit panels from manual controls", async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByLabelText(/Collapse telemetry/i));
+    expect(await screen.findByRole("button", { name: /Telemetry/i })).toBeInTheDocument();
+    expect(document.querySelector(".mission-v2-grid")?.className).toContain("collapse-telemetry");
+
+    fireEvent.click(screen.getByRole("button", { name: /Telemetry/i }));
+    expect(await screen.findByRole("complementary", { name: /Mission telemetry/i })).toBeInTheDocument();
+  });
+
+  it("applies LLM layout actions to focus the artifact stage", async () => {
+    window.localStorage.setItem("mission-control-chat-session-v1", JSON.stringify({
+      agentMessages: [{
+        id: "assistant-layout-1",
+        role: "assistant",
+        content: "Focusing the artifact stage.",
+        actions: [{
+          id: "layout-focus-artifact",
+          kind: "layout",
+          label: "Focus artifact",
+          summary: "Collapse side panels and prioritize the artifact canvas",
+          payload: { mode: "focus_artifact" },
+        }],
+      }],
+      queuedAgentPrompts: [],
+    }));
+
+    render(<App />);
+
+    const layoutControls = await screen.findByLabelText(/Mission layout controls/i);
+    await waitFor(() => expect(layoutControls).toHaveAttribute("data-source", "llm"));
+    expect(document.querySelector(".mission-v2-grid")?.className).toContain("mode-focus-artifact");
+    expect(screen.getAllByRole("button", { name: /Timeline/i }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /Telemetry/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/Artifacts generados/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Focus artifact command dock/i)).toBeInTheDocument();
   });
 
   it("starts handoff with NEMO MCP settings and stable local validation", async () => {

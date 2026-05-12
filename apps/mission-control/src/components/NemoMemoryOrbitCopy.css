@@ -2,13 +2,15 @@
   position: relative;
   min-height: 280px;
   overflow: hidden;
-  border: 1px solid rgba(94, 234, 212, 0.18);
+  border: 1px solid rgba(45, 212, 230, 0.18);
   border-radius: 8px;
   background:
-    radial-gradient(circle at 22% 18%, rgba(177, 140, 255, 0.14), transparent 34%),
-    radial-gradient(circle at 78% 72%, rgba(45, 212, 191, 0.1), transparent 32%),
+    radial-gradient(circle at 22% 18%, rgba(177, 140, 255, 0.16), transparent 32%),
+    radial-gradient(circle at 78% 72%, rgba(20, 184, 197, 0.13), transparent 32%),
+    radial-gradient(circle at 50% 50%, rgba(0, 214, 232, 0.08), transparent 30%),
     linear-gradient(180deg, rgba(5, 16, 15, 0.98), rgba(2, 6, 6, 0.98));
   color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(230, 251, 255, 0.04), inset 0 0 44px rgba(0, 214, 232, 0.04), 0 18px 46px rgba(0, 0, 0, 0.3);
 }
 
 .nemo-orbit-copy::before {
@@ -17,11 +19,12 @@
   inset: 0;
   pointer-events: none;
   background-image:
-    radial-gradient(circle, rgba(232, 255, 247, 0.18) 0 1px, transparent 1px),
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-  background-position: 0 0, 0 0;
-  background-size: 53px 53px, 100% 7px;
-  opacity: 0.28;
+    radial-gradient(circle, rgba(230, 251, 255, 0.22) 0 1px, transparent 1px),
+    radial-gradient(circle, rgba(20, 184, 197, 0.18) 0 1px, transparent 1px),
+    linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+  background-position: 0 0, 21px 17px, 0 0;
+  background-size: 53px 53px, 73px 73px, 100% 7px;
+  opacity: 0.34;
 }
 
 .nemo-orbit-copy__hud {
@@ -32,7 +35,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  border-bottom: 1px solid rgba(94, 234, 212, 0.12);
+  border-bottom: 1px solid rgba(45, 212, 230, 0.12);
   background: rgba(2, 8, 7, 0.54);
   backdrop-filter: blur(18px);
 }
@@ -42,7 +45,7 @@
   height: 8px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 0 rgba(25, 242, 168, 0.76);
+  box-shadow: 0 0 0 0 rgba(0, 214, 232, 0.76);
   animation: nemo-orbit-pulse 2s ease-in-out infinite;
 }
 
@@ -51,7 +54,7 @@
   font-weight: 800;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: #d9fff6;
+  color: #d8f7ff;
 }
 
 .nemo-orbit-copy__stats {
@@ -79,7 +82,7 @@
   height: 1px;
   transform-origin: left center;
   transform: rotate(var(--edge-angle)) translateY(var(--edge-offset));
-  background: linear-gradient(90deg, transparent, rgba(45, 212, 191, var(--edge-alpha)), transparent);
+  background: linear-gradient(90deg, transparent, rgba(20, 184, 197, var(--edge-alpha)), transparent);
 }
 
 .nemo-orbit-copy__core {
@@ -87,11 +90,11 @@
   width: 76px;
   height: 76px;
   border-radius: 999px;
-  border: 1px solid rgba(232, 255, 247, 0.18);
+  border: 1px solid rgba(230, 251, 255, 0.18);
   background:
     radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.82), transparent 9%),
-    radial-gradient(circle at 50% 50%, rgba(25, 242, 168, 0.24), rgba(2, 6, 6, 0.64) 66%);
-  box-shadow: 0 0 42px rgba(25, 242, 168, 0.12), inset 0 0 28px rgba(25, 242, 168, 0.1);
+    radial-gradient(circle at 50% 50%, rgba(0, 214, 232, 0.32), rgba(2, 6, 6, 0.64) 66%);
+  box-shadow: 0 0 48px rgba(0, 214, 232, 0.16), inset 0 0 34px rgba(0, 214, 232, 0.12);
 }
 
 .nemo-orbit-copy__node {
@@ -163,7 +166,7 @@
   gap: 5px;
   min-height: 22px;
   padding: 2px 7px;
-  border: 1px solid rgba(94, 234, 212, 0.14);
+  border: 1px solid rgba(45, 212, 230, 0.14);
   border-radius: 999px;
   background: rgba(2, 8, 7, 0.6);
   color: var(--muted);
@@ -179,7 +182,7 @@
 }
 
 @keyframes nemo-orbit-pulse {
-  50% { box-shadow: 0 0 0 8px rgba(25, 242, 168, 0); }
+  50% { box-shadow: 0 0 0 8px rgba(0, 214, 232, 0); }
 }
 
 @keyframes nemo-orbit-breathe {

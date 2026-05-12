@@ -157,7 +157,7 @@ type RenderedToolCall = AgentToolCall & {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -171,6 +171,14 @@ type AgentMessage = {
   agent_trace?: AgentTraceEvent[];
   actions?: AgentAction[];
 };
+type HomePanelKey = "timeline" | "artifact" | "telemetry";
+type HomeLayoutMode = "full-cockpit" | "focus-artifact" | "focus-chat" | "focus-telemetry";
+type HomeLayoutCommand = {
+  mode?: HomeLayoutMode;
+  collapse?: HomePanelKey[];
+  expand?: HomePanelKey[];
+};
+type HomePanelState = Record<HomePanelKey, boolean>;
 type AutonomyMode = "manual" | "trusted" | "aggressive";
 type AgentMessageResult = { message: AgentMessage };
 type DiffRow = {
@@ -263,7 +271,7 @@ const NEMO_ORBIT_TYPE_COLORS: Record<string, string> = {
   fact: "#00b4d8",
   evidence: "#67E8F9",
   feedback: "#C084FC",
-  portfolio: "#19f2a8",
+  portfolio: "#00d6e8",
 };
 
 function colorForNemoMemory(type: string): string {
@@ -1471,6 +1479,11 @@ export function App() {
   };
 
   const runAgentAction = (action: AgentAction) => {
+    if (action.kind === "layout") {
+      setActiveSection("home");
+      setStatus(`Layout command queued: ${action.label}`);
+      return;
+    }
     if (action.kind === "apply") {
       if (!window.confirm("Apply the selected reviewed run to the workspace?")) return;
       setStatus("Applying agent-proposed action");
@@ -2224,7 +2237,7 @@ export function App() {
   ];
 
   return (
-    <main className="ide-shell">
+    <main className={`ide-shell section-${activeSection}`}>
       <aside className="activity-bar" aria-label="Primary navigation">
         <div className="activity-brand" aria-hidden="true"><Bot size={24} /></div>
         <nav className="activity-nav" aria-label="Primary sections">
@@ -2555,7 +2568,48 @@ export function App() {
   );
 }
 
+function normalizeHomeLayoutMode(value: unknown): HomeLayoutMode | undefined {
+  const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
+  if (["full-cockpit", "focus-artifact", "focus-chat", "focus-telemetry"].includes(normalized)) return normalized as HomeLayoutMode;
+  return undefined;
+}
+
+function normalizeHomePanel(value: unknown): HomePanelKey | undefined {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "timeline" || normalized === "chat" || normalized === "conversation") return "timeline";
+  if (normalized === "artifact" || normalized === "canvas" || normalized === "stage") return "artifact";
+  if (normalized === "telemetry" || normalized === "memory" || normalized === "right") return "telemetry";
+  return undefined;
+}
+
+function normalizeHomePanels(value: unknown): HomePanelKey[] {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(/[ ,|]+/) : [];
+  return Array.from(new Set(values.map(normalizeHomePanel).filter(Boolean) as HomePanelKey[]));
+}
+
+function homeLayoutCommandFromPayload(payload: Record<string, unknown>): HomeLayoutCommand | null {
+  const mode = normalizeHomeLayoutMode(payload.layout_mode ?? payload.mode ?? payload.view);
+  const collapse = normalizeHomePanels(payload.collapse ?? payload.collapsed_panels ?? payload.hide);
+  const expand = normalizeHomePanels(payload.expand ?? payload.expanded_panels ?? payload.show);
+  if (!mode && collapse.length === 0 && expand.length === 0) return null;
+  return { mode, collapse, expand };
+}
+
+function latestHomeLayoutCommand(messages: AgentMessage[]): { command: HomeLayoutCommand; signature: string } | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    const action = [...(message.actions ?? [])].reverse().find((candidate) => candidate.kind === "layout" || (candidate.kind === "pc_control" && String(candidate.payload.mode || "").toLowerCase() === "layout"));
+    const command = action ? homeLayoutCommandFromPayload(action.payload) : null;
+    if (command) return { command, signature: `${message.id}:${action?.id}:${JSON.stringify(command)}` };
+  }
+  return null;
+}
+
 function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void }) {
+  const [layoutMode, setLayoutMode] = useState<HomeLayoutMode>("full-cockpit");
+  const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: false, telemetry: false });
+  const [layoutSource, setLayoutSource] = useState<string>("manual");
+  const appliedLayoutCommandRef = useRef<string>("");
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
   const { artifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite } = useGeneratedArtifacts({ messages, draft, onDraftChange });
   const atomCount = nemoState?.health.atom_count ?? 0;
@@ -2574,6 +2628,75 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const activeRun = blockedReviewRuns[0] ?? state.approval_queue[0] ?? state.runs[0];
   const orbitNodes = buildNemoOrbitNodes(nemoState, memoryKpis?.atom_count ?? atomCount, evidenceCount, feedbackCount, contextLabel);
   const orbitEdges = buildNemoOrbitEdges(orbitNodes);
+  const panelLabels: Record<HomePanelKey, string> = { timeline: "Timeline", artifact: "Artifact", telemetry: "Telemetry" };
+  const shouldShowFocusDock = layoutMode === "focus-artifact" && collapsedPanels.timeline;
+  const gridClassName = [
+    "mission-v2-grid",
+    `mode-${layoutMode}`,
+    shouldShowFocusDock ? "has-focus-dock" : "",
+    collapsedPanels.timeline ? "collapse-timeline" : "",
+    collapsedPanels.artifact ? "collapse-artifact" : "",
+    collapsedPanels.telemetry ? "collapse-telemetry" : "",
+  ].filter(Boolean).join(" ");
+
+  const applyLayoutCommand = (command: HomeLayoutCommand, source: string) => {
+    if (command.mode) setLayoutMode(command.mode);
+    setCollapsedPanels((current) => {
+      const next = { ...current };
+      for (const panel of command.collapse ?? []) next[panel] = true;
+      for (const panel of command.expand ?? []) next[panel] = false;
+      if (command.mode === "full-cockpit") {
+        next.timeline = false;
+        next.artifact = false;
+        next.telemetry = false;
+      }
+      if (command.mode === "focus-artifact") {
+        next.timeline = true;
+        next.artifact = false;
+        next.telemetry = true;
+      }
+      if (command.mode === "focus-chat") {
+        next.timeline = false;
+        next.artifact = true;
+        next.telemetry = true;
+      }
+      if (command.mode === "focus-telemetry") {
+        next.timeline = true;
+        next.artifact = true;
+        next.telemetry = false;
+      }
+      return next;
+    });
+    setLayoutSource(source);
+  };
+
+  const togglePanel = (panel: HomePanelKey) => {
+    setCollapsedPanels((current) => ({ ...current, [panel]: !current[panel] }));
+    setLayoutMode("full-cockpit");
+    setLayoutSource("manual");
+  };
+
+  useEffect(() => {
+    const nextCommand = latestHomeLayoutCommand(messages);
+    if (!nextCommand || nextCommand.signature === appliedLayoutCommandRef.current) return;
+    appliedLayoutCommandRef.current = nextCommand.signature;
+    applyLayoutCommand(nextCommand.command, "llm");
+  }, [messages]);
+
+  const commandDockElement = <CommandDock
+    draft={draft}
+    provider={provider}
+    providerLabel={providerLabel}
+    running={running}
+    queuedPrompt={queuedPrompt}
+    queuedPrompts={queuedPrompts}
+    onDraftChange={onDraftChange}
+    onSubmit={onSubmit}
+    onStop={onStop}
+    onProviderChange={onProviderChange}
+    onOpenComposer={onOpenComposer}
+    onOpenMemory={onOpenMemory}
+  />;
 
   return (
     <section className="mission-home mission-home-v2">
@@ -2589,6 +2712,11 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
           <span><b>Artifacts</b>{artifacts.length}</span>
           <span><b>Queue</b>{queueCount}</span>
         </div>
+        <div className="mission-layout-controls" aria-label="Mission layout controls" data-source={layoutSource}>
+          <button className={layoutMode === "full-cockpit" ? "active" : ""} onClick={() => applyLayoutCommand({ mode: "full-cockpit" }, "manual")} title="Full cockpit"><PanelBottom size={12} /><span>All</span></button>
+          <button className={layoutMode === "focus-artifact" ? "active" : ""} onClick={() => applyLayoutCommand({ mode: "focus-artifact" }, "manual")} title="Focus artifact"><Puzzle size={12} /><span>Stage</span></button>
+          <button className={layoutMode === "focus-chat" ? "active" : ""} onClick={() => applyLayoutCommand({ mode: "focus-chat" }, "manual")} title="Focus conversation"><MessageSquareText size={12} /><span>Chat</span></button>
+        </div>
         <div className="mission-session-actions" aria-label="Controles de sesión">
           <button onClick={onStartNewChat} title="Nuevo chat"><MessageSquarePlus size={13} /></button>
           <button onClick={onArchiveChat} title="Archivar chat"><Archive size={13} /></button>
@@ -2596,64 +2724,67 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
         </div>
         <button className="mission-v2-steer" onClick={() => onSubmit("steer")} disabled={!canSendDraft}><Wrench size={13} /> Steer</button>
       </div>
-      <div className="mission-v2-grid">
-        <MissionTimeline
-          messages={messages}
-          running={running}
-          queuedPrompt={queuedPrompt}
-          cleanAssistantContent={(content) => parseAgentMessageDecorations(content).cleanedContent}
-          renderRichText={(content) => <MessageRichText content={content} animate={false} compact />}
-          renderMcpEvidence={(tools) => <HomeMcpEvidence tools={tools as AgentToolCall[]} />}
-          liveStatus={<AgentLiveStatus busy={running} queuedPrompt={queuedPrompt} messages={messages} compact />}
-          commandDock={<CommandDock
-            draft={draft}
-            provider={provider}
-            providerLabel={providerLabel}
-            running={running}
-            queuedPrompt={queuedPrompt}
-            queuedPrompts={queuedPrompts}
-            onDraftChange={onDraftChange}
-            onSubmit={onSubmit}
-            onStop={onStop}
-            onProviderChange={onProviderChange}
-            onOpenComposer={onOpenComposer}
-            onOpenMemory={onOpenMemory}
-          />}
-        />
-
-        <ArtifactWorkbench
-          artifacts={artifacts}
-          activeId={activeArtifactId}
-          onSelect={setActiveArtifactId}
-          onAttachToPrompt={attachArtifactToDraft}
-          onRemoveArtifact={removeArtifact}
-          onToggleFavorite={toggleFavorite}
-          renderMarkdown={(content) => <MessageRichText content={content} animate={false} compact />}
-        />
-
-        <div className="mission-right-rail">
-          <NemoMemoryOrbitCopy nodes={orbitNodes} edges={orbitEdges} status={nemoState?.health.status ?? "snapshot"} onSelectNode={onOpenMemory} />
-          <TelemetryColumn
-            activeRun={activeRun}
-            visibleQueue={state.approval_queue}
-            totalRuns={totalRuns}
-            readyRuns={readyRuns}
-            blockedRuns={blockedRuns}
-            queueCount={queueCount}
-            running={running}
-            contextLabel={contextLabel}
-            memoryAtomCount={memoryKpis?.atom_count ?? atomCount}
-            evidenceCount={evidenceCount}
-            feedbackCount={feedbackCount}
-            sourceReads={sourceReads}
-            sourceCacheHitRate={sourceCacheHitRate}
-            status={status}
-            onSelectRun={onSelectRun}
-            onOpenMemory={onOpenMemory}
-            onRefreshCognitiveStats={onRefreshCognitiveStats}
-            onRefreshMissionStats={onRefreshMissionStats}
-          />
+      <div className={gridClassName} data-layout-source={layoutSource} data-layout-mode={layoutMode}>
+        <div className={`mission-panel-slot timeline ${collapsedPanels.timeline ? "collapsed" : "expanded"}`} data-panel="timeline">
+          {collapsedPanels.timeline ? <button className="mission-panel-restore" onClick={() => togglePanel("timeline")} title="Expand timeline"><MessageSquareText size={16} /><span>{panelLabels.timeline}</span></button> : <>
+            <button className="mission-panel-collapse" onClick={() => togglePanel("timeline")} title="Collapse timeline" aria-label="Collapse timeline"><MessageSquareText size={13} /></button>
+            <MissionTimeline
+              messages={messages}
+              running={running}
+              queuedPrompt={queuedPrompt}
+              cleanAssistantContent={(content) => parseAgentMessageDecorations(content).cleanedContent}
+              renderRichText={(content) => <MessageRichText content={content} animate={false} compact />}
+              renderMcpEvidence={(tools) => <HomeMcpEvidence tools={tools as AgentToolCall[]} />}
+              liveStatus={<AgentLiveStatus busy={running} queuedPrompt={queuedPrompt} messages={messages} compact />}
+              commandDock={commandDockElement}
+            />
+          </>}
         </div>
+
+        <div className={`mission-panel-slot artifact ${collapsedPanels.artifact ? "collapsed" : "expanded"}`} data-panel="artifact">
+          {collapsedPanels.artifact ? <button className="mission-panel-restore" onClick={() => togglePanel("artifact")} title="Expand artifact studio"><Puzzle size={16} /><span>{panelLabels.artifact}</span></button> : <>
+            <button className="mission-panel-collapse" onClick={() => togglePanel("artifact")} title="Collapse artifact studio" aria-label="Collapse artifact studio"><Puzzle size={13} /></button>
+            <ArtifactWorkbench
+              artifacts={artifacts}
+              activeId={activeArtifactId}
+              onSelect={setActiveArtifactId}
+              onAttachToPrompt={attachArtifactToDraft}
+              onRemoveArtifact={removeArtifact}
+              onToggleFavorite={toggleFavorite}
+              renderMarkdown={(content) => <MessageRichText content={content} animate={false} compact />}
+            />
+          </>}
+        </div>
+
+        <div className={`mission-panel-slot telemetry ${collapsedPanels.telemetry ? "collapsed" : "expanded"}`} data-panel="telemetry">
+          {collapsedPanels.telemetry ? <button className="mission-panel-restore" onClick={() => togglePanel("telemetry")} title="Expand telemetry"><Database size={16} /><span>{panelLabels.telemetry}</span></button> : <>
+            <button className="mission-panel-collapse" onClick={() => togglePanel("telemetry")} title="Collapse telemetry" aria-label="Collapse telemetry"><Database size={13} /></button>
+            <div className="mission-right-rail">
+              <NemoMemoryOrbitCopy nodes={orbitNodes} edges={orbitEdges} status={nemoState?.health.status ?? "snapshot"} onSelectNode={onOpenMemory} />
+              <TelemetryColumn
+                activeRun={activeRun}
+                visibleQueue={state.approval_queue}
+                totalRuns={totalRuns}
+                readyRuns={readyRuns}
+                blockedRuns={blockedRuns}
+                queueCount={queueCount}
+                running={running}
+                contextLabel={contextLabel}
+                memoryAtomCount={memoryKpis?.atom_count ?? atomCount}
+                evidenceCount={evidenceCount}
+                feedbackCount={feedbackCount}
+                sourceReads={sourceReads}
+                sourceCacheHitRate={sourceCacheHitRate}
+                status={status}
+                onSelectRun={onSelectRun}
+                onOpenMemory={onOpenMemory}
+                onRefreshCognitiveStats={onRefreshCognitiveStats}
+                onRefreshMissionStats={onRefreshMissionStats}
+              />
+            </div>
+          </>}
+        </div>
+        {shouldShowFocusDock && <div className="mission-focus-dock" aria-label="Focus artifact command dock">{commandDockElement}</div>}
       </div>
     </section>
   );
@@ -4173,7 +4304,7 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
       {message.actions && message.actions.length > 0 && <div className="agent-actions">
         {message.actions.map((action) => (
           <button className={action.kind} onClick={() => onRunAction(action)} title={action.summary} key={action.id}>
-            {action.kind === "apply" ? <CheckCircle2 size={14} /> : <Play size={14} />}
+            {action.kind === "apply" ? <CheckCircle2 size={14} /> : action.kind === "layout" ? <PanelBottom size={14} /> : <Play size={14} />}
             {action.label}
           </button>
         ))}
