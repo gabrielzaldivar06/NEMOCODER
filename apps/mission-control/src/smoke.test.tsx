@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./main";
 import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
 import { CommandDock } from "./components/CommandDock";
+import { MissionTimeline } from "./components/MissionTimeline";
 import { buildArtifactPromptAttachment } from "./hooks/useGeneratedArtifacts";
 import { buildArtifactLineDiff } from "./services/artifactUtils";
 import { removeArtifactFromRegistry, toggleArtifactFavorite, type PersistedGeneratedArtifact } from "./services/artifactRegistry";
@@ -302,6 +303,27 @@ describe("mission-control app", () => {
     expect(screen.getByLabelText(/Attach files/i)).toHaveAttribute("type", "file");
     expect(screen.getByLabelText(/Agent runtime mode/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Enviar objetivo/i })).toBeInTheDocument();
+  });
+
+  it("renders mission timeline node rail states", () => {
+    render(<MissionTimeline
+      messages={[
+        { id: "user-1", role: "user", content: "Start the AAA sprint" },
+        { id: "assistant-1", role: "assistant", content: "Working with NEMO context" },
+      ]}
+      running
+      queuedPrompt={null}
+      cleanAssistantContent={(content) => content}
+      renderRichText={(content) => <p>{content}</p>}
+      renderMcpEvidence={() => null}
+      liveStatus={<span>live</span>}
+      commandDock={<div />}
+    />);
+
+    expect(screen.getByRole("region", { name: /Mission timeline/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/User event 1 of 2/i)).toHaveAttribute("data-state", "settled");
+    expect(screen.getByLabelText(/Space Code event 2 of 2/i)).toHaveAttribute("data-state", "active");
+    expect(screen.getByText("active")).toBeInTheDocument();
   });
 
   it("builds compact artifact version diffs", () => {

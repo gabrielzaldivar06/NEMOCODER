@@ -2833,33 +2833,62 @@ button { font: inherit; }
   display: grid;
   align-content: start;
   gap: 14px;
-  padding: 16px 16px 16px 30px;
+  padding: 16px 16px 16px 28px;
 }
 .mission-events::before {
   content: "";
   position: absolute;
-  left: 18px;
-  top: 12px;
-  bottom: 12px;
-  width: 1px;
-  background: linear-gradient(180deg, transparent, rgba(25, 242, 168, 0.55), rgba(124, 58, 237, 0.38), transparent);
+  left: 36px;
+  top: 22px;
+  bottom: 18px;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(25, 242, 168, 0.08), rgba(25, 242, 168, 0.58) 34%, rgba(96, 165, 250, 0.42) 68%, rgba(124, 58, 237, 0.12));
+  box-shadow: 0 0 18px rgba(25, 242, 168, 0.12);
 }
 .mission-event {
   position: relative;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 12px;
 }
-.mission-event-node { position: relative; z-index: 1; display: grid; place-items: start center; padding-top: 12px; }
+.mission-event::before {
+  content: "";
+  position: absolute;
+  left: 31px;
+  top: 20px;
+  width: 15px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(25, 242, 168, 0.4), rgba(25, 242, 168, 0.02));
+}
+.mission-event-node { position: relative; z-index: 1; display: grid; place-items: start center; padding-top: 9px; }
 .mission-event-node span {
-  width: 11px;
-  height: 11px;
+  width: 17px;
+  height: 17px;
   border-radius: 999px;
-  border: 1px solid rgba(25, 242, 168, 0.7);
+  border: 1px solid rgba(25, 242, 168, 0.76);
   background: #020807;
-  box-shadow: 0 0 0 4px rgba(25, 242, 168, 0.08), 0 0 18px rgba(25, 242, 168, 0.36);
+  box-shadow: 0 0 0 4px rgba(25, 242, 168, 0.08), 0 0 18px rgba(25, 242, 168, 0.3);
+}
+.mission-event-node em {
+  position: absolute;
+  top: 12px;
+  color: #bfffee;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
 }
 .mission-event.user .mission-event-node span { border-color: rgba(124, 58, 237, 0.75); box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.08), 0 0 18px rgba(124, 58, 237, 0.3); }
+.mission-event[data-state="latest"] .mission-event-node span,
+.mission-event[data-state="active"] .mission-event-node span {
+  background: radial-gradient(circle, rgba(232, 255, 247, 0.96), rgba(25, 242, 168, 0.5) 42%, rgba(3, 13, 12, 0.92) 74%);
+  border-color: rgba(232, 255, 247, 0.94);
+}
+.mission-event[data-state="active"] .mission-event-node span {
+  animation: nodePing 1100ms ease-out infinite;
+  box-shadow: 0 0 0 5px rgba(25, 242, 168, 0.1), 0 0 30px rgba(25, 242, 168, 0.52);
+}
 .mission-event-card {
   min-width: 0;
   border: 1px solid rgba(94, 234, 212, 0.12);
@@ -2868,8 +2897,14 @@ button { font: inherit; }
   padding: 13px 14px;
   display: grid;
   gap: 8px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 .mission-event.user .mission-event-card { border-color: rgba(124, 58, 237, 0.22); background: linear-gradient(150deg, rgba(22, 16, 43, 0.74), rgba(6, 8, 16, 0.92)); }
+.mission-event[data-state="active"] .mission-event-card {
+  border-color: rgba(25, 242, 168, 0.38);
+  box-shadow: 0 0 0 1px rgba(25, 242, 168, 0.08), 0 16px 38px rgba(0, 0, 0, 0.22);
+  transform: translateX(1px);
+}
 .mission-event-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .mission-event-card header strong { color: var(--accent); font-size: 11px; letter-spacing: 0.08em; }
 .mission-event-card header small { color: #6f8e87; font-size: 10px; text-transform: uppercase; }
@@ -3033,8 +3068,12 @@ button { font: inherit; }
   .mission-timeline,
   .command-dock,
   .telemetry-card { border-radius: 12px; }
-  .mission-events { max-height: 44vh; padding: 12px 10px; }
-  .mission-event { grid-template-columns: 20px minmax(0, 1fr); gap: 8px; }
+  .mission-events { max-height: 44vh; padding: 12px 10px 12px 16px; }
+  .mission-events::before { left: 25px; }
+  .mission-event { grid-template-columns: 22px minmax(0, 1fr); gap: 8px; }
+  .mission-event::before { left: 21px; width: 10px; }
+  .mission-event-node span { width: 15px; height: 15px; }
+  .mission-event-node em { top: 12px; font-size: 7px; }
   .mission-event-card { padding: 10px; }
   .command-dock-actions { flex-wrap: wrap; }
   .mission-home-v2 .send-halo { width: 48px; height: 48px; margin-left: auto; }
