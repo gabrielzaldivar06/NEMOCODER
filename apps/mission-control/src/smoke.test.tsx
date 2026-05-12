@@ -363,7 +363,7 @@ describe("mission-control app", () => {
     render(<MissionTimeline
       messages={[
         { id: "user-1", role: "user", content: "Start the AAA sprint" },
-        { id: "assistant-1", role: "assistant", content: "Working with NEMO context" },
+        { id: "assistant-1", role: "assistant", content: "Working with NEMO context", tool_calls: [{ name: "nemo.search_memories", status: "completed" }] },
       ]}
       running
       queuedPrompt={null}
@@ -377,6 +377,10 @@ describe("mission-control app", () => {
     expect(screen.getByRole("region", { name: /Mission timeline/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/User event 1 of 2/i)).toHaveAttribute("data-state", "settled");
     expect(screen.getByLabelText(/Space Code event 2 of 2/i)).toHaveAttribute("data-state", "active");
+    expect(screen.getByLabelText(/Space Code event 2 of 2/i)).toHaveAttribute("data-intent", "evidence");
+    expect(screen.getByLabelText(/Evidence event signals/i)).toBeInTheDocument();
+    expect(screen.getByText("1 tool calls")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Streaming signal/i)).toBeInTheDocument();
     expect(screen.getByText("active")).toBeInTheDocument();
   });
 

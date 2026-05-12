@@ -3170,7 +3170,9 @@ button { font: inherit; }
 .mission-event-card {
   min-width: 0;
   border: 1px solid rgba(94, 234, 212, 0.12);
-  background: linear-gradient(150deg, rgba(7, 22, 20, 0.78), rgba(3, 10, 10, 0.92));
+  background:
+    radial-gradient(circle at 8% 12%, rgba(25, 242, 168, 0.08), transparent 30%),
+    linear-gradient(150deg, rgba(7, 22, 20, 0.78), rgba(3, 10, 10, 0.92));
   border-radius: 8px;
   padding: 13px 14px;
   display: grid;
@@ -3178,14 +3180,63 @@ button { font: inherit; }
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 .mission-event.user .mission-event-card { border-color: rgba(124, 58, 237, 0.22); background: linear-gradient(150deg, rgba(22, 16, 43, 0.74), rgba(6, 8, 16, 0.92)); }
+.mission-event[data-intent="evidence"] .mission-event-card { border-color: rgba(45, 212, 191, 0.24); box-shadow: inset 2px 0 0 rgba(45, 212, 191, 0.28); }
+.mission-event[data-intent="plan"] .mission-event-card { border-color: rgba(96, 165, 250, 0.22); box-shadow: inset 2px 0 0 rgba(96, 165, 250, 0.24); }
+.mission-event[data-intent="artifact"] .mission-event-card { border-color: rgba(177, 140, 255, 0.24); box-shadow: inset 2px 0 0 rgba(177, 140, 255, 0.26); }
 .mission-event[data-state="active"] .mission-event-card {
   border-color: rgba(25, 242, 168, 0.38);
   box-shadow: 0 0 0 1px rgba(25, 242, 168, 0.08), 0 16px 38px rgba(0, 0, 0, 0.22);
   transform: translateX(1px);
 }
-.mission-event-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.mission-event-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.mission-event-card header div { min-width: 0; display: inline-flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
 .mission-event-card header strong { color: var(--accent); font-size: 11px; letter-spacing: 0.08em; }
+.mission-event-card header b {
+  border: 1px solid rgba(94, 234, 212, 0.13);
+  background: rgba(2, 10, 9, 0.62);
+  color: #a7f3d0;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 .mission-event-card header small { color: #6f8e87; font-size: 10px; text-transform: uppercase; }
+.mission-event-signals {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mission-event-signals span {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(1, 7, 7, 0.52);
+  color: #7f9f98;
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-family: "DM Mono", "SF Mono", Consolas, monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.mission-event-wave {
+  margin-left: auto;
+  width: 62px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.mission-event-wave em {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(25, 242, 168, 0.95), rgba(45, 212, 191, 0.18));
+  animation: signalPulse 1100ms ease-in-out infinite;
+}
+.mission-event-wave em:nth-child(2n) { height: 13px; animation-delay: 120ms; }
+.mission-event-wave em:nth-child(3n) { height: 18px; animation-delay: 220ms; }
 .command-dock {
   margin: 0 12px 12px;
   position: relative;
