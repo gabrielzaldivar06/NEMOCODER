@@ -14,6 +14,7 @@ export type GeneratedArtifact = {
   versionGroup?: string;
   createdAt?: string;
   updatedAt?: string;
+  favorite?: boolean;
   persisted?: boolean;
 };
 

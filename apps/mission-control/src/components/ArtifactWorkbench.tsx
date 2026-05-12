@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Braces, Code2, Copy, Download, Eye, FileText, History, Image, Info, Layers3, Paperclip, Puzzle, Zap } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Braces, Code2, Copy, Download, Eye, FileText, History, Image, Info, Layers3, Paperclip, Pin, Puzzle, Search, Trash2, Zap } from "lucide-react";
 import { buildArtifactLineDiff, type GeneratedArtifact, type GeneratedArtifactKind } from "../services/artifactUtils";
 
 type ArtifactViewMode = "preview" | "source" | "inspect" | "compare";
@@ -9,8 +9,12 @@ type ArtifactWorkbenchProps = {
   activeId: string | null;
   onSelect: (id: string) => void;
   onAttachToPrompt: (artifact: GeneratedArtifact) => void;
+  onRemoveArtifact: (id: string) => void;
+  onToggleFavorite: (id: string) => void;
   renderMarkdown: (content: string) => ReactNode;
 };
+
+type ArtifactKindFilter = "all" | GeneratedArtifactKind;
 
 function artifactSrcDoc(artifact: GeneratedArtifact): string {
   if (artifact.kind === "svg") {
@@ -78,6 +82,11 @@ function previousArtifactVersion(activeArtifact: GeneratedArtifact | undefined, 
   const activeIndex = versionSiblings.findIndex((artifact) => artifact.id === activeArtifact.id);
   if (activeIndex <= 0) return undefined;
   return versionSiblings[activeIndex - 1];
+}
+
+function artifactFilterOptions(artifacts: GeneratedArtifact[]): ArtifactKindFilter[] {
+  const kinds = Array.from(new Set(artifacts.map((artifact) => artifact.kind))).sort();
+  return ["all", ...kinds] as ArtifactKindFilter[];
 }
 
 function ArtifactCompareView({ previous, current }: { previous: GeneratedArtifact; current: GeneratedArtifact }) {
@@ -178,7 +187,18 @@ function MermaidPreview({ content }: { content: string }) {
   return <div className="artifact-mermaid" dangerouslySetInnerHTML={{ __html: svg || "" }} />;
 }
 
-export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPrompt, renderMarkdown }: ArtifactWorkbenchProps) {
+export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPrompt, onRemoveArtifact, onToggleFavorite, renderMarkdown }: ArtifactWorkbenchProps) {
+  const [libraryQuery, setLibraryQuery] = useState<string>("");
+  const [kindFilter, setKindFilter] = useState<ArtifactKindFilter>("all");
+  const filterOptions = useMemo(() => artifactFilterOptions(artifacts), [artifacts]);
+  const filteredArtifacts = useMemo(() => {
+    const query = libraryQuery.trim().toLowerCase();
+    return artifacts.filter((artifact) => {
+      const kindMatches = kindFilter === "all" || artifact.kind === kindFilter;
+      const queryMatches = !query || [artifact.title, artifact.kind, artifact.language, artifact.contentHash, artifact.registryId].filter(Boolean).some((value) => String(value).toLowerCase().includes(query));
+      return kindMatches && queryMatches;
+    });
+  }, [artifacts, kindFilter, libraryQuery]);
   const activeArtifact = artifacts.find((artifact) => artifact.id === activeId) ?? artifacts[0];
   const renderable = isRenderableArtifact(activeArtifact);
   const versionSiblings = activeArtifact?.versionGroup ? artifacts
@@ -241,13 +261,24 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
       </div>
       {artifacts.length > 0 ? <>
         <div className="artifact-index">
+          <div className="artifact-library-bar" aria-label="Biblioteca de artifacts">
+            <label className="artifact-library-search" title="Buscar artifact">
+              <Search size={12} />
+              <input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Search title, hash, type" />
+            </label>
+            <div className="artifact-kind-filters" aria-label="Filtrar artifacts por tipo">
+              {filterOptions.map((option) => <button key={option} className={kindFilter === option ? "active" : ""} onClick={() => setKindFilter(option)}>{option}</button>)}
+            </div>
+          </div>
           <div className="artifact-tabs" aria-label="Artifacts disponibles">
-            {artifacts.map((artifact) => (
+            {filteredArtifacts.map((artifact) => (
               <button key={artifact.id} className={artifact.id === activeArtifact?.id ? "active" : ""} onClick={() => onSelect(artifact.id)} title={artifact.title}>
                 <span>{artifact.version ? `v${artifact.version} · ${artifact.kind}` : artifact.kind}</span>
                 <strong>{artifact.title}</strong>
+                <small>{artifact.favorite ? "Pinned" : `#${shortArtifactHash(artifact)}`}</small>
               </button>
             ))}
+            {filteredArtifacts.length === 0 && <div className="artifact-library-empty">No artifacts match this view.</div>}
           </div>
           {versionSiblings.length > 1 && <div className="artifact-version-strip" aria-label="Versiones del artifact activo">
             {versionSiblings.map((artifact) => <button key={artifact.id} className={artifact.id === activeArtifact?.id ? "active" : ""} onClick={() => onSelect(artifact.id)} title={`${artifact.title} v${artifact.version ?? 1}`}>v{artifact.version ?? 1}</button>)}
@@ -272,6 +303,10 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <span>{activeArtifact.language}</span>
               <span>{activeArtifact.tokenEstimate} tok</span>
               <span>{artifactLineCount(activeArtifact)} lines</span>
+            </div>
+            <div className="artifact-library-actions" aria-label="Acciones de biblioteca">
+              <button onClick={() => onToggleFavorite(activeArtifact.id)} title={activeArtifact.favorite ? "Quitar pin" : "Fijar artifact"}><Pin size={12} /><span>{activeArtifact.favorite ? "Pinned" : "Pin"}</span></button>
+              <button className="danger" onClick={() => onRemoveArtifact(activeArtifact.id)} title="Eliminar artifact del registry"><Trash2 size={12} /><span>Delete</span></button>
             </div>
             <div className="artifact-view-switch" aria-label="Modo de artifact">
               {viewOptions.map((option) => <button key={option.mode} className={viewMode === option.mode ? "active" : ""} onClick={() => setViewMode(option.mode)} disabled={option.disabled} title={option.label}>{option.icon}<span>{option.label}</span></button>)}

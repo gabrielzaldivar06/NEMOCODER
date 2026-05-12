@@ -3,8 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./main";
+import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
 import { buildArtifactPromptAttachment } from "./hooks/useGeneratedArtifacts";
 import { buildArtifactLineDiff } from "./services/artifactUtils";
+import { removeArtifactFromRegistry, toggleArtifactFavorite, type PersistedGeneratedArtifact } from "./services/artifactRegistry";
 import { planNemoClient } from "./services/planNemoClient";
 
 const statePayload: any = {
@@ -145,6 +147,7 @@ beforeEach(() => {
   gitRemotesPayload = { remotes: [{ name: "origin", fetch: "x", push: "x" }], default_remote: "origin", default_branch: "main" };
   gitDiffPayload = { diff: "", stderr: "" };
   gitSyncShouldFail = false;
+  window.localStorage.clear();
   const asResponse = (payload: any, ok = true) => ({
     ok,
     json: async () => payload,
@@ -227,7 +230,70 @@ beforeEach(() => {
   }));
 });
 
+function buildRegistryArtifact(registryId: string, updatedAt: string): PersistedGeneratedArtifact {
+  return {
+    id: registryId,
+    messageId: "message-1",
+    title: registryId,
+    kind: "html",
+    language: "html_artifact",
+    content: `<main>${registryId}</main>`,
+    tokenEstimate: 8,
+    registryId,
+    contentHash: `${registryId}-hash`,
+    version: 1,
+    versionGroup: "group-1",
+    createdAt: updatedAt,
+    updatedAt,
+    persisted: true,
+  };
+}
+
 describe("mission-control app", () => {
+  it("pins artifact registry entries ahead of ordinary artifacts", () => {
+    const registry = [
+      buildRegistryArtifact("artifact-a", "2026-05-11T01:00:00Z"),
+      buildRegistryArtifact("artifact-b", "2026-05-11T00:00:00Z"),
+    ];
+
+    const nextRegistry = toggleArtifactFavorite("artifact-b", registry);
+
+    expect(nextRegistry[0].registryId).toBe("artifact-b");
+    expect(nextRegistry[0].favorite).toBe(true);
+  });
+
+  it("removes artifact registry entries by stable id", () => {
+    const registry = [
+      buildRegistryArtifact("artifact-a", "2026-05-11T01:00:00Z"),
+      buildRegistryArtifact("artifact-b", "2026-05-11T00:00:00Z"),
+    ];
+
+    const nextRegistry = removeArtifactFromRegistry("artifact-a", registry);
+
+    expect(nextRegistry.map((artifact) => artifact.registryId)).toEqual(["artifact-b"]);
+  });
+
+  it("renders artifact library search and action controls", () => {
+    const onSelect = vi.fn();
+    const onAttachToPrompt = vi.fn();
+    const onRemoveArtifact = vi.fn();
+    const onToggleFavorite = vi.fn();
+    const artifacts = [
+      buildRegistryArtifact("artifact-html", "2026-05-11T01:00:00Z"),
+      { ...buildRegistryArtifact("artifact-json", "2026-05-11T00:00:00Z"), kind: "json" as const, language: "json", title: "Data Packet" },
+    ];
+
+    render(<ArtifactWorkbench artifacts={artifacts} activeId="artifact-html" onSelect={onSelect} onAttachToPrompt={onAttachToPrompt} onRemoveArtifact={onRemoveArtifact} onToggleFavorite={onToggleFavorite} renderMarkdown={(content) => <p>{content}</p>} />);
+    fireEvent.change(screen.getByPlaceholderText(/Search title/i), { target: { value: "Data" } });
+    fireEvent.click(screen.getByRole("button", { name: /Data Packet/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Pin$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Delete$/i }));
+
+    expect(onSelect).toHaveBeenCalledWith("artifact-json");
+    expect(onToggleFavorite).toHaveBeenCalledWith("artifact-html");
+    expect(onRemoveArtifact).toHaveBeenCalledWith("artifact-html");
+  });
+
   it("builds compact artifact version diffs", () => {
     const diff = buildArtifactLineDiff({
       id: "artifact-v1",

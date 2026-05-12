@@ -2458,7 +2458,7 @@ export function App() {
 
 function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void }) {
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
-  const { artifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft } = useGeneratedArtifacts({ messages, draft, onDraftChange });
+  const { artifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite } = useGeneratedArtifacts({ messages, draft, onDraftChange });
   const atomCount = nemoState?.health.atom_count ?? 0;
   const evidenceCount = nemoState?.health.evidence_count ?? 0;
   const feedbackCount = nemoState?.health.feedback_count ?? 0;
@@ -2525,6 +2525,8 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
           activeId={activeArtifactId}
           onSelect={setActiveArtifactId}
           onAttachToPrompt={attachArtifactToDraft}
+          onRemoveArtifact={removeArtifact}
+          onToggleFavorite={toggleFavorite}
           renderMarkdown={(content) => <MessageRichText content={content} animate={false} compact />}
         />
 

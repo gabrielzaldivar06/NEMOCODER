@@ -10,6 +10,7 @@ export type PersistedGeneratedArtifact = GeneratedArtifact & {
   versionGroup: string;
   createdAt: string;
   updatedAt: string;
+  favorite?: boolean;
   persisted: true;
 };
 
@@ -51,7 +52,7 @@ export function loadArtifactRegistry(): PersistedGeneratedArtifact[] {
   }
 }
 
-function saveArtifactRegistry(artifacts: PersistedGeneratedArtifact[]) {
+export function saveArtifactRegistry(artifacts: PersistedGeneratedArtifact[]) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(ARTIFACT_REGISTRY_STORAGE_KEY, JSON.stringify(artifacts.slice(0, MAX_STORED_ARTIFACTS)));
@@ -100,8 +101,23 @@ export function mergeArtifactsIntoRegistry(generatedArtifacts: GeneratedArtifact
   }
 
   const nextRegistry = Array.from(registryById.values())
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite)) || right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, MAX_STORED_ARTIFACTS);
+  saveArtifactRegistry(nextRegistry);
+  return nextRegistry;
+}
+
+export function removeArtifactFromRegistry(registryId: string, currentRegistry = loadArtifactRegistry()): PersistedGeneratedArtifact[] {
+  const nextRegistry = currentRegistry.filter((artifact) => artifact.registryId !== registryId);
+  saveArtifactRegistry(nextRegistry);
+  return nextRegistry;
+}
+
+export function toggleArtifactFavorite(registryId: string, currentRegistry = loadArtifactRegistry()): PersistedGeneratedArtifact[] {
+  const now = new Date().toISOString();
+  const nextRegistry = currentRegistry
+    .map((artifact) => artifact.registryId === registryId ? { ...artifact, favorite: !artifact.favorite, updatedAt: now } : artifact)
+    .sort((left, right) => Number(Boolean(right.favorite)) - Number(Boolean(left.favorite)) || right.updatedAt.localeCompare(left.updatedAt));
   saveArtifactRegistry(nextRegistry);
   return nextRegistry;
 }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { collectGeneratedArtifacts, type GeneratedArtifact } from "../services/artifactUtils";
-import { loadArtifactRegistry, mergeArtifactsIntoRegistry, type PersistedGeneratedArtifact } from "../services/artifactRegistry";
+import { loadArtifactRegistry, mergeArtifactsIntoRegistry, removeArtifactFromRegistry, toggleArtifactFavorite, type PersistedGeneratedArtifact } from "../services/artifactRegistry";
 
 type ArtifactMessage = {
   id: string;
@@ -80,10 +80,20 @@ export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGen
     onDraftChange(draft.trim() ? `${draft.trim()}\n\n${reference}` : reference);
   };
 
+  const removeArtifact = (artifactId: string) => {
+    setArtifacts((current) => removeArtifactFromRegistry(artifactId, current));
+  };
+
+  const toggleFavorite = (artifactId: string) => {
+    setArtifacts((current) => toggleArtifactFavorite(artifactId, current));
+  };
+
   return {
     artifacts,
     activeArtifactId,
     setActiveArtifactId,
     attachArtifactToDraft,
+    removeArtifact,
+    toggleFavorite,
   };
 }
