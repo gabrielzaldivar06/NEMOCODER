@@ -23,6 +23,9 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const canSendDraft = draft.trim().length > 0;
+  const draftFieldId = "space-code-command-draft";
+  const attachmentFieldId = "space-code-command-attachments";
+  const providerFieldId = "space-code-provider-mode";
 
   const openAttachmentPicker = () => {
     attachmentInputRef.current?.click();
@@ -62,7 +65,9 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
 
   return (
     <div className="command-dock">
+      <label className="sr-only" htmlFor={attachmentFieldId}>Attach files for the next Space Code prompt</label>
       <input
+        id={attachmentFieldId}
         ref={attachmentInputRef}
         type="file"
         accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.md,.json"
@@ -78,7 +83,9 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
           </button>
         ))}
       </div>}
+      <label className="sr-only" htmlFor={draftFieldId}>Describe the next objective, constraint, or experiment</label>
       <textarea
+        id={draftFieldId}
         value={draft}
         onChange={(event) => onDraftChange(event.target.value)}
         onKeyDown={(event) => {
@@ -90,9 +97,9 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
         <button onClick={openAttachmentPicker} title="Adjuntar multimedia"><Plus size={15} /> File</button>
         <button onClick={onOpenComposer} title="Configurar handoff"><Hand size={15} /> Handoff</button>
         <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
-        <label className="provider-switch real" title="Modo del agente"><Bot size={15} /><select value={provider} onChange={(event) => onProviderChange(event.target.value)}><option value="subprocess">{providerLabel}</option></select></label>
+        <label className="provider-switch real" htmlFor={providerFieldId} title="Modo del agente"><Bot size={15} /><span className="sr-only">Agent runtime mode</span><select id={providerFieldId} value={provider} onChange={(event) => onProviderChange(event.target.value)}><option value="subprocess">{providerLabel}</option></select></label>
         <div className={`send-halo ${sendHaloOpen ? "open" : ""}`} onMouseLeave={() => setSendHaloOpen(false)}>
-          <button className="send-intent" onClick={() => running ? runHaloAction("stop") : runHaloAction("send")} disabled={!running && !canSendDraft} onMouseEnter={() => setSendHaloOpen(true)} onFocus={() => setSendHaloOpen(true)} title={running ? "Detener respuesta" : "Enviar"}>{running ? <Square size={16} /> : <ArrowUp size={18} />}</button>
+          <button className="send-intent" onClick={() => running ? runHaloAction("stop") : runHaloAction("send")} disabled={!running && !canSendDraft} onMouseEnter={() => setSendHaloOpen(true)} onFocus={() => setSendHaloOpen(true)} title={running ? "Detener respuesta" : "Enviar"} aria-label={running ? "Detener respuesta" : "Enviar objetivo"}>{running ? <Square size={16} /> : <ArrowUp size={18} />}</button>
           <div className="send-halo-menu" aria-label="Acciones del agente">
             <button className="send-halo-option plan" onClick={() => runHaloAction("plan")} disabled={!canSendDraft && !running} title="Modo plan" aria-label="Modo plan" data-label="Plan"><Target size={13} /><span>Plan</span></button>
             <button className="send-halo-option queue" onClick={() => runHaloAction("queue")} disabled={!canSendDraft} title="Poner en cola" aria-label="Poner en cola" data-label="Queue"><Clock3 size={13} /><span>Queue</span></button>
@@ -101,7 +108,7 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
           </div>
         </div>
       </div>
-      {(pendingAttachments.length > 0 || queuedPrompt || queuedPrompts.length > 1) && <div className="home-chat-notes">
+      {(pendingAttachments.length > 0 || queuedPrompt || queuedPrompts.length > 1) && <div className="home-chat-notes" role="status" aria-live="polite">
         {pendingAttachments.length > 0 && <span>Adjuntos preparados para envio multimodal.</span>}
         {queuedPrompt && <span>En cola: {queuedPrompt}</span>}
         {queuedPrompts.length > 1 && <span>Pendientes: {queuedPrompts.length}</span>}

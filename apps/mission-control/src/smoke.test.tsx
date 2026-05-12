@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./main";
 import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
+import { CommandDock } from "./components/CommandDock";
 import { buildArtifactPromptAttachment } from "./hooks/useGeneratedArtifacts";
 import { buildArtifactLineDiff } from "./services/artifactUtils";
 import { removeArtifactFromRegistry, toggleArtifactFavorite, type PersistedGeneratedArtifact } from "./services/artifactRegistry";
@@ -292,6 +293,15 @@ describe("mission-control app", () => {
     expect(onSelect).toHaveBeenCalledWith("artifact-json");
     expect(onToggleFavorite).toHaveBeenCalledWith("artifact-html");
     expect(onRemoveArtifact).toHaveBeenCalledWith("artifact-html");
+  });
+
+  it("exposes command dock controls with accessible labels", () => {
+    render(<CommandDock draft="Ship the next sprint" provider="subprocess" providerLabel="Local runtime" running={false} queuedPrompt={null} queuedPrompts={[]} onDraftChange={vi.fn()} onSubmit={vi.fn()} onStop={vi.fn()} onProviderChange={vi.fn()} onOpenComposer={vi.fn()} onOpenMemory={vi.fn()} />);
+
+    expect(screen.getByLabelText(/Describe the next objective/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Attach files/i)).toHaveAttribute("type", "file");
+    expect(screen.getByLabelText(/Agent runtime mode/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Enviar objetivo/i })).toBeInTheDocument();
   });
 
   it("builds compact artifact version diffs", () => {
