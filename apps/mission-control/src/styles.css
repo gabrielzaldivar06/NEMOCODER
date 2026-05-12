@@ -2794,12 +2794,28 @@ button { font: inherit; }
 }
 .mission-timeline,
 .mission-telemetry,
+.mission-right-rail,
 .mission-home-v2 .artifact-studio {
   border: 1px solid rgba(94, 234, 212, 0.13);
   background:
     linear-gradient(180deg, rgba(4, 17, 15, 0.86), rgba(1, 7, 7, 0.96));
   border-radius: 8px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025), 0 20px 64px rgba(0, 0, 0, 0.36);
+}
+.mission-right-rail {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+  overflow: hidden;
+}
+.mission-right-rail .mission-telemetry {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .mission-timeline {
   min-width: 0;
@@ -3078,6 +3094,7 @@ button { font: inherit; }
   .mission-session-actions { justify-self: end; }
   .mission-v2-steer { grid-column: 3; }
   .mission-v2-grid { grid-template-columns: minmax(0, 1fr); }
+  .mission-right-rail { grid-template-rows: auto auto; overflow: visible; }
   .mission-telemetry { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mission-telemetry .telemetry-card:last-child { grid-column: 1 / -1; }
   .home-creation-grid { grid-template-columns: minmax(0, 1fr); }
@@ -3113,6 +3130,7 @@ button { font: inherit; }
   .mission-home-v2 .send-halo { width: 48px; height: 48px; margin-left: auto; }
   .mission-home-v2 .command-dock-actions .send-halo { flex-basis: 48px; }
   .mission-home-v2 .send-halo-menu { display: none; }
+  .mission-right-rail { grid-template-rows: auto auto; }
   .mission-telemetry { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mission-telemetry .telemetry-card:last-child { grid-column: 1 / -1; }
   .home-main { justify-self: stretch; max-width: none; }
@@ -3142,6 +3160,7 @@ button { font: inherit; }
   .mission-v2-header { grid-template-columns: auto minmax(0, 1fr); }
   .mission-session-actions { grid-column: 1 / -1; justify-self: stretch; justify-content: space-between; }
   .mission-v2-steer { grid-column: 1 / -1; }
+  .mission-right-rail { padding: 10px; }
   .mission-telemetry { grid-template-columns: minmax(0, 1fr); }
   .mission-telemetry .telemetry-card:last-child { grid-column: auto; }
 }

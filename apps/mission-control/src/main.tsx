@@ -5,6 +5,7 @@ import "./styles.css";
 import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
 import { CommandDock } from "./components/CommandDock";
 import { MissionTimeline } from "./components/MissionTimeline";
+import { NemoMemoryOrbitCopy, type NemoMemoryOrbitEdge, type NemoMemoryOrbitNode } from "./components/NemoMemoryOrbitCopy";
 import { ObjectiveDefinition } from "./components/ObjectiveDefinition";
 import { PlanProgress } from "./components/PlanProgress";
 import { TelemetryColumn } from "./components/TelemetryColumn";
@@ -252,6 +253,68 @@ type NemoState = {
   evidence: NemoEvidence[];
   feedback: NemoFeedback[];
 };
+
+const NEMO_ORBIT_TYPE_COLORS: Record<string, string> = {
+  correction: "#ff4757",
+  preference: "#a855f7",
+  insight: "#ff9f1c",
+  episodic: "#48cae4",
+  procedure: "#06d6a0",
+  fact: "#00b4d8",
+  evidence: "#67E8F9",
+  feedback: "#C084FC",
+  portfolio: "#19f2a8",
+};
+
+function colorForNemoMemory(type: string): string {
+  return NEMO_ORBIT_TYPE_COLORS[type] || "#607d8b";
+}
+
+function buildNemoOrbitNodes(nemoState: NemoState | null, atomCount: number, evidenceCount: number, feedbackCount: number, contextLabel: string): NemoMemoryOrbitNode[] {
+  const memories = [...(nemoState?.corrections ?? []), ...(nemoState?.used_memories ?? [])];
+  const mapped = memories.slice(0, 14).map((memory): NemoMemoryOrbitNode => ({
+    id: memory.id,
+    mtype: memory.type || "fact",
+    importance: Math.max(1, Math.min(10, memory.importance || 5)),
+    color: colorForNemoMemory(memory.type),
+    title: memory.topic || memory.content.slice(0, 72) || "NEMO memory",
+    summary: memory.content,
+    excerpt: memory.content.slice(0, 110),
+    tags: memory.tags,
+    content: memory.content,
+  }));
+
+  if (mapped.length > 0) return mapped;
+
+  return [
+    { id: "nemo-health-atoms", mtype: "fact", importance: Math.max(3, Math.min(10, Math.ceil(atomCount / 8))), color: colorForNemoMemory("fact"), title: `${atomCount} memory atoms`, summary: "NEMO memory atom count" },
+    { id: "nemo-health-evidence", mtype: "evidence", importance: Math.max(3, Math.min(10, Math.ceil(evidenceCount / 4))), color: colorForNemoMemory("evidence"), title: `${evidenceCount} evidence handles`, summary: "NEMO evidence handle count" },
+    { id: "nemo-health-feedback", mtype: "feedback", importance: Math.max(3, Math.min(10, Math.ceil(feedbackCount / 3))), color: colorForNemoMemory("feedback"), title: `${feedbackCount} feedback events`, summary: "NEMO feedback event count" },
+    { id: "nemo-health-context", mtype: "portfolio", importance: contextLabel === "ready" ? 5 : 8, color: colorForNemoMemory("portfolio"), title: `Context ${contextLabel}`, summary: "Current NEMO context portfolio state" },
+  ];
+}
+
+function buildNemoOrbitEdges(nodes: NemoMemoryOrbitNode[]): NemoMemoryOrbitEdge[] {
+  const edges: NemoMemoryOrbitEdge[] = [];
+  for (let index = 0; index < nodes.length - 1; index += 1) {
+    const current = nodes[index];
+    const next = nodes[index + 1];
+    const sharedTags = (current.tags ?? []).filter((tag) => (next.tags ?? []).includes(tag)).length;
+    const sameType = current.mtype === next.mtype;
+    edges.push({
+      source: current.id,
+      target: next.id,
+      similarity: Math.min(0.98, 0.72 + sharedTags * 0.06 + (sameType ? 0.08 : 0)),
+      color: current.color,
+      width: 0.08,
+      particles: sameType || sharedTags > 0 ? 1 : 0,
+    });
+  }
+  if (nodes.length > 3) {
+    edges.push({ source: nodes[0].id, target: nodes[nodes.length - 1].id, similarity: 0.76, color: nodes[0].color, width: 0.06, particles: 0 });
+  }
+  return edges;
+}
 type NemoMcpWatcherState = {
   ok: boolean;
   configured: boolean;
@@ -2473,6 +2536,8 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const providerLabel = modelName.trim() ? `LM Studio: ${modelName}` : "LM Studio real";
   const canSendDraft = draft.trim().length > 0;
   const activeRun = blockedReviewRuns[0] ?? state.approval_queue[0] ?? state.runs[0];
+  const orbitNodes = buildNemoOrbitNodes(nemoState, memoryKpis?.atom_count ?? atomCount, evidenceCount, feedbackCount, contextLabel);
+  const orbitEdges = buildNemoOrbitEdges(orbitNodes);
 
   return (
     <section className="mission-home mission-home-v2">
@@ -2530,26 +2595,29 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
           renderMarkdown={(content) => <MessageRichText content={content} animate={false} compact />}
         />
 
-        <TelemetryColumn
-          activeRun={activeRun}
-          visibleQueue={state.approval_queue}
-          totalRuns={totalRuns}
-          readyRuns={readyRuns}
-          blockedRuns={blockedRuns}
-          queueCount={queueCount}
-          running={running}
-          contextLabel={contextLabel}
-          memoryAtomCount={memoryKpis?.atom_count ?? atomCount}
-          evidenceCount={evidenceCount}
-          feedbackCount={feedbackCount}
-          sourceReads={sourceReads}
-          sourceCacheHitRate={sourceCacheHitRate}
-          status={status}
-          onSelectRun={onSelectRun}
-          onOpenMemory={onOpenMemory}
-          onRefreshCognitiveStats={onRefreshCognitiveStats}
-          onRefreshMissionStats={onRefreshMissionStats}
-        />
+        <div className="mission-right-rail">
+          <NemoMemoryOrbitCopy nodes={orbitNodes} edges={orbitEdges} status={nemoState?.health.status ?? "snapshot"} onSelectNode={onOpenMemory} />
+          <TelemetryColumn
+            activeRun={activeRun}
+            visibleQueue={state.approval_queue}
+            totalRuns={totalRuns}
+            readyRuns={readyRuns}
+            blockedRuns={blockedRuns}
+            queueCount={queueCount}
+            running={running}
+            contextLabel={contextLabel}
+            memoryAtomCount={memoryKpis?.atom_count ?? atomCount}
+            evidenceCount={evidenceCount}
+            feedbackCount={feedbackCount}
+            sourceReads={sourceReads}
+            sourceCacheHitRate={sourceCacheHitRate}
+            status={status}
+            onSelectRun={onSelectRun}
+            onOpenMemory={onOpenMemory}
+            onRefreshCognitiveStats={onRefreshCognitiveStats}
+            onRefreshMissionStats={onRefreshMissionStats}
+          />
+        </div>
       </div>
     </section>
   );

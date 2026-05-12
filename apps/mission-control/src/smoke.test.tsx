@@ -438,6 +438,13 @@ describe("mission-control app", () => {
     expect(await screen.findByText(/Agent Runs/i)).toBeInTheDocument();
   });
 
+  it("shows the copied NEMO orbit on the home cockpit without replacing telemetry", async () => {
+    render(<App />);
+
+    expect(await screen.findByLabelText("NEMO memory orbit copy")).toBeInTheDocument();
+    expect(await screen.findByRole("complementary", { name: /Mission telemetry/i })).toBeInTheDocument();
+  });
+
   it("starts handoff with NEMO MCP settings and stable local validation", async () => {
     render(<App />);
     fireEvent.click(await screen.findByTitle(/Configurar handoff/i));
