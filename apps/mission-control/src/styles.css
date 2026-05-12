@@ -1517,7 +1517,7 @@ button { font: inherit; }
 .handoff-composer textarea { min-height: 74px; resize: vertical; }
 .handoff-composer select, .handoff-composer input { min-height: 38px; }
 .composer-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.composer-grid label { color: #8b949e; display: grid; gap: 5px; }
+.composer-grid label, .composer-objective { color: #8b949e; display: grid; gap: 5px; }
 .composer-grid textarea { min-height: 58px; }
 .composer-actions { display: flex; justify-content: flex-end; }
 .composer-actions button { display: inline-flex; align-items: center; gap: 6px; }

@@ -368,7 +368,14 @@ describe("mission-control app", () => {
   it("starts handoff with NEMO MCP settings and stable local validation", async () => {
     render(<App />);
     fireEvent.click(await screen.findByTitle(/Configurar handoff/i));
-    fireEvent.change(await screen.findByPlaceholderText(/Describe the PRD/i), { target: { value: "Add a small local MVP feature" } });
+    expect(await screen.findByRole("region", { name: /New Full Handoff/i })).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Provider/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Timeout seconds/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Validation policy/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Acceptance/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Validation$/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Target files/i)).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText(/Handoff objective/i), { target: { value: "Add a small local MVP feature" } });
     fireEvent.click(await screen.findByRole("button", { name: /Start in sandbox/i }));
 
     const fetchMock = vi.mocked(fetch);

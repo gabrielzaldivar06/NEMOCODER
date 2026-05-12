@@ -2642,51 +2642,64 @@ function DiffRowView({ row }: { row: DiffRow }) {
 
 function HandoffComposer({ draft, onChange, onSubmit, onClose, running }: { draft: { objective: string; acceptance: string; validation: string; validationPolicy: string; targetFiles: string; provider: string; timeoutSeconds: string }; onChange: (draft: { objective: string; acceptance: string; validation: string; validationPolicy: string; targetFiles: string; provider: string; timeoutSeconds: string }) => void; onSubmit: () => void; onClose: () => void; running: boolean }) {
   const update = (key: keyof typeof draft, value: string) => onChange({ ...draft, [key]: value });
+  const fieldIds = {
+    objective: "handoff-objective",
+    provider: "handoff-provider",
+    timeoutSeconds: "handoff-timeout-seconds",
+    validationPolicy: "handoff-validation-policy",
+    acceptance: "handoff-acceptance",
+    validation: "handoff-validation",
+    targetFiles: "handoff-target-files",
+  };
   return (
-    <section className="handoff-composer">
+    <section className="handoff-composer" aria-labelledby="handoff-composer-title">
       <div className="composer-header">
         <div>
-          <strong>New Full Handoff</strong>
+          <strong id="handoff-composer-title">New Full Handoff</strong>
           <span>Runs in an isolated runtime and returns to review.</span>
         </div>
         <button onClick={onClose} disabled={running}>Close</button>
       </div>
-      <textarea
-        value={draft.objective}
-        onChange={(event) => update("objective", event.target.value)}
-        placeholder="Describe the PRD or implementation objective..."
-      />
+      <label className="composer-objective" htmlFor={fieldIds.objective}>
+        Handoff objective
+        <textarea
+          id={fieldIds.objective}
+          value={draft.objective}
+          onChange={(event) => update("objective", event.target.value)}
+          placeholder="Describe the PRD or implementation objective..."
+        />
+      </label>
       <div className="composer-grid">
-        <label>
+        <label htmlFor={fieldIds.provider}>
           Provider
-          <select value={draft.provider} onChange={(event) => update("provider", event.target.value)} disabled={running}>
+          <select id={fieldIds.provider} value={draft.provider} onChange={(event) => update("provider", event.target.value)} disabled={running}>
             <option value="subprocess">Space Code + LM Studio</option>
           </select>
         </label>
-        <label>
+        <label htmlFor={fieldIds.timeoutSeconds}>
           Timeout seconds
-          <input value={draft.timeoutSeconds} onChange={(event) => update("timeoutSeconds", event.target.value)} disabled={running} />
+          <input id={fieldIds.timeoutSeconds} value={draft.timeoutSeconds} onChange={(event) => update("timeoutSeconds", event.target.value)} disabled={running} />
         </label>
-        <label>
+        <label htmlFor={fieldIds.validationPolicy}>
           Validation policy
-          <select value={draft.validationPolicy} onChange={(event) => update("validationPolicy", event.target.value)} disabled={running}>
+          <select id={fieldIds.validationPolicy} value={draft.validationPolicy} onChange={(event) => update("validationPolicy", event.target.value)} disabled={running}>
             <option value="none">none</option>
             <option value="smoke">smoke</option>
             <option value="targeted">targeted</option>
             <option value="full">full</option>
           </select>
         </label>
-        <label>
+        <label htmlFor={fieldIds.acceptance}>
           Acceptance
-          <textarea value={draft.acceptance} onChange={(event) => update("acceptance", event.target.value)} />
+          <textarea id={fieldIds.acceptance} value={draft.acceptance} onChange={(event) => update("acceptance", event.target.value)} />
         </label>
-        <label>
+        <label htmlFor={fieldIds.validation}>
           Validation
-          <textarea value={draft.validation} onChange={(event) => update("validation", event.target.value)} />
+          <textarea id={fieldIds.validation} value={draft.validation} onChange={(event) => update("validation", event.target.value)} />
         </label>
-        <label>
+        <label htmlFor={fieldIds.targetFiles}>
           Target files
-          <textarea value={draft.targetFiles} onChange={(event) => update("targetFiles", event.target.value)} placeholder="optional, one per line" />
+          <textarea id={fieldIds.targetFiles} value={draft.targetFiles} onChange={(event) => update("targetFiles", event.target.value)} placeholder="optional, one per line" />
         </label>
       </div>
       <div className="composer-actions">
