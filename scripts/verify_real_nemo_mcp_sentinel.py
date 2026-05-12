@@ -6,7 +6,7 @@ import time
 import urllib.request
 from typing import Any
 
-from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool
+from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
 
 
 def normalize_nemo_payload(result: dict[str, Any]) -> dict[str, Any]:
@@ -58,7 +58,7 @@ def neutralize_sentinel(mcp_url: str, sentinel: str) -> list[tuple[str, bool]]:
             content="TEST CLEANUP / IGNORE: live real MCP sentinel neutralized after verification.",
             importance_level=1,
             tags=["test-cleanup", "discarded", "ignore", "real-mcp-sentinel"],
-            metadata={"topic": "NEMOCODE cleanup/test-discarded"},
+            metadata={"topic": "Space Code cleanup/test-discarded"},
         )
         updated.append((str(memory_id), bool(update.get("ok"))))
     return updated
@@ -68,7 +68,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Verify Mission Control uses real NEMO MCP with a write/read sentinel.")
     parser.add_argument("--api-url", default="http://127.0.0.1:8787/api/agent/message")
     parser.add_argument("--mcp-url", default="http://127.0.0.1:8765/mcp/sse")
-    parser.add_argument("--cleanup-prefix", default="NEMOCODE_REAL_MCP_SENTINEL")
+    parser.add_argument("--cleanup-prefix", default="SPACE_CODE_REAL_MCP_SENTINEL")
     args = parser.parse_args()
 
     stamp = time.strftime("%Y%m%d%H%M%S")

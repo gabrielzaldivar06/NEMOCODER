@@ -1,8 +1,8 @@
 [package]
-name = "nemo-desktop-tauri"
+name = "space-code-desktop-tauri"
 version = "0.1.0"
-description = "Nemocode Desktop - Tauri backend"
-authors = ["Nemocode Team"]
+description = "Space Code Desktop - Tauri backend"
+authors = ["Space Code Team"]
 edition = "2021"
 
 [build-dependencies]

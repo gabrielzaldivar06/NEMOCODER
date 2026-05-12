@@ -46,7 +46,7 @@ class AiderInterfaceTests(unittest.TestCase):
                 MutationRequest("Build feature", "generated-spec.md", ("passes",), "context"),
             )
 
-            self.assertEqual(result.provider, "fake-nemo-code")
+            self.assertEqual(result.provider, "fake-space-code")
             self.assertEqual(result.applied_files, ("generated-implementation.md",))
             self.assertEqual(result.changed_files, ("generated-implementation.md",))
             self.assertEqual(result.model_profile.model, DEFAULT_LMSTUDIO_MODEL)
@@ -63,7 +63,7 @@ class AiderInterfaceTests(unittest.TestCase):
                 MutationRequest("Build feature", "generated-spec.md", ("passes",), "context", provider_mode="subprocess", runtime_path=tmp),
             )
 
-            self.assertEqual(result.provider, "subprocess-nemo-code")
+            self.assertEqual(result.provider, "subprocess-space-code")
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.applied_files, ())
             self.assertEqual(result.changed_files, ("subprocess-created.txt",))

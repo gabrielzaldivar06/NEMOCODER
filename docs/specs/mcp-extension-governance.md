@@ -18,7 +18,7 @@ Define how MCP tools and extension-like capabilities are exposed, validated, and
 - Duplicate tool names are forbidden.
 
 2. Namespacing
-- MCP tools exposed by platform must use `nemocode.` prefix.
+- MCP tools exposed by platform must use `spacecode.` prefix.
 - Unknown tool names return deterministic tool-not-found errors.
 
 3. Phase and policy context

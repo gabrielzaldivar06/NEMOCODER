@@ -6,6 +6,7 @@ import { App } from "./main";
 import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
 import { CommandDock } from "./components/CommandDock";
 import { MissionTimeline } from "./components/MissionTimeline";
+import { NemoMemoryOrbitCopy, type NemoMemoryOrbitEdge, type NemoMemoryOrbitNode } from "./components/NemoMemoryOrbitCopy";
 import { TelemetryColumn } from "./components/TelemetryColumn";
 import { buildArtifactPromptAttachment } from "./hooks/useGeneratedArtifacts";
 import { buildArtifactLineDiff } from "./services/artifactUtils";
@@ -253,6 +254,26 @@ function buildRegistryArtifact(registryId: string, updatedAt: string): Persisted
 }
 
 describe("mission-control app", () => {
+  it("renders the copied NEMO memory orbit from real dashboard-shaped data", () => {
+    const nodes: NemoMemoryOrbitNode[] = [
+      { id: "memory-1", mtype: "configuration", importance: 10, color: "#607d8b", title: "Embedding model qwen3-embed-4b", summary: "LM Studio embedding model configuration", tags: ["qwen3"] },
+      { id: "memory-2", mtype: "project_decision", importance: 9, color: "#06d6a0", title: "Windows timezone fallback", summary: "Use local timezone fallback on Windows", tags: ["windows"] },
+      { id: "memory-3", mtype: "development_checkpoint", importance: 8, color: "#C084FC", title: "Mission Control AAA checkpoint", summary: "Frontend cockpit checkpoint", tags: ["mission-control"] },
+    ];
+    const edges: NemoMemoryOrbitEdge[] = [
+      { source: "memory-1", target: "memory-2", similarity: 0.91, color: "rgba(96,125,139,0.5)", width: 0.1, particles: 1 },
+      { source: "memory-2", target: "memory-3", similarity: 0.87, color: "rgba(6,214,160,0.4)", width: 0.08, particles: 1 },
+    ];
+    const onSelectNode = vi.fn();
+
+    render(<NemoMemoryOrbitCopy nodes={nodes} edges={edges} status="snapshot" onSelectNode={onSelectNode} />);
+
+    expect(screen.getByLabelText("NEMO memory orbit copy")).toBeInTheDocument();
+    expect(screen.getByLabelText("3 memories and 2 links")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /configuration memory, importance 10/i }));
+    expect(onSelectNode).toHaveBeenCalledWith(nodes[0]);
+  });
+
   it("pins artifact registry entries ahead of ordinary artifacts", () => {
     const registry = [
       buildRegistryArtifact("artifact-a", "2026-05-11T01:00:00Z"),

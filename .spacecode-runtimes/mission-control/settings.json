@@ -1,0 +1,146 @@
+{
+  "browser_history": [],
+  "browser_homepage": "https://github.com",
+  "browser_last_url": "",
+  "browser_search_history": [],
+  "browser_search_query": "",
+  "chat_max_tokens": 16384,
+  "chat_metrics": [
+    {
+      "duration_ms": 143044,
+      "tool_fail_rate": 0.1111,
+      "trace_events_count": 22,
+      "ts": "2026-05-12T02:17:02.089895+00:00"
+    },
+    {
+      "duration_ms": 167674,
+      "tool_fail_rate": 0.1111,
+      "trace_events_count": 22,
+      "ts": "2026-05-12T02:17:20.309542+00:00"
+    },
+    {
+      "duration_ms": 128469,
+      "tool_fail_rate": 0.1111,
+      "trace_events_count": 22,
+      "ts": "2026-05-12T02:19:13.963333+00:00"
+    },
+    {
+      "duration_ms": 220993,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 20,
+      "ts": "2026-05-12T02:27:58.190970+00:00"
+    },
+    {
+      "duration_ms": 162248,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 21,
+      "ts": "2026-05-12T02:35:44.357243+00:00"
+    },
+    {
+      "duration_ms": 272143,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 21,
+      "ts": "2026-05-12T02:40:21.702037+00:00"
+    },
+    {
+      "duration_ms": 247539,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 20,
+      "ts": "2026-05-12T02:43:08.977064+00:00"
+    },
+    {
+      "duration_ms": 254796,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 21,
+      "ts": "2026-05-12T02:43:22.241129+00:00"
+    },
+    {
+      "duration_ms": 25620,
+      "tool_fail_rate": 0.1111,
+      "trace_events_count": 18,
+      "ts": "2026-05-12T02:45:16.733715+00:00"
+    },
+    {
+      "duration_ms": 24530,
+      "tool_fail_rate": 0.1111,
+      "trace_events_count": 18,
+      "ts": "2026-05-12T02:46:43.488057+00:00"
+    },
+    {
+      "duration_ms": 79270,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 17,
+      "ts": "2026-05-12T04:46:37.459143+00:00"
+    },
+    {
+      "duration_ms": 70464,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 17,
+      "ts": "2026-05-12T04:48:24.724034+00:00"
+    },
+    {
+      "duration_ms": 85748,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 18,
+      "ts": "2026-05-12T04:50:31.405333+00:00"
+    }
+  ],
+  "context_window_tokens": 131072,
+  "default_model": "nvidia.agentic.coder-4b",
+  "execute_minutes": 120,
+  "extensions": [
+    {
+      "enabled": true,
+      "name": "git",
+      "version": "builtin"
+    },
+    {
+      "enabled": true,
+      "name": "terminal",
+      "version": "builtin"
+    },
+    {
+      "enabled": true,
+      "name": "browser",
+      "version": "builtin"
+    },
+    {
+      "enabled": true,
+      "name": "nemo-memory",
+      "version": "builtin"
+    }
+  ],
+  "heartbeat_minutes": 30,
+  "image_gen_backend": "auto",
+  "image_gen_url": "",
+  "max_heartbeats": 8,
+  "max_runtime_minutes": 240,
+  "memory_db": "C:\\dev\\dev4\\.nemo-runtimes\\nemo-memory.sqlite",
+  "model_base_url": "http://localhost:1234/v1",
+  "model_roles": {
+    "editor": "nvidia.agentic.coder-4b",
+    "planner": "nvidia.agentic.coder-4b",
+    "reviewer": "nvidia.agentic.coder-4b",
+    "summarizer": "nvidia.agentic.coder-4b"
+  },
+  "nemo_mcp_url": "stdio://vscode/nemo",
+  "nemo_required": true,
+  "pause_after_minutes": null,
+  "plan_minutes": 60,
+  "provider": "subprocess",
+  "quality_core": "product/nemo_code_runtime",
+  "real_validation": true,
+  "recent_repos": [
+    "C:\\dev\\dev4"
+  ],
+  "repair_time_limit_seconds": 7200,
+  "repo_path": "C:\\dev\\dev4",
+  "review_minutes": 60,
+  "runtime_path": "C:\\dev\\dev4\\.spacecode-runtimes",
+  "source_analytics": [],
+  "timeout_seconds": 300,
+  "token_budget": 128000,
+  "validation_escalation_mode": false,
+  "validation_policy": "smoke",
+  "validation_time_budget_seconds": 3600
+}

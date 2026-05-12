@@ -1,7 +1,7 @@
 param(
     [int]$ApiPort = 8787,
     [int]$UiPort = 5173,
-    [string]$NemoMcpUrl = "http://127.0.0.1:8765/mcp/sse",
+    [string]$NemoMcpUrl = "stdio://vscode/nemo",
     [string]$PythonExe = "",
     [switch]$SkipNemoCheck
 )
@@ -11,7 +11,7 @@ Add-Type -AssemblyName System.Net.Http
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path
-$RuntimeRoot = Join-Path $RepoRoot ".nemo-runtimes"
+$RuntimeRoot = Join-Path $RepoRoot ".spacecode-runtimes"
 $LogDir = Join-Path $RuntimeRoot "logs"
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 
@@ -23,11 +23,11 @@ function Get-PythonLaunch {
         return @{ File = (Resolve-Path $PythonExe).Path; Args = @() }
     }
 
-    if ($env:NEMOCODE_PYTHON) {
-        if (-not (Test-Path $env:NEMOCODE_PYTHON)) {
-            throw "NEMOCODE_PYTHON points to a missing executable: $env:NEMOCODE_PYTHON"
+    if ($env:SPACE_CODE_PYTHON) {
+        if (-not (Test-Path $env:SPACE_CODE_PYTHON)) {
+            throw "SPACE_CODE_PYTHON points to a missing executable: $env:SPACE_CODE_PYTHON"
         }
-        return @{ File = (Resolve-Path $env:NEMOCODE_PYTHON).Path; Args = @() }
+        return @{ File = (Resolve-Path $env:SPACE_CODE_PYTHON).Path; Args = @() }
     }
 
     $venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
@@ -193,7 +193,7 @@ function Start-LocalProcess {
 
 Set-Location $RepoRoot
 
-if (-not $SkipNemoCheck) {
+if (-not $SkipNemoCheck -and $NemoMcpUrl -notlike "stdio://*") {
     $nemo = Test-NemoMcpSse -Url $NemoMcpUrl
     if (-not $nemo.Ok) {
         $detail = if ($nemo.Error) { $nemo.Error } else { "HTTP $($nemo.StatusCode), content-type '$($nemo.ContentType)'" }
@@ -205,8 +205,8 @@ if (-not $SkipNemoCheck) {
 $python = Get-PythonLaunch
 $npmFile = Get-NpmFile
 $env:PYTHONPATH = Join-Path $RepoRoot "src"
-$env:NEMOCODE_NEMO_MCP_URL = $NemoMcpUrl
-$env:NEMOCODE_MISSION_CONTROL_API_URL = "http://127.0.0.1:$ApiPort"
+$env:SPACE_CODE_NEMO_MCP_URL = $NemoMcpUrl
+$env:SPACE_CODE_MISSION_CONTROL_API_URL = "http://127.0.0.1:$ApiPort"
 
 if (Test-TcpPort -HostName "127.0.0.1" -Port $ApiPort) {
     Write-Host "Mission Control API already listening on http://127.0.0.1:$ApiPort"

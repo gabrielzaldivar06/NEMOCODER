@@ -37,18 +37,18 @@ SELF_MOD_PERMISSION_TEMPLATE = {
 }
 
 
-def find_nemocode_repo(start: str | Path | None = None) -> Path:
-    """Find the NEMOCODE repository root by walking up from *start*."""
+def find_spacecode_repo(start: str | Path | None = None) -> Path:
+    """Find the Space Code repository root by walking up from *start*."""
     current = Path(start).resolve() if start else Path(__file__).resolve()
     if current.is_file():
         current = current.parent
     for candidate in (current, *current.parents):
-        if is_nemocode_repo(candidate):
+        if is_spacecode_repo(candidate):
             return candidate
-    raise FileNotFoundError(f"NEMOCODE repository root not found from {current}")
+    raise FileNotFoundError(f"Space Code repository root not found from {current}")
 
 
-def is_nemocode_repo(path: str | Path) -> bool:
+def is_spacecode_repo(path: str | Path) -> bool:
     root = Path(path)
     pyproject = root / "pyproject.toml"
     package_root = root / "src" / "nemo_coding_platform"
@@ -61,7 +61,7 @@ def is_nemocode_repo(path: str | Path) -> bool:
         return False
 
 
-def ensure_self_mod_permissions_file(repo_root: str | Path, filename: str = ".nemocode-self-mod.permissions.json") -> Path:
+def ensure_self_mod_permissions_file(repo_root: str | Path, filename: str = ".spacecode-self-mod.permissions.json") -> Path:
     """Create the conservative self-mod permission template if it does not already exist."""
     import json
 

@@ -23,7 +23,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _find_latest_release_bundle(release_root: Path) -> tuple[Path | None, Path | None]:
     if not release_root.exists():
         return None, None
-    bundle_dirs = [p for p in release_root.iterdir() if p.is_dir() and p.name.startswith("nemocode-")]
+    bundle_dirs = [p for p in release_root.iterdir() if p.is_dir() and p.name.startswith("space-code-")]
     if not bundle_dirs:
         return None, None
     latest_dir = max(bundle_dirs, key=lambda p: p.stat().st_mtime)

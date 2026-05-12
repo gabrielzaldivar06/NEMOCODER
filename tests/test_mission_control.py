@@ -26,7 +26,7 @@ class MissionControlTests(unittest.TestCase):
 
             state = build_mission_control_state(repo, runtimes)
 
-        self.assertEqual(state["product"], "NEMO CODE Mission Control")
+        self.assertEqual(state["product"], "Space Code Mission Control")
         self.assertEqual(len(state["runs"]), 1)
         self.assertEqual(len(state["approval_queue"]), 1)
         self.assertEqual(state["runs"][0]["review_status"], "awaiting_review")

@@ -37,8 +37,8 @@ Optional custom version label:
 
 Output:
 
-- Folder: `.release/nemocode-<bundle-version>/`
-- Zip: `.release/nemocode-<bundle-version>.zip`
+- Folder: `.release/space-code-<bundle-version>/`
+- Zip: `.release/space-code-<bundle-version>.zip`
 
 ## Run from Packaged Bundle
 

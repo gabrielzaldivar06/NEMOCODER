@@ -63,7 +63,7 @@ def default_ruleset(autonomy: AutonomyLevel) -> PermissionRuleset:
 
 def load_ruleset_from_file(path: str | Path) -> PermissionRuleset:
     """
-    Load .nemocode-permissions.json from path.
+    Load .spacecode-permissions.json from path.
     Format:
     {
       "write_file": {"src/**": "allow", "*.env": "deny"},

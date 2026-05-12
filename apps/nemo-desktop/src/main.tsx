@@ -296,7 +296,7 @@ export function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <h1>Nemocode Desktop</h1>
+          <h1>Space Code Desktop</h1>
           <p>Mission Control Workspace</p>
         </div>
         <div className={`status-pill ${backendStatus}`}>{statusLabel()}</div>

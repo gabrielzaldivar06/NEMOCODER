@@ -84,15 +84,15 @@ def build_parser() -> argparse.ArgumentParser:
     headless_run.add_argument("--mcp-url", help="Connect to NEMO MCP (preferred: stdio://vscode/nemo; SSE URLs are legacy compatibility)")
     headless_run.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
     headless_run.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
-    headless_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Spacecode engine prompt")
+    headless_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Space Code engine prompt")
     headless_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
     headless_run.add_argument("--permissions-file", help="Path to .spacecode-permissions.json")
     headless_run.add_argument("--image", help="Path to a design reference image (Vision)")
     headless_run.add_argument("--json", action="store_true")
-    self_modify = subparsers.add_parser("self-modify", help="Run a controlled self-modification task against Spacecode itself")
+    self_modify = subparsers.add_parser("self-modify", help="Run a controlled self-modification task against Space Code itself")
     self_modify.add_argument("description")
     self_modify.add_argument("--type", choices=[item.value for item in SelfModTaskType], default=SelfModTaskType.BUG_FIX.value)
-    self_modify.add_argument("--repo", help="NEMOCODE repo root; auto-discovered when omitted")
+    self_modify.add_argument("--repo", help="Space Code repo root; auto-discovered when omitted")
     self_modify.add_argument("--target-file", action="append", default=[])
     self_modify.add_argument("--validation", action="append")
     self_modify.add_argument("--validation-policy", choices=("none", "smoke", "targeted", "full"), default="smoke")
@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--mcp-url", help="Connect to NEMO MCP (preferred: stdio://vscode/nemo; SSE URLs are legacy compatibility)")
     long_run.add_argument("--mcp-prefix", default="nemo.", help="Prefix for MCP tool names (e.g. 'nemo.')")
     long_run.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
-    long_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Spacecode engine prompt")
+    long_run.add_argument("--skill", default=None, help="Name or slug of a skill from the skills/ directory to inject into the Space Code engine prompt")
     long_run.add_argument("--skills-root", default="skills", help="Root directory for skills (default: ./skills)")
     long_run.add_argument("--permissions-file", help="Path to .spacecode-permissions.json")
     long_run.add_argument("--image", help="Path to a design reference image (Vision)")
@@ -852,13 +852,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"- {run['review_status']} {run['task_id']} {run['run_id']} changes={len(run['changed_files'])}")
         return 0
     if args.command == "watch":
-        print(f"NEMOCODE watching {args.repo} for '# ai!' comments... (Ctrl+C to stop)")
+        print(f"Space Code watching {args.repo} for '# ai!' comments... (Ctrl+C to stop)")
         
         def on_comments(requests: list[WatchRequest]):
             for req in requests:
                 print(f"\n[AI Comment Detected] {req.filepath}:{req.line_number} -> {req.objective}")
                 # For now, we just print. In a real scenario, we might trigger a background task.
-                print("Tip: Run 'nemocode headless-run \"{req.objective}\" --target-file {req.filepath}' to execute.")
+                print("Tip: Run 'spacecode headless-run \"{req.objective}\" --target-file {req.filepath}' to execute.")
 
         watcher = FileWatcher(args.repo, on_comments)
         watcher.start()

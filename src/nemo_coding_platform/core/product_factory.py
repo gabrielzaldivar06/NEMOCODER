@@ -18,7 +18,7 @@ def _ensure_embedded_runtime_on_path() -> None:
 
 def get_platform_info(product_name: str) -> dict[str, Any]:
     normalized = product_name.strip().lower()
-    if normalized not in {"nemo-code", "nemo_code", "nemo code", "nemocode"}:
+    if normalized not in {"space-code", "space_code", "space code", "spacecode"}:
         raise ValueError(f"unknown product platform: {product_name}")
     _ensure_embedded_runtime_on_path()
     module = importlib.import_module("nemo_code_runtime.nemo_platform.platform_info")

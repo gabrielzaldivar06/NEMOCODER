@@ -1,10 +1,10 @@
-# Spacecode Desktop
+# Space Code Desktop
 
 Local-first AI coding agent with Spec-Driven Development, packaged as a desktop application using Tauri and React.
 
 ## Overview
 
-**Spacecode Desktop** is the graphical interface for the Spacecode AI assistant. It provides:
+**Space Code Desktop** is the graphical interface for the Space Code AI assistant. It provides:
 
 - **Repository Picker**: Choose which repository to operate on
 - **Task Workspace**: Define and manage coding tasks
@@ -185,7 +185,7 @@ Use DevTools for the desktop wrapper to inspect startup/health behavior, and Dev
 
 ## Deep Linking
 
-Spacecode Desktop can be launched with deep links:
+Space Code Desktop can be launched with deep links:
 
 ```bash
 # Open a specific repository
@@ -224,4 +224,4 @@ spacecode://start-task?name=my-task
 
 ## License
 
-Same as parent Spacecode project.
+Same as parent Space Code project.

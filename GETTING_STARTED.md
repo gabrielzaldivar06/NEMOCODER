@@ -1,6 +1,6 @@
-# Getting Started with Spacecode
+# Getting Started with Space Code
 
-This guide walks you through pointing Spacecode at an existing git repository and running your first autonomous coding handoff.
+This guide walks you through pointing Space Code at an existing git repository and running your first autonomous coding handoff.
 
 ---
 
@@ -11,7 +11,7 @@ This guide walks you through pointing Spacecode at an existing git repository an
 | Python | 3.12+ | `python --version` |
 | Node.js | 18+ | `node --version` |
 | Git | any | Repository must be a git repo |
-| LM Studio | latest | [lmstudio.ai](https://lmstudio.ai) — for real local Spacecode runs |
+| LM Studio | latest | [lmstudio.ai](https://lmstudio.ai) - for real local Space Code runs |
 
 ---
 
@@ -34,7 +34,7 @@ python -m nemo_coding_platform blueprint
 
 ---
 
-## 2. Configure LM Studio (for real Spacecode runs)
+## 2. Configure LM Studio (for real Space Code runs)
 
 1. Open LM Studio → **Local Server** tab → load `nvidia/agentic-coder-4b` (or any OpenAI-compatible chat model).
 2. Start the server on `http://localhost:1234`.
@@ -107,7 +107,7 @@ Recent repos are remembered and shown in the sidebar for quick switching.
 2. Fill in:
    - **Objective / PRD**: describe what the agent should build or fix.
    - **Validation commands** (optional): e.g. `python -m pytest tests/` — the agent will run these to verify its work.
-    - **Provider mode**: `subprocess` for real Spacecode execution with LM Studio.
+    - **Provider mode**: `subprocess` for real Space Code execution with LM Studio.
 3. Click **Start Handoff**.
 
 The agent run appears in the Explorer panel. Logs stream in the bottom panel. When the run completes, the diff review surface shows changed files and hunks for human approval.
@@ -157,10 +157,10 @@ NEMO is the memory plane that injects project context into agent prompts. Withou
 **Setup:**
 
 1. Configure the VS Code NEMO MCP server named `nemo`.
-2. Spacecode should use the MCP transport `stdio://vscode/nemo` through the Mission Control backend.
+2. Space Code should use the MCP transport `stdio://vscode/nemo` through the Mission Control backend.
 3. In Mission Control **Settings → NEMO**, verify the health indicator is green.
 
-Do not point the browser or frontend plan sync directly at `http://localhost:8765`; legacy SSE endpoints are compatibility-only and bypass Spacecode's backend policy layer.
+Do not point the browser or frontend plan sync directly at `http://localhost:8765`; legacy SSE endpoints are compatibility-only and bypass Space Code's backend policy layer.
 
 When NEMO is connected, the agent automatically builds a context portfolio from your project's memory before each mutation and falls back to semantic search if the portfolio is empty.
 

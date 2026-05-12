@@ -164,7 +164,7 @@ class EngineProvider(Protocol):
 
 
 class FakeEngineProvider:
-    name = "fake-nemo-code"
+    name = "fake-space-code"
 
     def create_plan(self, request: MutationRequest) -> MutationPlan:
         content = "\n".join(
@@ -185,7 +185,7 @@ class FakeEngineProvider:
 
 
 class SubprocessEngineProvider:
-    name = "subprocess-nemo-code"
+    name = "subprocess-space-code"
 
     def __init__(self, command: tuple[str, ...] | None = None, cwd: str | Path = ".") -> None:
         self.command = command
@@ -323,7 +323,7 @@ def create_engine_provider(
         return FakeEngineProvider()
     if provider_mode == "subprocess":
         return SubprocessEngineProvider(command, cwd=cwd)
-    raise ValueError(f"unsupported NEMO CODE provider mode: {provider_mode}")
+    raise ValueError(f"unsupported Space Code provider mode: {provider_mode}")
 
 
 def apply_mutation_request(engine: QualityMutationEngine, provider: EngineProvider, request: MutationRequest) -> MutationResult:

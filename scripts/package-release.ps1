@@ -56,8 +56,8 @@ if (-not $Version) {
 }
 
 $releaseRoot = Join-Path $RepoRoot $OutputRoot
-$bundleRoot = Join-Path $releaseRoot "nemocode-$Version"
-$archivePath = Join-Path $releaseRoot "nemocode-$Version.zip"
+$bundleRoot = Join-Path $releaseRoot "space-code-$Version"
+$archivePath = Join-Path $releaseRoot "space-code-$Version.zip"
 
 if (Test-Path $bundleRoot) {
     Remove-Item $bundleRoot -Recurse -Force
@@ -109,7 +109,7 @@ Write-Host "[4/6] Writing launcher scripts"
 $startBackend = @'
 param(
     [string]$RepoPath = ".",
-    [string]$RuntimesPath = ".nemo-runtimes",
+    [string]$RuntimesPath = ".spacecode-runtimes",
     [int]$Port = 8787
 )
 
@@ -140,7 +140,7 @@ $startWebPreview | Set-Content -Path (Join-Path $bundleRoot "scripts\start-web-p
 
 Write-Host "[5/6] Writing manifest, integrity, and checklist"
 $manifest = [ordered]@{
-    package = "nemocode"
+    package = "space-code"
     version = $projectVersion
     bundle_version = $Version
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")

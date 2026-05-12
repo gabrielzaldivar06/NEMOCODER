@@ -18,7 +18,7 @@ from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
 from nemo_coding_platform.core.permission_engine import PermissionAction, load_ruleset_from_file
 from nemo_coding_platform.core.persistence import load_headless_result_json, save_headless_result_json, summarize_persisted_result
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
-from nemo_coding_platform.core.self_discovery import ensure_self_mod_permissions_file, find_nemocode_repo
+from nemo_coding_platform.core.self_discovery import ensure_self_mod_permissions_file, find_spacecode_repo
 from nemo_coding_platform.core.skills import find_skill_by_name
 from nemo_coding_platform.core.reflexion import generate_reflexion, persist_reflexion
 from nemo_coding_platform.core.validation import validation_commands_for_policy
@@ -118,7 +118,7 @@ def build_self_mod_handoff_request(request: SelfModRequest, repo_root: str | Pat
     return HandoffRequest(
         prd=(
             f"[SELF-MOD:{request.task_type.value}] {request.description}\n\n"
-            "Modify NEMOCODE itself through the self-modification workflow. "
+            "Modify Space Code itself through the self-modification workflow. "
             "Preserve public contracts unless the objective explicitly requires a contract change. "
             "Update or add tests for behavioral changes."
         ),
@@ -155,7 +155,7 @@ def _adaptive_repair_budget(request: SelfModRequest, context: dict[str, Any]) ->
 
 
 def build_self_mod_context(adapter: PersistentNemoAdapter | InMemoryNemoAdapter, request: SelfModRequest) -> dict[str, Any]:
-    topic = "NEMOCODE self-modification"
+    topic = "Space Code self-modification"
     _, prime = adapter.call(NemoLifecyclePhase.START, "prime_context", topic=topic, limit=8)
     _, portfolio = adapter.call(
         NemoLifecyclePhase.PLAN,
@@ -184,7 +184,7 @@ def record_self_mod_outcome(adapter: PersistentNemoAdapter | InMemoryNemoAdapter
             f"Self-modification outcome type={request.task_type.value} validation_passed={validation_passed} "
             f"grade={grade} changed_files={','.join(run.effective_changed_files)} risks={','.join(risk_flags)}"
         ),
-        topic="NEMOCODE self-modification",
+        topic="Space Code self-modification",
         tags=("self-modification", request.task_type.value, run.task.id, run.run.id),
         atom_type=MemoryAtomType.SESSION_SUMMARY.value,
         source_scope="self_modification",
@@ -293,7 +293,7 @@ def record_self_mod_trajectory(memory_db: str | Path, run_json: str | Path) -> d
             "self_modification",
             evidence_handle,
         ),
-        topic="NEMOCODE self-modification",
+        topic="Space Code self-modification",
         tags=("self-modification", "self-mod-trajectory", task_id, run_id),
         importance=9 if risk_flags else 8,
     )
@@ -304,7 +304,7 @@ def record_self_mod_trajectory(memory_db: str | Path, run_json: str | Path) -> d
             "self_modification",
             evidence_handle,
         ),
-        topic="NEMOCODE self-modification",
+        topic="Space Code self-modification",
         tags=("self-modification", "self-mod-impact", task_id, run_id),
         importance=8,
     )
@@ -314,7 +314,7 @@ def record_self_mod_trajectory(memory_db: str | Path, run_json: str | Path) -> d
 
 def self_mod_similar_runs(memory_db: str | Path, query: str = "", *, limit: int = 6) -> dict[str, Any]:
     store = PersistentMemoryStore(Path(memory_db))
-    atoms = store.search_atoms(topic="NEMOCODE self-modification", tags=("self-mod-trajectory",), limit=max(limit * 4, limit))
+    atoms = store.search_atoms(topic="Space Code self-modification", tags=("self-mod-trajectory",), limit=max(limit * 4, limit))
     query_terms = {term.lower() for term in query.replace(",", " ").split() if len(term) > 2}
     matches: list[dict[str, Any]] = []
     for atom in atoms:
@@ -359,7 +359,7 @@ def record_self_mod_decision(memory_db: str | Path, decision: SelfModDecision | 
     content = f"Self-mod decision objective={item.objective} chosen_path={item.chosen_path} rationale={item.rationale} alternatives={','.join(item.alternatives) or 'none'}"
     atom_id = store.create_atom(
         MemoryAtom(MemoryAtomType.DECISION, content, "self_modification", handle),
-        topic="NEMOCODE self-modification",
+        topic="Space Code self-modification",
         tags=tuple(tag for tag in tags if tag),
         importance=int(kwargs.get("importance", 8)),
     )
@@ -399,7 +399,7 @@ def record_self_mod_feedback(memory_db: str | Path, feedback: SelfModFeedback | 
             "self_modification",
             evidence_handle,
         ),
-        topic="NEMOCODE self-modification",
+        topic="Space Code self-modification",
         tags=("self-modification", "self-mod-feedback", status),
         importance=8 if item.approved else 9,
     )
@@ -420,7 +420,7 @@ def learn_from_self_mod_failure(memory_db: str | Path, run_json: str | Path, *, 
     )
     correction_id = store.create_atom(
         MemoryAtom(MemoryAtomType.CORRECTION, f"Self-mod failure pattern={failure_pattern}; correction={suggested_correction}; confidence={confidence:.2f}", "self_modification", handle),
-        topic="NEMOCODE self-modification",
+        topic="Space Code self-modification",
         tags=("self-modification", "self-mod-failure", "self-mod-correction", failure_pattern, task_id, run_id),
         importance=10,
     )
@@ -434,7 +434,7 @@ def mark_portfolio_effective(memory_db: str | Path, *, portfolio_id: str, task_t
     feedback_id = store.record_feedback(evidence_handle=portfolio_id, event_type="self_mod_portfolio_effective", was_useful=score >= 6, token_delta=int(context_savings))
     atom_id = store.create_atom(
         MemoryAtom(MemoryAtomType.ARTIFACT_STATE, f"Self-mod portfolio effective portfolio_id={portfolio_id} task_type={task_type or 'unknown'} score={score} context_savings={context_savings}", "self_modification", portfolio_id),
-        topic="NEMOCODE self-modification",
+        topic="Space Code self-modification",
         tags=("self-modification", "self-mod-portfolio", "effective", task_type or "unknown"),
         importance=6 + min(4, score // 2),
     )
@@ -443,7 +443,7 @@ def mark_portfolio_effective(memory_db: str | Path, *, portfolio_id: str, task_t
 
 def get_self_mod_continuity(memory_db: str | Path, *, task_objective: str = "", task_type: str = "", limit: int = 6, include_abandoned: bool = True) -> dict[str, Any]:
     store = PersistentMemoryStore(Path(memory_db))
-    atoms = store.search_atoms(topic="NEMOCODE self-modification", limit=max(limit * 8, 40))
+    atoms = store.search_atoms(topic="Space Code self-modification", limit=max(limit * 8, 40))
     query_terms = _term_set(f"{task_objective} {task_type}")
     items: list[dict[str, Any]] = []
     for atom in atoms:
@@ -462,7 +462,7 @@ def get_self_mod_continuity(memory_db: str | Path, *, task_objective: str = "", 
 
 def query_self_mod_risk_patterns(memory_db: str | Path, *, file_or_module: str = "", risk_category: str = "", limit: int = 10) -> dict[str, Any]:
     store = PersistentMemoryStore(Path(memory_db))
-    atoms = store.search_atoms(topic="NEMOCODE self-modification", tags=("self-mod-risk",), limit=max(limit * 4, limit))
+    atoms = store.search_atoms(topic="Space Code self-modification", tags=("self-mod-risk",), limit=max(limit * 4, limit))
     query_terms = _term_set(f"{file_or_module} {risk_category}")
     patterns: list[dict[str, Any]] = []
     for atom in atoms:
@@ -483,7 +483,7 @@ def execute_self_modification(
     model_profile: ModelProfile | None = None,
     engine_command: tuple[str, ...] | None = None,
 ) -> SelfModRunResult:
-    repo_root = find_nemocode_repo(request.repo_root)
+    repo_root = find_spacecode_repo(request.repo_root)
     permissions_file = ensure_self_mod_permissions_file(repo_root)
     adapter = PersistentNemoAdapter(PersistentMemoryStore(Path(request.memory_db)))
     context = build_self_mod_context(adapter, request)
@@ -558,7 +558,7 @@ def self_mod_status(run_json: str | Path) -> dict[str, Any]:
 def self_mod_review(run_json: str | Path, permissions_file: str | Path | None = None) -> dict[str, Any]:
     payload = load_headless_result_json(run_json)
     plan = build_merge_plan(payload)
-    policy_file = Path(permissions_file) if permissions_file else Path(plan.repo_path) / ".nemocode-self-mod.permissions.json"
+    policy_file = Path(permissions_file) if permissions_file else Path(plan.repo_path) / ".spacecode-self-mod.permissions.json"
     self_mod_risks = self_mod_risk_flags(payload, policy_file)
     risk_flags = tuple(dict.fromkeys((*plan.risk_flags, *self_mod_risks)))
     mergeable = plan.mergeable and not _blocking_self_mod_risks(risk_flags)
@@ -659,7 +659,7 @@ def _suggested_tests_for(changed_files: tuple[str, ...]) -> tuple[str, ...]:
             suggestions.append(f"tests/test_{stem}.py")
         if path == "src/nemo_coding_platform/cli.py":
             suggestions.append("tests/test_cli_headless.py")
-        if path == "src/nemo_coding_platform/mcp_server.py" or path.endswith("nemocode_mcp_tools.py"):
+        if path == "src/nemo_coding_platform/mcp_server.py" or path.endswith("spacecode_mcp_tools.py"):
             suggestions.append("tests/test_mcp_server.py")
         if path == "src/nemo_coding_platform/mission_control_server.py":
             suggestions.append("tests/test_mission_control_server.py")
@@ -678,7 +678,7 @@ def _impact_risks(changed_files: tuple[str, ...], validation_statuses: tuple[str
         risks.append("impact:validation_skipped")
     if any(path.startswith("src/") for path in changed_files) and not any(path.startswith("tests/") for path in changed_files):
         risks.append("impact:source_without_test_change")
-    if any(path.endswith(("cli.py", "mcp_server.py", "nemocode_mcp_tools.py")) for path in changed_files):
+    if any(path.endswith(("cli.py", "mcp_server.py", "spacecode_mcp_tools.py")) for path in changed_files):
         risks.append("impact:public_surface_change")
     if any(path.startswith("apps/mission-control/") for path in changed_files) and "npm run build" in suggested_tests:
         risks.append("impact:ui_build_required")
@@ -695,7 +695,7 @@ def _record_risk_pattern_atoms(store: PersistentMemoryStore, trajectory: dict[st
             atom_ids.append(
                 store.create_atom(
                     MemoryAtom(MemoryAtomType.ARTIFACT_STATE, f"Self-mod risk pattern risk={risk} path={path} mitigation={mitigation}", "self_modification", evidence_handle),
-                    topic="NEMOCODE self-modification",
+                    topic="Space Code self-modification",
                     tags=("self-modification", "self-mod-risk", risk, path, task_id, run_id),
                     importance=9,
                 )

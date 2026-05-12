@@ -8,7 +8,7 @@ from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
 from nemo_coding_platform.core.self_discovery import ensure_self_mod_permissions_file
 from nemo_coding_platform.core.self_modification import SelfModRequest, SelfModTaskType, build_self_mod_context, build_self_mod_handoff_request, execute_self_modification, get_self_mod_continuity, learn_from_self_mod_failure, query_self_mod_risk_patterns, record_self_mod_decision, record_self_mod_feedback, self_mod_apply, self_mod_review, self_mod_risk_flags, self_mod_rollback, self_mod_status
 from nemo_coding_platform.mcp_server import mcp_tool_definitions
-from nemo_coding_platform.nemocode_mcp_tools import mcp_get_self_mod_continuity, mcp_learn_from_self_mod_failure, mcp_record_self_mod_decision, mcp_self_mod_apply, mcp_self_mod_review, mcp_self_mod_status, mcp_self_modify
+from nemo_coding_platform.spacecode_mcp_tools import mcp_get_self_mod_continuity, mcp_learn_from_self_mod_failure, mcp_record_self_mod_decision, mcp_self_mod_apply, mcp_self_mod_review, mcp_self_mod_status, mcp_self_modify
 
 
 def _make_repo(root: Path) -> None:
@@ -343,11 +343,11 @@ class SelfModificationTests(unittest.TestCase):
     def test_mcp_tool_definitions_include_self_modify(self) -> None:
         names = {tool["name"] for tool in mcp_tool_definitions()}
 
-        self.assertIn("nemocode.self_modify", names)
-        self.assertIn("nemocode.self_mod_status", names)
-        self.assertIn("nemocode.self_mod_review", names)
-        self.assertIn("nemocode.self_mod_apply", names)
-        self.assertIn("nemocode.self_mod_rollback", names)
+        self.assertIn("spacecode.self_modify", names)
+        self.assertIn("spacecode.self_mod_status", names)
+        self.assertIn("spacecode.self_mod_review", names)
+        self.assertIn("spacecode.self_mod_apply", names)
+        self.assertIn("spacecode.self_mod_rollback", names)
 
     def test_mcp_self_modify_returns_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

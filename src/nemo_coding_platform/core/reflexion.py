@@ -1,4 +1,4 @@
-"""Reflexion Loop — structured post-task reflection for NemoCode self-improvement.
+"""Reflexion Loop - structured post-task reflection for Space Code self-improvement.
 
 Based on the Reflexion framework (Shinn & Labash 2023): after every task the agent
 generates a typed, evidence-backed reflection and persists it in NEMO so future

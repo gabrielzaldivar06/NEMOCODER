@@ -1,4 +1,4 @@
-"""Skill loading and parsing for NEMOCODE.
+"""Skill loading and parsing for Space Code.
 
 Skills are Markdown files (SKILL.md) with a simple YAML-like front-matter block
 that defines the skill's name, description, and an optional prompt injected into

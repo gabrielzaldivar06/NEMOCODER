@@ -250,7 +250,7 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
         state_settings["validation_policy"] = "smoke"
     return {
         "schema_version": 1,
-        "product": "NEMO CODE Mission Control",
+        "product": "Space Code Mission Control",
         "repo_path": str(repo),
         "runtimes_path": str(runtime_root),
         "repos": repos,

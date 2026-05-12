@@ -34,7 +34,7 @@ class ReviewPackageTests(unittest.TestCase):
             )
         )
         mutation = MutationResult(
-            "subprocess-nemo-code",
+            "subprocess-space-code",
             MutationPlan(writes=(), approved=True, dry_run_completed=True),
             (),
             (),

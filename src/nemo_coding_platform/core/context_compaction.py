@@ -38,7 +38,7 @@ def compact_context(context: str, *, max_chars: int = COMPACTION_THRESHOLD_CHARS
     if len(context) <= max_chars:
         return context
 
-    # Split by common headers in NEMOCODE context
+    # Split by common headers in Space Code context
     sections = re.split(r'\n(?=# )', context)
     if len(sections) < 2:
         # Fallback to simple truncation if no headers found

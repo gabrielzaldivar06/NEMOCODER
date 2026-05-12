@@ -353,7 +353,7 @@ def execute_headless_handoff(
         )
         nemo_results.append(search_result)
         nemo_context = _bounded_nemo_context(str(search_result.payload.get("results", "")))
-    platform = get_platform_info("nemo-code")
+    platform = get_platform_info("space-code")
     profile = model_profile or default_model_profile()
     run = Run(
         run_id,
@@ -377,7 +377,7 @@ def execute_headless_handoff(
 
     # --- Permission System (inspired by opencode) ---
     repo_root = Path(request.repo_path).resolve()
-    perm_path = Path(permissions_file) if permissions_file else repo_root / ".nemocode-permissions.json"
+    perm_path = Path(permissions_file) if permissions_file else repo_root / ".spacecode-permissions.json"
     ruleset = load_ruleset_from_file(perm_path) if perm_path.exists() else default_ruleset(AutonomyLevel.FULL_HANDOFF)
     
     allowed_files = []
@@ -635,8 +635,8 @@ def execute_headless_handoff(
                     f"attempts_used={len(repair_result.mutation_results)} "
                     f"task={_task_desc}"
                 ),
-                topic="NEMOCODE self-modification",
-                tags=("repair_failure", "self-mod-risk", "nemocode-repair"),
+                topic="Space Code self-modification",
+                tags=("repair_failure", "self-mod-risk", "spacecode-repair"),
             )
             nemo_results.append(_repair_failure_trace)
             # --- Semantic Continuity Anchor: surface incomplete task in future sessions ---
@@ -706,7 +706,7 @@ def execute_headless_handoff(
             "checkpoint-plan.md",
             ExecutionPhase.PLAN.value,
             (),
-            "Execute NEMO CODE mutation in isolated runtime.",
+            "Execute Space Code mutation in isolated runtime.",
             (),
         ),
         (
@@ -856,7 +856,7 @@ def execute_headless_handoff(
     review = build_review_package(
         task,
         run,
-        f"Mutation prepared through {mutation_result.provider} and the NEMO CODE quality engine.",
+        f"Mutation prepared through {mutation_result.provider} and the Space Code quality engine.",
         validation,
         memory_traces,
         mutation_result=effective_mutation_result,

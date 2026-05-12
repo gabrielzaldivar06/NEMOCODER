@@ -1,11 +1,11 @@
 ---
 name: self-modification
-description: Safely modify NEMOCODE itself using sandboxed execution, validation, review gates, and NEMO writeback.
+description: Safely modify Space Code itself using sandboxed execution, validation, review gates, and NEMO writeback.
 ---
 
 # Self-Modification
 
-When modifying NEMOCODE itself:
+When modifying Space Code itself:
 
 - Keep changes scoped to the requested objective and target files.
 - Preserve public APIs unless the objective explicitly requires a contract change.

@@ -11,22 +11,22 @@ from datetime import datetime, timezone
 
 from nemo_coding_platform.core.memory import NEMO_TOOL_REGISTRY
 from nemo_coding_platform.core.nemo_lifecycle import lifecycle_contract, NemoLifecyclePhase
-from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool, mcp_get_self_mod_continuity, mcp_learn_from_self_mod_failure, mcp_mark_portfolio_effective, mcp_query_self_mod_risk_patterns, mcp_record_self_mod_decision, mcp_record_self_mod_feedback, mcp_run_headless, mcp_list_runs, mcp_get_run_result, mcp_prime_context, mcp_build_context_portfolio, mcp_self_modify, mcp_self_mod_status, mcp_self_mod_review, mcp_self_mod_apply, mcp_self_mod_rollback, mcp_self_mod_trajectory, mcp_self_mod_impact, mcp_self_mod_similar_runs
+from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool, mcp_get_self_mod_continuity, mcp_learn_from_self_mod_failure, mcp_mark_portfolio_effective, mcp_query_self_mod_risk_patterns, mcp_record_self_mod_decision, mcp_record_self_mod_feedback, mcp_run_headless, mcp_list_runs, mcp_get_run_result, mcp_prime_context, mcp_build_context_portfolio, mcp_self_modify, mcp_self_mod_status, mcp_self_mod_review, mcp_self_mod_apply, mcp_self_mod_rollback, mcp_self_mod_trajectory, mcp_self_mod_impact, mcp_self_mod_similar_runs
 
 
-NEMOCODE_TOOL_PREFIX = "nemocode."
+SPACECODE_TOOL_PREFIX = "spacecode."
 NEMO_TOOLS_BY_NAME = {tool.name: tool for tool in NEMO_TOOL_REGISTRY}
 
 # Static tools not represented in NEMO_TOOL_REGISTRY still need explicit governance.
 STATIC_TOOL_RISK: dict[str, str] = {
-    "nemocode.run_headless": "memory_write",
-    "nemocode.self_modify": "destructive",
-    "nemocode.self_mod_apply": "destructive",
-    "nemocode.self_mod_rollback": "destructive",
-    "nemocode.record_self_mod_decision": "memory_write",
-    "nemocode.record_self_mod_feedback": "memory_write",
-    "nemocode.learn_from_self_mod_failure": "memory_write",
-    "nemocode.mark_portfolio_effective": "memory_write",
+    "spacecode.run_headless": "memory_write",
+    "spacecode.self_modify": "destructive",
+    "spacecode.self_mod_apply": "destructive",
+    "spacecode.self_mod_rollback": "destructive",
+    "spacecode.record_self_mod_decision": "memory_write",
+    "spacecode.record_self_mod_feedback": "memory_write",
+    "spacecode.learn_from_self_mod_failure": "memory_write",
+    "spacecode.mark_portfolio_effective": "memory_write",
 }
 
 
@@ -45,8 +45,8 @@ def _tool_risk(tool_name: str) -> str:
         return "unknown"
     if tool_name in STATIC_TOOL_RISK:
         return STATIC_TOOL_RISK[tool_name]
-    if tool_name.startswith(NEMOCODE_TOOL_PREFIX):
-        logical_name = tool_name.removeprefix(NEMOCODE_TOOL_PREFIX)
+    if tool_name.startswith(SPACECODE_TOOL_PREFIX):
+        logical_name = tool_name.removeprefix(SPACECODE_TOOL_PREFIX)
         tool = NEMO_TOOLS_BY_NAME.get(logical_name)
         if tool:
             return tool.risk.value
@@ -82,7 +82,7 @@ def tool_policy_decision(tool_name: str, tool_args: dict[str, Any] | None = None
 
 
 def _audit_log_path() -> Path:
-    configured = os.environ.get("NEMOCODE_MCP_AUDIT_LOG", ".nemo-runtimes/mcp/tool-audit.jsonl")
+    configured = os.environ.get("SPACE_CODE_MCP_AUDIT_LOG", ".spacecode-runtimes/mcp/tool-audit.jsonl")
     return Path(configured)
 
 
@@ -106,27 +106,27 @@ def _persist_tool_call_audit(request_id: Any, decision: dict[str, Any], outcome:
 class MCPServerHandler(BaseHTTPRequestHandler):
     # Map of tool names to their implementations
     TOOLS = {
-        "nemocode.run_headless": mcp_run_headless,
-        "nemocode.list_runs": mcp_list_runs,
-        "nemocode.get_run_result": mcp_get_run_result,
-        "nemocode.prime_context": mcp_prime_context,
-        "nemocode.build_context_portfolio": mcp_build_context_portfolio,
-        "nemocode.self_modify": mcp_self_modify,
-        "nemocode.self_mod_status": mcp_self_mod_status,
-        "nemocode.self_mod_review": mcp_self_mod_review,
-        "nemocode.self_mod_apply": mcp_self_mod_apply,
-        "nemocode.self_mod_rollback": mcp_self_mod_rollback,
-        "nemocode.self_mod_trajectory": mcp_self_mod_trajectory,
-        "nemocode.self_mod_impact": mcp_self_mod_impact,
-        "nemocode.self_mod_similar_runs": mcp_self_mod_similar_runs,
-        "nemocode.record_self_mod_decision": mcp_record_self_mod_decision,
-        "nemocode.record_self_mod_feedback": mcp_record_self_mod_feedback,
-        "nemocode.learn_from_self_mod_failure": mcp_learn_from_self_mod_failure,
-        "nemocode.mark_portfolio_effective": mcp_mark_portfolio_effective,
-        "nemocode.get_self_mod_continuity": mcp_get_self_mod_continuity,
-        "nemocode.query_self_mod_risk_patterns": mcp_query_self_mod_risk_patterns,
+        "spacecode.run_headless": mcp_run_headless,
+        "spacecode.list_runs": mcp_list_runs,
+        "spacecode.get_run_result": mcp_get_run_result,
+        "spacecode.prime_context": mcp_prime_context,
+        "spacecode.build_context_portfolio": mcp_build_context_portfolio,
+        "spacecode.self_modify": mcp_self_modify,
+        "spacecode.self_mod_status": mcp_self_mod_status,
+        "spacecode.self_mod_review": mcp_self_mod_review,
+        "spacecode.self_mod_apply": mcp_self_mod_apply,
+        "spacecode.self_mod_rollback": mcp_self_mod_rollback,
+        "spacecode.self_mod_trajectory": mcp_self_mod_trajectory,
+        "spacecode.self_mod_impact": mcp_self_mod_impact,
+        "spacecode.self_mod_similar_runs": mcp_self_mod_similar_runs,
+        "spacecode.record_self_mod_decision": mcp_record_self_mod_decision,
+        "spacecode.record_self_mod_feedback": mcp_record_self_mod_feedback,
+        "spacecode.learn_from_self_mod_failure": mcp_learn_from_self_mod_failure,
+        "spacecode.mark_portfolio_effective": mcp_mark_portfolio_effective,
+        "spacecode.get_self_mod_continuity": mcp_get_self_mod_continuity,
+        "spacecode.query_self_mod_risk_patterns": mcp_query_self_mod_risk_patterns,
     }
-    NEMO_TOOL_NAMES = {f"{NEMOCODE_TOOL_PREFIX}{tool.name}" for tool in NEMO_TOOL_REGISTRY}
+    NEMO_TOOL_NAMES = {f"{SPACECODE_TOOL_PREFIX}{tool.name}" for tool in NEMO_TOOL_REGISTRY}
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -190,7 +190,7 @@ class MCPServerHandler(BaseHTTPRequestHandler):
                     "capabilities": {
                         "tools": {"listChanged": True}
                     },
-                    "serverInfo": {"name": "NEMOCODE", "version": "1.0.0"}
+                    "serverInfo": {"name": "Space Code", "version": "1.0.0"}
                 })
             elif method == "tools/list":
                 response = self._json_rpc_success(request_id, {"tools": mcp_tool_definitions()})
@@ -213,7 +213,7 @@ class MCPServerHandler(BaseHTTPRequestHandler):
                         "content": [{"type": "text", "text": json.dumps(payload, indent=2)}]
                     })
                 elif tool_name in self.NEMO_TOOL_NAMES:
-                    nemo_tool_name = tool_name.removeprefix(NEMOCODE_TOOL_PREFIX)
+                    nemo_tool_name = tool_name.removeprefix(SPACECODE_TOOL_PREFIX)
                     result = mcp_call_nemo_tool(nemo_tool_name, **tool_args)
                     payload = {
                         "ok": True,
@@ -255,7 +255,7 @@ class MCPServerHandler(BaseHTTPRequestHandler):
 def mcp_tool_definitions() -> list[dict[str, Any]]:
     static_tools = [
         {
-            "name": "nemocode.run_headless",
+            "name": "spacecode.run_headless",
             "description": "Run an autonomous coding task in a sandbox.",
             "inputSchema": {
                 "type": "object",
@@ -268,18 +268,18 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.list_runs",
+            "name": "spacecode.list_runs",
             "description": "List all previous autonomous runs.",
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
-            "name": "nemocode.get_run_result",
+            "name": "spacecode.get_run_result",
             "description": "Retrieve a persisted autonomous run result JSON.",
             "inputSchema": {"type": "object", "properties": {"source_json": {"type": "string"}}, "required": ["source_json"]},
         },
         {
-            "name": "nemocode.self_modify",
-            "description": "Run a controlled self-modification task against NEMOCODE itself in an isolated runtime.",
+            "name": "spacecode.self_modify",
+            "description": "Run a controlled self-modification task against Space Code itself in an isolated runtime.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -298,12 +298,12 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.self_mod_status",
+            "name": "spacecode.self_mod_status",
             "description": "Read status for a persisted self-modification run JSON.",
             "inputSchema": {"type": "object", "properties": {"run_json": {"type": "string"}}, "required": ["run_json"]},
         },
         {
-            "name": "nemocode.self_mod_review",
+            "name": "spacecode.self_mod_review",
             "description": "Build a review plan and risk report for a self-modification run.",
             "inputSchema": {
                 "type": "object",
@@ -312,7 +312,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.self_mod_apply",
+            "name": "spacecode.self_mod_apply",
             "description": "Apply an approved and mergeable self-modification run.",
             "inputSchema": {
                 "type": "object",
@@ -329,7 +329,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.self_mod_rollback",
+            "name": "spacecode.self_mod_rollback",
             "description": "Rollback a self-modification apply result after approval.",
             "inputSchema": {
                 "type": "object",
@@ -338,17 +338,17 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.self_mod_trajectory",
+            "name": "spacecode.self_mod_trajectory",
             "description": "Build a replayable trajectory for a self-modification run.",
             "inputSchema": {"type": "object", "properties": {"run_json": {"type": "string"}}, "required": ["run_json"]},
         },
         {
-            "name": "nemocode.self_mod_impact",
+            "name": "spacecode.self_mod_impact",
             "description": "Analyze changed surfaces, suggested validation, and risks for a self-modification run.",
             "inputSchema": {"type": "object", "properties": {"run_json": {"type": "string"}}, "required": ["run_json"]},
         },
         {
-            "name": "nemocode.self_mod_similar_runs",
+            "name": "spacecode.self_mod_similar_runs",
             "description": "Retrieve similar self-modification trajectories from NEMO memory.",
             "inputSchema": {
                 "type": "object",
@@ -356,7 +356,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.record_self_mod_decision",
+            "name": "spacecode.record_self_mod_decision",
             "description": "Persist a self-modification strategy decision into NEMO memory.",
             "inputSchema": {
                 "type": "object",
@@ -377,7 +377,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.record_self_mod_feedback",
+            "name": "spacecode.record_self_mod_feedback",
             "description": "Persist review/apply feedback for a self-modification run.",
             "inputSchema": {
                 "type": "object",
@@ -396,7 +396,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.learn_from_self_mod_failure",
+            "name": "spacecode.learn_from_self_mod_failure",
             "description": "Convert a failed self-modification run into correction and risk-pattern memory.",
             "inputSchema": {
                 "type": "object",
@@ -411,7 +411,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.mark_portfolio_effective",
+            "name": "spacecode.mark_portfolio_effective",
             "description": "Record that a self-modification context portfolio helped a run succeed.",
             "inputSchema": {
                 "type": "object",
@@ -427,7 +427,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.get_self_mod_continuity",
+            "name": "spacecode.get_self_mod_continuity",
             "description": "Retrieve prior self-modification attempts and lessons for an objective.",
             "inputSchema": {
                 "type": "object",
@@ -442,7 +442,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "nemocode.query_self_mod_risk_patterns",
+            "name": "spacecode.query_self_mod_risk_patterns",
             "description": "Retrieve learned risk patterns for self-modification files or modules.",
             "inputSchema": {
                 "type": "object",
@@ -457,7 +457,7 @@ def mcp_tool_definitions() -> list[dict[str, Any]]:
         },
     ]
     existing = {tool["name"] for tool in static_tools}
-    dynamic_tools = [_nemo_tool_definition(tool) for tool in NEMO_TOOL_REGISTRY if f"{NEMOCODE_TOOL_PREFIX}{tool.name}" not in existing]
+    dynamic_tools = [_nemo_tool_definition(tool) for tool in NEMO_TOOL_REGISTRY if f"{SPACECODE_TOOL_PREFIX}{tool.name}" not in existing]
     return static_tools + dynamic_tools
 
 
@@ -465,7 +465,7 @@ def _nemo_tool_definition(tool: Any) -> dict[str, Any]:
     allowed_lifecycle_phases = [phase.value for phase in NemoLifecyclePhase if tool.name in lifecycle_contract(phase).tool_names]
     risk = tool.risk.value
     return {
-        "name": f"{NEMOCODE_TOOL_PREFIX}{tool.name}",
+        "name": f"{SPACECODE_TOOL_PREFIX}{tool.name}",
         "description": tool.purpose,
         "annotations": {
             "risk": risk,
@@ -485,7 +485,7 @@ def _nemo_tool_definition(tool: Any) -> dict[str, Any]:
 
 def run_mcp_server(host: str = "127.0.0.1", port: int = 8765):
     server = ThreadingHTTPServer((host, port), MCPServerHandler)
-    print(f"NEMOCODE MCP Server listening on http://{host}:{port}/mcp/sse")
+    print(f"Space Code MCP Server listening on http://{host}:{port}/mcp/sse")
     server.serve_forever()
 
 

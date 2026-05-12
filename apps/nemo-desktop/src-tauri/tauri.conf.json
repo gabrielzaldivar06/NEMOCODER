@@ -6,16 +6,16 @@
     "devPath": "http://localhost:5180"
   },
   "package": {
-    "productName": "Nemocode",
+    "productName": "Space Code",
     "version": "0.1.0"
   },
   "tauri": {
     "bundle": {
-      "identifier": "com.nemocode.app"
+      "identifier": "com.spacecode.app"
     },
     "windows": [
       {
-        "title": "Nemocode Desktop",
+        "title": "Space Code Desktop",
         "width": 1400,
         "height": 900,
         "minWidth": 800,

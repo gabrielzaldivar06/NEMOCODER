@@ -10,7 +10,7 @@ import nemo_coding_platform.mission_control_server as mission_control_server
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_nemo_mcp_status, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_search, api_self_modify_start, api_settings, api_state, api_stats, api_terminal_run
-from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool
+from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
 from tests.test_review_gate_cli import write_ready_run
 
 
@@ -139,14 +139,14 @@ class MissionControlServerTests(unittest.TestCase):
                         "search_url": "https://duckduckgo.com/html/?q=nemo+code",
                         "results": [
                             {
-                                "title": "NEMO CODE docs",
+                                "title": "Space Code docs",
                                 "url": "https://example.com/docs",
                                 "snippet": "Embedded browser search result",
                             }
                         ],
                     },
                 ):
-                    payload = api_browser_search(server, {"query": "nemo code", "max_results": 5, "timeout_seconds": 10})
+                    payload = api_browser_search(server, {"query": "space code", "max_results": 5, "timeout_seconds": 10})
                 state = api_browser_state(config)
             finally:
                 server.server_close()
@@ -154,8 +154,8 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["engine"], "playwright-chromium")
         self.assertEqual(payload["results"][0]["url"], "https://example.com/docs")
-        self.assertEqual(state["search_query"], "nemo code")
-        self.assertIn("nemo code", state["search_history"])
+        self.assertEqual(state["search_query"], "space code")
+        self.assertIn("space code", state["search_history"])
 
     def test_browser_search_requires_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -892,9 +892,9 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertIn("nemo_memory.store_conversation", tool_names)
         prime_tool = next(tool for tool in payload["message"]["tool_calls"] if tool["name"] == "nemo_memory.prime_context")
         self.assertEqual(prime_tool.get("tool_name"), "prime_context")
-        self.assertEqual(prime_tool.get("alias_name"), "nemocode.prime_context")
+        self.assertEqual(prime_tool.get("alias_name"), "spacecode.prime_context")
         trace_labels = {event.get("label") for event in payload["message"].get("agent_trace", [])}
-        self.assertIn("tool: nemo_memory.prime_context (alias nemocode.prime_context)", trace_labels)
+        self.assertIn("tool: nemo_memory.prime_context (alias spacecode.prime_context)", trace_labels)
         trace_kinds = {event.get("kind") for event in payload["message"].get("agent_trace", [])}
         self.assertIn("tool_call", trace_kinds)
         self.assertIn("tool_result", trace_kinds)
@@ -1084,7 +1084,7 @@ class MissionControlServerTests(unittest.TestCase):
                 result = type("Result", (), {"ok": True, "payload": {"memories": []}})()
                 return self, result
 
-        with patch("nemo_coding_platform.nemocode_mcp_tools._get_adapter", return_value=FakeAdapter()):
+        with patch("nemo_coding_platform.spacecode_mcp_tools._get_adapter", return_value=FakeAdapter()):
             payload = mcp_call_nemo_tool(
                 "search_memories",
                 lifecycle_phase="review",
@@ -1124,7 +1124,7 @@ class MissionControlServerTests(unittest.TestCase):
                                     {
                                         "id": "mem-dev4",
                                         "type": "project_fact",
-                                        "content": "Project DEV4 is this repo: NEMO CODE mission-control real MCP integration.",
+                                        "content": "Project DEV4 is this repo: Space Code mission-control real MCP integration.",
                                     }
                                 ]
                             },
@@ -1155,7 +1155,7 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertIn("Project DEV4 is this repo", content)
         self.assertNotIn("Ana Martínez", content)
         self.assertIn(("DEV4", ""), captured_queries)
-        self.assertNotIn(("DEV4", "NEMOCODE self-modification"), captured_queries)
+        self.assertNotIn(("DEV4", "Space Code self-modification"), captured_queries)
         self.assertNotIn("cognitive_ingest", captured_tools)
         model_call.assert_not_called()
 
@@ -1728,7 +1728,7 @@ class MissionControlServerTests(unittest.TestCase):
 
     def test_mcp_native_real_server_continuity_across_sessions_and_core_tools(self) -> None:
         mcp_url = "http://127.0.0.1:8765/mcp/sse"
-        real_mcp_required = os.environ.get("NEMOCODE_REAL_MCP_REQUIRED") == "1"
+        real_mcp_required = os.environ.get("SPACE_CODE_REAL_MCP_REQUIRED") == "1"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
@@ -1821,7 +1821,7 @@ class MissionControlServerTests(unittest.TestCase):
                 if real_mcp_required:
                     self.fail(
                         "External NEMO MCP backend did not expose retrievable continuity for newly written entries "
-                        "while NEMOCODE_REAL_MCP_REQUIRED=1."
+                        "while SPACE_CODE_REAL_MCP_REQUIRED=1."
                     )
                 self.skipTest(
                     "External NEMO MCP backend did not expose retrievable continuity for newly written entries; "
@@ -2370,7 +2370,7 @@ class MissionControlServerTests(unittest.TestCase):
             runtimes.mkdir()
             (sandbox / "created.txt").write_text("created", encoding="utf-8")
             store = PersistentMemoryStore(memory_db)
-            correction_id = store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "Prefer short context portfolios.", "user"), topic="NEMOCODE self-modification", importance=10)
+            correction_id = store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "Prefer short context portfolios.", "user"), topic="Space Code self-modification", importance=10)
             evidence_handle = store.create_evidence("full evidence", "compact evidence", source_task_id="task-1", source_run_id="run-1")
             store.record_feedback(atom_id=correction_id, evidence_handle=evidence_handle, event_type="useful", was_useful=True)
             run_json = runtimes / "run.json"

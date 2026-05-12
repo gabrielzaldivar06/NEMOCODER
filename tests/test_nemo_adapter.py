@@ -22,7 +22,7 @@ class NemoAdapterTests(unittest.TestCase):
             InMemoryNemoAdapter().call(NemoLifecyclePhase.BUILD, "create_reminder", text="later")
 
     def test_adapter_builds_context_portfolio_payload(self) -> None:
-        _adapter, result = InMemoryNemoAdapter().call(NemoLifecyclePhase.BUILD, "build_context_portfolio", task="Build", topic="NEMO CODE")
+        _adapter, result = InMemoryNemoAdapter().call(NemoLifecyclePhase.BUILD, "build_context_portfolio", task="Build", topic="Space Code")
 
         self.assertTrue(result.ok)
         self.assertIn("context", result.payload)
@@ -31,11 +31,11 @@ class NemoAdapterTests(unittest.TestCase):
     def test_persistent_adapter_primes_context_from_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
-            store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "NEMO CODE is the active base", "project"), topic="handoff", importance=10)
+            store.create_atom(MemoryAtom(MemoryAtomType.CORRECTION, "Space Code is the active base", "project"), topic="handoff", importance=10)
             adapter, result = PersistentNemoAdapter(store).call(NemoLifecyclePhase.START, "prime_context", topic="handoff")
 
         self.assertTrue(result.ok)
-        self.assertIn("NEMO CODE is the active base", result.payload["context"])
+        self.assertIn("Space Code is the active base", result.payload["context"])
         self.assertEqual(result.payload["memories"][0]["type"], "correction")
         self.assertEqual(adapter.calls[0].tool_name, "prime_context")
 

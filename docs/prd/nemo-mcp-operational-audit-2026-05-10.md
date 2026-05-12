@@ -27,7 +27,7 @@ This audit does not claim every future PRD ambition is complete. It validates th
 - UI sends `nemo_mcp_url`, `require_nemo_mcp_capabilities`, `require_nemo_roundtrip`, and selected NEMO tools to chat/handoff APIs.
 - UI displays live MCP capabilities including `context_bootstrap`, `prime_context`, `search_memories`, core reads, and write/read roundtrip.
 - NEMO tool registry exposes suite/risk/phase/purpose metadata and lifecycle gating.
-- CI exposes an opt-in required real MCP continuity gate through `NEMOCODE_REAL_MCP_REQUIRED=1` or workflow dispatch `real_mcp_gate=true`.
+- CI exposes an opt-in required real MCP continuity gate through `SPACE_CODE_REAL_MCP_REQUIRED=1` or workflow dispatch `real_mcp_gate=true`.
 - `scripts/verify_real_nemo_mcp_sentinel.py` provides a local live sentinel check that writes a unique fact through Mission Control chat, reads it back through real NEMO MCP search, fails if lookup delegates to LM Studio, and neutralizes test memories.
 
 ## Live Verification Results

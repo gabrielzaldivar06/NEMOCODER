@@ -228,7 +228,7 @@ class _PersistentStdioMcpClient:
                 "params": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": {"name": "nemocode", "version": "0.1"},
+                    "clientInfo": {"name": "spacecode", "version": "0.1"},
                 },
             },
         )
@@ -294,7 +294,7 @@ def _call_mcp_stdio_tool_once(
                 "params": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": {"name": "nemocode", "version": "0.1"},
+                    "clientInfo": {"name": "spacecode", "version": "0.1"},
                 },
             },
         )

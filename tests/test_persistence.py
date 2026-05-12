@@ -25,7 +25,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], 1)
         self.assertIn("task", payload)
         self.assertIn("readiness", payload)
-        self.assertEqual(payload["mutation_result"]["provider"], "fake-nemo-code")
+        self.assertEqual(payload["mutation_result"]["provider"], "fake-space-code")
         self.assertEqual(payload["mutation_result"]["model_profile"]["model"], "nvidia.agentic.coder-4b")
         self.assertIn("generated-implementation.md", payload["mutation_result"]["changed_files"])
         self.assertIn("portfolio", payload)

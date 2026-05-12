@@ -1,5 +1,5 @@
 /**
- * Backend service for Nemocode Desktop
+ * Backend service for Space Code Desktop
  * 
  * This module provides typed wrappers around Tauri commands for managing
  * the Python backend lifecycle and settings persistence.

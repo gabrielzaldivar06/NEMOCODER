@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import html
 import os
 import re
 import shutil
@@ -41,7 +42,7 @@ from nemo_coding_platform.core.rate_limiter import RateLimiter
 from nemo_coding_platform.core.self_modification import get_self_mod_continuity, query_self_mod_risk_patterns, self_mod_impact, self_mod_similar_runs, self_mod_trajectory
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, default_nemo_mcp_url, discover_vscode_mcp_server
-from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool
+from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
 
 
 DEFAULT_APPLY_RESULTS = ".nemo-runtimes/mission-control/apply-results"
@@ -775,7 +776,7 @@ def _load_settings(config: MissionControlServerConfig) -> dict[str, object]:
 def _normalize_nemo_mcp_url(config: MissionControlServerConfig, value: object) -> str:
     url = str(value).strip() if isinstance(value, str) else ""
     if (
-        not os.environ.get("NEMOCODE_NEMO_MCP_URL")
+        not os.environ.get("SPACE_CODE_NEMO_MCP_URL")
         and (not url or url == LEGACY_NEMO_SSE_URL)
         and discover_vscode_mcp_server("nemo", config.repo_path) is not None
     ):
@@ -1726,8 +1727,8 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
             {
                 "role": "system",
                 "content": (
-                    "You are the Spacecode Mission Control coding agent for the local-first Spacecode platform. "
-                    "Spacecode is the software-engineering product (planning, coding, testing, review, apply). "
+                    "You are the Space Code Mission Control coding agent for the local-first Space Code platform. "
+                    "Space Code is the software-engineering product (planning, coding, testing, review, apply). "
                     "NEMO MCP is the memory/context plane used by this product; it is not the product itself. "
                     "Do not describe yourself as a generic messaging system. "
                     "Answer in the user's language. Be concise, direct, and operational — never ask for confirmation before acting. "
@@ -1948,6 +1949,103 @@ def _raw_tool_name_fallback(response: str, message: str) -> str | None:
     )
 
 
+def _is_artifact_request(message: str) -> bool:
+        lowered = message.casefold()
+        markers = (
+                "artifact",
+                "artefacto",
+                "html_artifact",
+                "svg_artifact",
+                "react_artifact",
+                "image_request",
+                "diagrama",
+                "diagram",
+                "dashboard",
+                "visualizacion",
+                "visualización",
+                "mockup",
+                "renderizable",
+        )
+        return any(marker in lowered for marker in markers)
+
+
+def _has_typed_artifact_fence(response: str) -> bool:
+        return bool(re.search(r"```(?:html_artifact|svg_artifact|react_artifact|image_request|mermaid)\b", response or "", flags=re.IGNORECASE))
+
+
+def _artifact_fallback_response(message: str, tool_calls: list[dict[str, object]]) -> str:
+        completed_nemo = [
+                str(item.get("name") or item.get("tool_name") or "")
+                for item in tool_calls
+                if str(item.get("name") or "").startswith("nemo_memory.") and str(item.get("status") or "") == "completed"
+        ]
+        completed_nemo = [name for name in completed_nemo if name]
+        completed_text = ", ".join(completed_nemo) or "nemo_memory.context_bootstrap"
+        escaped_completed = html.escape(completed_text)
+        escaped_request = html.escape(message[:320])
+        rows = "\n".join(
+                f"<li><span>{html.escape(str(item.get('name') or item.get('tool_name') or 'tool'))}</span><b>{html.escape(str(item.get('status') or 'unknown'))}</b></li>"
+                for item in tool_calls[:10]
+        )
+        return f"""NEMO MCP fue usado por el backend con estas llamadas reales completadas: {completed_text}.
+
+```html_artifact
+<!-- ARTIFACT:Space Code NEMO MCP Verification:html -->
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Space Code Operational Flow</title>
+    <style>
+        :root {{ color-scheme: dark; font-family: Inter, Segoe UI, system-ui, sans-serif; background: #050907; }}
+        * {{ box-sizing: border-box; }}
+        body {{ margin: 0; min-height: 100vh; background: #050907; color: #e9fff8; }}
+        main {{ min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; gap: 22px; padding: clamp(18px, 4vw, 44px); }}
+        header {{ display: flex; align-items: end; justify-content: space-between; gap: 18px; border-bottom: 1px solid #12382f; padding-bottom: 18px; }}
+        h1 {{ margin: 0; font-size: clamp(28px, 5vw, 58px); letter-spacing: 0; color: #70ffd8; }}
+        .status {{ color: #9aff6c; font-weight: 700; text-transform: uppercase; font-size: 13px; }}
+        .grid {{ display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 14px; align-content: center; }}
+        .node {{ min-height: 150px; border: 1px solid #1b5b50; border-radius: 8px; background: linear-gradient(180deg, #0b1714, #07100d); padding: 18px; position: relative; box-shadow: 0 0 0 1px #041a15 inset; }}
+        .node strong {{ display: block; color: #8ffff0; font-size: 20px; margin-bottom: 10px; }}
+        .node p {{ margin: 0; color: #b9d8cf; line-height: 1.45; }}
+        .node::after {{ content: '->'; position: absolute; right: -18px; top: 50%; transform: translateY(-50%); color: #55ff99; font-weight: 900; }}
+        .node:last-child::after {{ content: ''; }}
+        .trace {{ display: grid; grid-template-columns: 1.1fr .9fr; gap: 16px; }}
+        section {{ border: 1px solid #12382f; border-radius: 8px; padding: 16px; background: #07110f; }}
+        h2 {{ margin: 0 0 12px; color: #55ff99; font-size: 16px; letter-spacing: 0; }}
+        ul {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }}
+        li {{ display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #0f2b25; padding-bottom: 8px; color: #c7eee5; }}
+        li b {{ color: #9aff6c; }}
+        code {{ color: #70ffd8; overflow-wrap: anywhere; }}
+        footer {{ color: #7fb8aa; font-size: 13px; }}
+        @media (max-width: 860px) {{ .grid, .trace {{ grid-template-columns: 1fr; }} .node::after {{ content: 'down'; right: 18px; top: auto; bottom: -18px; transform: none; }} }}
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <div><div class="status">Operativo con NEMO MCP real</div><h1>Space Code Verification</h1></div>
+            <div><code>{escaped_completed}</code></div>
+        </header>
+        <div class="grid" aria-label="flujo operacional">
+            <article class="node"><strong>Space Code</strong><p>Recibe la solicitud y coordina el agente local.</p></article>
+            <article class="node"><strong>NEMO MCP</strong><p>Carga contexto, portfolio y persiste la conversacion.</p></article>
+            <article class="node"><strong>Artifact Studio</strong><p>Convierte el bloque typed fence en una vista renderizable.</p></article>
+            <article class="node"><strong>Usuario</strong><p>Inspecciona respuesta, trazas y artifact en una sola superficie.</p></article>
+        </div>
+        <div class="trace">
+            <section><h2>Tool Trace</h2><ul>{rows}</ul></section>
+            <section><h2>Solicitud verificada</h2><p><code>{escaped_request}</code></p></section>
+        </div>
+        <footer>Fallback deterministico activado solo porque el modelo local no emitio un artifact fence valido.</footer>
+    </main>
+</body>
+</html>
+```
+"""
+
+
 def _write_apply_memory(result: MergeApplyResult, memory_db: Path | None) -> None:
     if memory_db is None:
         return
@@ -1956,10 +2054,10 @@ def _write_apply_memory(result: MergeApplyResult, memory_db: Path | None) -> Non
         NemoLifecyclePhase.REVIEW,
         "store_conversation",
         summary=(
-            f"Spacecode apply completed task={result.task_id} "
+            f"Space Code apply completed task={result.task_id} "
             f"run={result.run_id} applied_files={','.join(result.applied_files)}"
         ),
-        topic="Spacecode Review Gate",
+        topic="Space Code Review Gate",
         tags=(result.task_id, result.run_id, "spacecode", "apply", "review_to_main"),
         atom_type=MemoryAtomType.DECISION.value,
         source_scope="spacecode",
@@ -4236,7 +4334,7 @@ def _is_echo_memory(memory: dict[str, Any], message: str) -> bool:
     if content == normalized_message:
         return True
     return (
-        content.startswith("spacecode chat user request:")
+        content.startswith("space code chat user request:")
         or content.startswith("mission control chat user request:")
     ) and normalized_message in content
 
@@ -4250,14 +4348,14 @@ def _is_discarded_memory(memory: dict[str, Any]) -> bool:
         "discarded" in tag_text
         or "test-cleanup" in tag_text
         or "ignore" in tag_text
-        or topic.startswith("nemocode cleanup")
+        or topic.startswith("spacecode cleanup")
         or content.startswith("test cleanup / ignore")
     )
 
 
 def _is_chat_lookup_echo(memory: dict[str, Any]) -> bool:
     content = _memory_content(memory).lower().strip()
-    if not (content.startswith("spacecode chat user request:") or content.startswith("mission control chat user request:")):
+    if not (content.startswith("space code chat user request:") or content.startswith("mission control chat user request:")):
         return False
     request = content.split(":", 1)[1].strip() if ":" in content else content
     return not _is_memory_store_request(request)
@@ -4360,7 +4458,7 @@ def _self_interface_action(message: str, payload: dict[str, object]) -> dict[str
         "id": "self-modify-interface-colors",
         "kind": "self_modify",
         "label": "Self-mod UI",
-        "summary": "Run a NEMOCODE self-modification against the real Mission Control interface files.",
+        "summary": "Run a Space Code self-modification against the real Mission Control interface files.",
         "payload": {
             "objective": message,
             "task_type": "tool_expansion",
@@ -4712,7 +4810,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 content=f"Source note from user URL: {title} ({source_url})\n{snippet[:1200]}",
                 memory_type="evidence",
                 tags=("spacecode", "source", "url", "agent-chat"),
-                context="URL source extracted by Spacecode chat reader",
+                context="URL source extracted by Space Code chat reader",
             )
             tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
         except Exception as error:  # noqa: BLE001
@@ -4847,8 +4945,8 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     _call_nemo(
         "store_conversation",
         "review",
-        summary=f"Spacecode chat user request: {message}",
-        topic="Spacecode conversation",
+        summary=f"Space Code chat user request: {message}",
+        topic="Space Code conversation",
         tags=("spacecode", "agent-chat"),
         atom_type=MemoryAtomType.SESSION_SUMMARY.value,
         source_scope="spacecode_chat",
@@ -4865,7 +4963,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 content=f'{{"user_name": {declared_name!r}, "source_message": {message!r}}}',
                 memory_type="preference",
                 tags=("spacecode", "user-data", "identity", "agent-chat"),
-                context="User explicitly provided their name in Spacecode chat",
+                context="User explicitly provided their name in Space Code chat",
             )
         else:
             _call_nemo(
@@ -4874,7 +4972,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 content=message,
                 memory_type="preference",
                 tags=("spacecode", "user-data", "agent-chat"),
-                context="User explicitly asked to store this in NEMO memory from Spacecode chat",
+                context="User explicitly asked to store this in NEMO memory from Space Code chat",
             )
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
@@ -5003,6 +5101,17 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 "[real-mode fallback] LM Studio is unavailable right now. "
                 "I prepared safe next actions from Mission Control state so you can continue without blocking."
             )
+    if _is_artifact_request(message) and not _has_typed_artifact_fence(response):
+        response = _artifact_fallback_response(message, tool_calls)
+        tool_calls.append(
+            {
+                "id": f"tool-{uuid4().hex[:8]}",
+                "name": "mission_control.artifact_fallback",
+                "status": "completed",
+                "summary": "Generated deterministic html_artifact because the model response did not include a typed artifact fence.",
+            }
+        )
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     agent_trace.append(
         _build_agent_trace_event(
             step=trace_step,

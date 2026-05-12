@@ -18,7 +18,7 @@ def _get_adapter(memory_db: str = ".nemo-memory.db", mcp_url: str = "", mcp_pref
     if mcp_url.strip():
         if mcp_url.strip().lower() == VSCODE_STDIO_NEMO_URL:
             return StdioMcpNemoAdapter(server_name="nemo", tool_prefix=mcp_prefix)
-        effective_prefix = mcp_prefix if mcp_prefix else "nemocode."
+        effective_prefix = mcp_prefix if mcp_prefix else "spacecode."
         return McpNemoAdapter(mcp_url.strip(), tool_prefix=effective_prefix)
     store = PersistentMemoryStore(Path(memory_db))
     return PersistentNemoAdapter(store)
@@ -77,7 +77,7 @@ def mcp_build_context_portfolio(task: str, topic: str = "general", token_budget:
 
 
 def mcp_run_headless(objective: str, repo_path: str, target_files: list[str] | None = None, **kwargs: Any) -> dict[str, Any]:
-    """MCP tool for running a headless NEMOCODE task."""
+    """MCP tool for running a headless Space Code task."""
     try:
         request = HandoffRequest(
             prd=objective,
@@ -85,13 +85,13 @@ def mcp_run_headless(objective: str, repo_path: str, target_files: list[str] | N
             acceptance_criteria=("satisfies the objective",),
             validation_commands=("python -m unittest",)
         )
-        
+
         result = execute_headless_handoff(
             request,
             target_files=tuple(target_files or []),
             **kwargs
         )
-        
+
         return {
             "ok": True,
             "task_id": result.task.id,
@@ -116,7 +116,7 @@ def mcp_self_modify(
     real_validation: bool = False,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """MCP tool for running a controlled self-modification task against NEMOCODE."""
+    """MCP tool for running a controlled self-modification task against Space Code."""
     try:
         request = SelfModRequest(
             description=description,

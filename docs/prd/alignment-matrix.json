@@ -122,7 +122,7 @@
         "src/nemo_coding_platform/mission_control_server.py:2843",
         "src/nemo_coding_platform/mission_control_server.py:3914"
       ],
-      "gap": "none for current operational MCP path; real MCP continuity release gate is opt-in via NEMOCODE_REAL_MCP_REQUIRED=1, and live sentinel verification proves write/read chat lookup against real NEMO MCP"
+      "gap": "none for current operational MCP path; real MCP continuity release gate is opt-in via SPACE_CODE_REAL_MCP_REQUIRED=1, and live sentinel verification proves write/read chat lookup against real NEMO MCP"
     },
     {
       "id": "FR7",
@@ -323,9 +323,9 @@
         "scripts/package-release.ps1"
       ],
       "outputs": [
-        ".release/nemocode-<bundle-version>/manifest.json",
-        ".release/nemocode-<bundle-version>/integrity.json",
-        ".release/nemocode-<bundle-version>/release-checklist.md"
+        ".release/space-code-<bundle-version>/manifest.json",
+        ".release/space-code-<bundle-version>/integrity.json",
+        ".release/space-code-<bundle-version>/release-checklist.md"
       ]
     },
     "ci_release_gate": {
@@ -334,7 +334,7 @@
         "tests.test_release_confidence_e2e",
         "tests.test_global_mvp_gate",
         "tests.test_desktop_release_readiness_contract",
-        "tests.test_mission_control_server.MissionControlServerTests.test_mcp_native_real_server_continuity_across_sessions_and_core_tools when NEMOCODE_REAL_MCP_REQUIRED=1"
+        "tests.test_mission_control_server.MissionControlServerTests.test_mcp_native_real_server_continuity_across_sessions_and_core_tools when SPACE_CODE_REAL_MCP_REQUIRED=1"
       ]
     },
     "long_handoff_operational_confidence": {

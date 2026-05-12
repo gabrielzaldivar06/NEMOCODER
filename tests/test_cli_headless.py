@@ -30,7 +30,7 @@ class CliHeadlessTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(payload["score"], 1.0)
-        self.assertEqual(payload["provider"], "fake-nemo-code")
+        self.assertEqual(payload["provider"], "fake-space-code")
         self.assertEqual(payload["model"], "nvidia.agentic.coder-4b")
         self.assertIn("generated-implementation.md", payload["changed_files"])
         self.assertGreaterEqual(payload["events"], 8)
@@ -107,7 +107,7 @@ class CliHeadlessTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
 
         self.assertEqual(code, 0)
-        self.assertEqual(payload["provider"], "subprocess-nemo-code")
+        self.assertEqual(payload["provider"], "subprocess-space-code")
         self.assertIn("cli-subprocess.txt", payload["changed_files"])
 
     def test_headless_run_accepts_target_file_flag(self) -> None:
@@ -118,7 +118,7 @@ class CliHeadlessTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
 
         self.assertEqual(code, 0)
-        self.assertEqual(payload["provider"], "fake-nemo-code")
+        self.assertEqual(payload["provider"], "fake-space-code")
 
     def test_headless_run_accepts_validation_python_flag(self) -> None:
         output = io.StringIO()

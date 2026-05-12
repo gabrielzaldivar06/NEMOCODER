@@ -9,7 +9,7 @@ from http.server import ThreadingHTTPServer
 
 from nemo_coding_platform.core.memory import NEMO_TOOL_REGISTRY
 from nemo_coding_platform.mcp_server import MCPServerHandler, mcp_tool_definitions, tool_policy_decision
-from nemo_coding_platform.nemocode_mcp_tools import mcp_call_nemo_tool, mcp_get_self_mod_continuity, mcp_record_self_mod_decision
+from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool, mcp_get_self_mod_continuity, mcp_record_self_mod_decision
 
 
 class MCPServerToolSurfaceTests(unittest.TestCase):
@@ -17,17 +17,17 @@ class MCPServerToolSurfaceTests(unittest.TestCase):
         names = {definition["name"] for definition in mcp_tool_definitions()}
 
         for tool in NEMO_TOOL_REGISTRY:
-            self.assertIn(f"nemocode.{tool.name}", names)
+            self.assertIn(f"spacecode.{tool.name}", names)
 
-        self.assertIn("nemocode.run_headless", names)
-        self.assertIn("nemocode.list_runs", names)
-        self.assertIn("nemocode.get_run_result", names)
-        self.assertIn("nemocode.record_self_mod_decision", names)
-        self.assertIn("nemocode.record_self_mod_feedback", names)
-        self.assertIn("nemocode.learn_from_self_mod_failure", names)
-        self.assertIn("nemocode.mark_portfolio_effective", names)
-        self.assertIn("nemocode.get_self_mod_continuity", names)
-        self.assertIn("nemocode.query_self_mod_risk_patterns", names)
+        self.assertIn("spacecode.run_headless", names)
+        self.assertIn("spacecode.list_runs", names)
+        self.assertIn("spacecode.get_run_result", names)
+        self.assertIn("spacecode.record_self_mod_decision", names)
+        self.assertIn("spacecode.record_self_mod_feedback", names)
+        self.assertIn("spacecode.learn_from_self_mod_failure", names)
+        self.assertIn("spacecode.mark_portfolio_effective", names)
+        self.assertIn("spacecode.get_self_mod_continuity", names)
+        self.assertIn("spacecode.query_self_mod_risk_patterns", names)
 
     def test_generic_mcp_nemo_tool_call_round_trips_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,21 +71,21 @@ class MCPServerToolSurfaceTests(unittest.TestCase):
         self.assertIn("persist decision atoms", continuity["items"][0]["content"])
 
     def test_policy_requires_approval_for_destructive_static_tool(self) -> None:
-        decision = tool_policy_decision("nemocode.self_mod_apply", {})
+        decision = tool_policy_decision("spacecode.self_mod_apply", {})
 
         self.assertEqual(decision["risk"], "destructive")
         self.assertTrue(decision["approval_required"])
         self.assertFalse(decision["allowed"])
 
     def test_policy_requires_approval_for_destructive_nemo_tool(self) -> None:
-        decision = tool_policy_decision("nemocode.delete_reminder", {})
+        decision = tool_policy_decision("spacecode.delete_reminder", {})
 
         self.assertEqual(decision["risk"], "destructive")
         self.assertTrue(decision["approval_required"])
         self.assertFalse(decision["allowed"])
 
     def test_policy_allows_when_approval_explicitly_granted(self) -> None:
-        decision = tool_policy_decision("nemocode.delete_reminder", {"approve_review": True})
+        decision = tool_policy_decision("spacecode.delete_reminder", {"approve_review": True})
 
         self.assertTrue(decision["approval_required"])
         self.assertTrue(decision["approved"])
@@ -111,7 +111,7 @@ class MCPServerJsonRpcPolicyTests(unittest.TestCase):
             "id": "deny-1",
             "method": "tools/call",
             "params": {
-                "name": "nemocode.delete_reminder",
+                "name": "spacecode.delete_reminder",
                 "arguments": {},
             },
         }
@@ -127,22 +127,22 @@ class MCPServerJsonRpcPolicyTests(unittest.TestCase):
         self.assertIn("error", result)
         self.assertEqual(result["error"]["code"], -32003)
         audit = result["error"]["data"]["tool_call_audit"]
-        self.assertEqual(audit["tool"], "nemocode.delete_reminder")
+        self.assertEqual(audit["tool"], "spacecode.delete_reminder")
         self.assertEqual(audit["risk"], "destructive")
         self.assertFalse(audit["allowed"])
 
     def test_denied_risky_tool_call_persists_audit_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_log = Path(tmp) / "mcp-audit.jsonl"
-            original = os.environ.get("NEMOCODE_MCP_AUDIT_LOG")
-            os.environ["NEMOCODE_MCP_AUDIT_LOG"] = str(audit_log)
+            original = os.environ.get("SPACE_CODE_MCP_AUDIT_LOG")
+            os.environ["SPACE_CODE_MCP_AUDIT_LOG"] = str(audit_log)
             try:
                 payload = {
                     "jsonrpc": "2.0",
                     "id": "deny-2",
                     "method": "tools/call",
                     "params": {
-                        "name": "nemocode.self_mod_apply",
+                        "name": "spacecode.self_mod_apply",
                         "arguments": {"run_json": "fake-run.json"},
                     },
                 }
@@ -161,13 +161,13 @@ class MCPServerJsonRpcPolicyTests(unittest.TestCase):
                 entry = json.loads(lines[0])
                 self.assertEqual(entry["request_id"], "deny-2")
                 self.assertEqual(entry["outcome"], "denied")
-                self.assertEqual(entry["tool_call_audit"]["tool"], "nemocode.self_mod_apply")
+                self.assertEqual(entry["tool_call_audit"]["tool"], "spacecode.self_mod_apply")
                 self.assertFalse(entry["tool_call_audit"]["allowed"])
             finally:
                 if original is None:
-                    os.environ.pop("NEMOCODE_MCP_AUDIT_LOG", None)
+                    os.environ.pop("SPACE_CODE_MCP_AUDIT_LOG", None)
                 else:
-                    os.environ["NEMOCODE_MCP_AUDIT_LOG"] = original
+                    os.environ["SPACE_CODE_MCP_AUDIT_LOG"] = original
 
 
 if __name__ == "__main__":

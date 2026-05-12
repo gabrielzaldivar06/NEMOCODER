@@ -1,7 +1,7 @@
 {
-  "name": "nemo-desktop",
+  "name": "space-code-desktop",
   "version": "0.1.0",
-  "description": "Nemocode Desktop - Local-first AI coding agent with Spec-Driven Development",
+  "description": "Space Code Desktop - Local-first AI coding agent with Spec-Driven Development",
   "type": "module",
   "scripts": {
     "dev": "vite",

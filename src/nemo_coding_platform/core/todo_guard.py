@@ -1,4 +1,4 @@
-"""Todo-Awareness Guard for NEMOCODE.
+"""Todo-Awareness Guard for Space Code.
 
 Prevents the agent from silently abandoning incomplete plan steps. When the
 agent finishes a cycle with validation still failing, this module detects

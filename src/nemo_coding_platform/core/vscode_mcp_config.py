@@ -82,7 +82,7 @@ def discover_vscode_mcp_server(name: str = "nemo", repo_path: Path | None = None
 
 
 def default_nemo_mcp_url(repo_path: Path | None = None) -> str:
-    env_url = os.environ.get("NEMOCODE_NEMO_MCP_URL")
+    env_url = os.environ.get("SPACE_CODE_NEMO_MCP_URL")
     if env_url:
         return env_url
     if discover_vscode_mcp_server("nemo", repo_path) is not None:

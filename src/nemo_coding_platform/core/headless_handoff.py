@@ -57,7 +57,7 @@ def build_handoff_plan(request: HandoffRequest) -> HandoffPlan:
         HandoffStep(HandoffStepKind.GENERATE_TESTS, "Create tests or contract checks before code."),
         HandoffStep(HandoffStepKind.PLAN_IMPLEMENTATION, "Plan implementation slices."),
         HandoffStep(HandoffStepKind.CREATE_SANDBOX, "Create isolated worktree/container runtime."),
-        HandoffStep(HandoffStepKind.IMPLEMENT_WITH_ENGINE, "Apply code through the NEMO CODE quality engine."),
+        HandoffStep(HandoffStepKind.IMPLEMENT_WITH_ENGINE, "Apply code through the Space Code quality engine."),
         HandoffStep(HandoffStepKind.RUN_VALIDATION, "Run configured validation commands."),
         HandoffStep(HandoffStepKind.REPAIR_FAILURES, "Repair validation failures within budget."),
         HandoffStep(HandoffStepKind.CREATE_CHECKPOINT, "Emit checkpoint for unattended run."),

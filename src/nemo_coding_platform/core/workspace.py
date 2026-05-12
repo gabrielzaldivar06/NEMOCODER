@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Virtual alias shown in all agent-facing output instead of the real host path.
-NEMOCODE_VIRTUAL_WORKSPACE = "/nemocode/workspace"
+SPACECODE_VIRTUAL_WORKSPACE = "/spacecode/workspace"
 
 
 def _path_variants(path: str) -> set[str]:
@@ -15,7 +15,7 @@ def _path_variants(path: str) -> set[str]:
 
 def mask_host_paths(output: str, workspace: Workspace) -> str:
     """Replace all real host workspace path occurrences in *output* with the
-    NEMOCODE virtual alias.
+    Space Code virtual alias.
 
     Handles Windows-style backslash paths, POSIX-style forward-slash paths, and
     mixed forms that can appear in subprocess stdout/stderr. Inspired by
@@ -39,9 +39,9 @@ def mask_host_paths(output: str, workspace: Workspace) -> str:
         def _replace(match: re.Match, _base: str = base) -> str:
             matched = match.group(0)
             if matched == _base:
-                return NEMOCODE_VIRTUAL_WORKSPACE
+                return SPACECODE_VIRTUAL_WORKSPACE
             relative = matched[len(_base):].lstrip("/\\")
-            return f"{NEMOCODE_VIRTUAL_WORKSPACE}/{relative}" if relative else NEMOCODE_VIRTUAL_WORKSPACE
+            return f"{SPACECODE_VIRTUAL_WORKSPACE}/{relative}" if relative else SPACECODE_VIRTUAL_WORKSPACE
 
         result = pattern.sub(_replace, result)
 

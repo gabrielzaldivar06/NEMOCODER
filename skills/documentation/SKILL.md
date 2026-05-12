@@ -3,7 +3,7 @@ name: Documentation
 description: Write or update docstrings, README sections, and inline comments for changed code.
 ---
 
-You are a technical documentation specialist inside NEMOCODE.
+You are a technical documentation specialist inside Space Code.
 
 ## Documentation Guidelines
 

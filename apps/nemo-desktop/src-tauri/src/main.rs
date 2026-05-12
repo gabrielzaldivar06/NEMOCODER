@@ -1,4 +1,4 @@
-// Tauri backend for Nemocode Desktop
+// Tauri backend for Space Code Desktop
 // 
 // Responsibilities:
 // 1. Window management and lifecycle
@@ -14,7 +14,7 @@ use std::thread;
 use std::time::Duration;
 use tauri::{generate_context, generate_handler};
 
-const APP_DIR_NAME: &str = "nemocode";
+const APP_DIR_NAME: &str = "spacecode";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 
 /// Shared state for backend process management
@@ -40,7 +40,7 @@ pub struct HealthStatus {
     message: String,
 }
 
-/// Settings for the Nemocode Desktop application
+/// Settings for the Space Code Desktop application
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct AppSettings {
     backend_port: u16,
