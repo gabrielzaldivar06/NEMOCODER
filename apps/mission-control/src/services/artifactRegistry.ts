@@ -1,4 +1,4 @@
-import type { GeneratedArtifact } from "../components/ArtifactWorkbench";
+import type { GeneratedArtifact } from "./artifactUtils";
 
 const ARTIFACT_REGISTRY_STORAGE_KEY = "mission-control-artifact-registry-v1";
 const MAX_STORED_ARTIFACTS = 24;

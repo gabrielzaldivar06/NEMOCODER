@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { collectGeneratedArtifacts, type GeneratedArtifact } from "../components/ArtifactWorkbench";
+import { collectGeneratedArtifacts, type GeneratedArtifact } from "../services/artifactUtils";
 import { loadArtifactRegistry, mergeArtifactsIntoRegistry, type PersistedGeneratedArtifact } from "../services/artifactRegistry";
 
 type ArtifactMessage = {

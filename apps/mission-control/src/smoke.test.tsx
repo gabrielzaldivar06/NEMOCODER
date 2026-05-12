@@ -3,8 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./main";
-import { buildArtifactLineDiff } from "./components/ArtifactWorkbench";
 import { buildArtifactPromptAttachment } from "./hooks/useGeneratedArtifacts";
+import { buildArtifactLineDiff } from "./services/artifactUtils";
 import { planNemoClient } from "./services/planNemoClient";
 
 const statePayload: any = {

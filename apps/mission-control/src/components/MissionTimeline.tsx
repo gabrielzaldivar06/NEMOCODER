@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { stripGeneratedArtifactBlocks } from "./ArtifactWorkbench";
+import { stripGeneratedArtifactBlocks } from "../services/artifactUtils";
 
 export type MissionTimelineToolCall = {
   id?: string;
