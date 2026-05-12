@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Code2, Copy, Download, Eye, Info, Paperclip, Puzzle, Zap } from "lucide-react";
+import { Code2, Copy, Download, Eye, Image, Info, Paperclip, Puzzle, Zap } from "lucide-react";
 
-export type GeneratedArtifactKind = "html" | "svg" | "markdown" | "json" | "code";
+export type GeneratedArtifactKind = "html" | "svg" | "markdown" | "json" | "mermaid" | "react" | "image_request" | "code";
 
 export type GeneratedArtifact = {
   id: string;
@@ -28,6 +28,8 @@ type ArtifactMessageSource = {
   content: string;
 };
 
+const ARTIFACT_TITLE_REGEX = /<!--\s*ARTIFACT:([^:]+):([a-zA-Z0-9_-]+)\s*-->/;
+
 type ArtifactWorkbenchProps = {
   artifacts: GeneratedArtifact[];
   activeId: string | null;
@@ -43,15 +45,20 @@ function estimateArtifactTokens(text: string): number {
 export function artifactKindFromBlock(language: string, content: string): GeneratedArtifactKind {
   const normalized = language.toLowerCase().trim();
   const trimmed = content.trimStart().toLowerCase();
-  if (["html", "htm"].includes(normalized) || trimmed.startsWith("<!doctype html") || trimmed.startsWith("<html")) return "html";
-  if (normalized === "svg" || trimmed.startsWith("<svg")) return "svg";
+  if (["html", "htm", "html_artifact"].includes(normalized) || trimmed.startsWith("<!doctype html") || trimmed.startsWith("<html")) return "html";
+  if (["svg", "svg_artifact"].includes(normalized) || trimmed.startsWith("<svg")) return "svg";
   if (["md", "markdown", "mdx"].includes(normalized)) return "markdown";
   if (["json", "jsonc"].includes(normalized)) return "json";
+  if (normalized === "mermaid") return "mermaid";
+  if (["react_artifact", "jsx", "tsx"].includes(normalized)) return "react";
+  if (normalized === "image_request") return "image_request";
   return "code";
 }
 
-function artifactTitle(kind: GeneratedArtifactKind, language: string, index: number): string {
-  const label = kind === "html" ? "Interactive HTML" : kind === "svg" ? "SVG Scene" : kind === "markdown" ? "Document" : kind === "json" ? "Data" : "Code";
+function artifactTitle(kind: GeneratedArtifactKind, language: string, content: string, index: number): string {
+  const titleMatch = content.match(ARTIFACT_TITLE_REGEX);
+  if (titleMatch?.[1]) return titleMatch[1].trim();
+  const label = kind === "html" ? "Interactive HTML" : kind === "svg" ? "SVG Scene" : kind === "markdown" ? "Document" : kind === "json" ? "Data" : kind === "mermaid" ? "Diagram" : kind === "react" ? "React Component" : kind === "image_request" ? "Image Request" : "Code";
   const suffix = language && language !== kind ? ` / ${language}` : "";
   return `${label}${suffix} ${index + 1}`;
 }
@@ -70,7 +77,7 @@ export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): Ge
       artifacts.unshift({
         id: `${message.id}-artifact-${localIndex}`,
         messageId: message.id,
-        title: artifactTitle(kind, language, localIndex),
+        title: artifactTitle(kind, language, content, localIndex),
         kind,
         language,
         content,
@@ -85,7 +92,7 @@ export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): Ge
 export function stripGeneratedArtifactBlocks(content: string): string {
   const stripped = content.replace(/```([^\n`]*)\n([\s\S]*?)```/g, (block, language, body) => {
     const kind = artifactKindFromBlock(String(language).trim().split(/\s+/)[0] || "text", String(body));
-    return ["html", "svg", "markdown", "json", "code"].includes(kind) ? "" : block;
+    return ["html", "svg", "markdown", "json", "mermaid", "react", "image_request", "code"].includes(kind) ? "" : block;
   }).trim();
   return stripped || "Artifact generado.";
 }
@@ -95,11 +102,14 @@ function artifactSrcDoc(artifact: GeneratedArtifact): string {
     return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;min-height:100%;display:grid;place-items:center;background:#07101f;color:#e5edf8}svg{max-width:100%;max-height:100%;}</style></head><body>${artifact.content}</body></html>`;
   }
   if (artifact.kind === "html") return artifact.content;
+  if (artifact.kind === "react") {
+    return `<!doctype html><html><head><meta charset="utf-8"><script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script><script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script><script src="https://unpkg.com/@babel/standalone/babel.min.js"></script><style>html,body,#root{margin:0;min-height:100%;background:#07101f;color:#e5edf8;font-family:Inter,system-ui,sans-serif}</style></head><body><div id="root"></div><script type="text/babel">${artifact.content}\nReactDOM.render(React.createElement(App), document.getElementById("root"));</script></body></html>`;
+  }
   return "";
 }
 
 function isRenderableArtifact(artifact: GeneratedArtifact | undefined): boolean {
-  return Boolean(artifact && ["html", "svg", "markdown"].includes(artifact.kind));
+  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "image_request"].includes(artifact.kind));
 }
 
 function artifactFileExtension(artifact: GeneratedArtifact): string {
@@ -107,6 +117,8 @@ function artifactFileExtension(artifact: GeneratedArtifact): string {
   if (artifact.kind === "svg") return "svg";
   if (artifact.kind === "markdown") return "md";
   if (artifact.kind === "json") return "json";
+  if (artifact.kind === "mermaid") return "mmd";
+  if (artifact.kind === "react") return "jsx";
   return artifact.language && artifact.language !== "text" ? artifact.language.replace(/[^a-z0-9]+/gi, "").toLowerCase() || "txt" : "txt";
 }
 
@@ -125,6 +137,85 @@ function artifactFileName(artifact: GeneratedArtifact): string {
 
 function artifactLineCount(artifact: GeneratedArtifact): number {
   return artifact.content.split(/\r?\n/).length;
+}
+
+function parseImageRequest(content: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    return parsed && typeof parsed === "object" ? parsed : { prompt: content };
+  } catch {
+    return { prompt: content };
+  }
+}
+
+function ImageRequestPreview({ artifact }: { artifact: GeneratedArtifact }) {
+  const [status, setStatus] = useState<"idle" | "running" | "done" | "failed">("idle");
+  const [generatedUrl, setGeneratedUrl] = useState<string>("");
+  const [error, setError] = useState<string>("");
+  const requestPayload = parseImageRequest(artifact.content);
+  let prompt = String(requestPayload.prompt || artifact.content);
+  try {
+    const parsed = JSON.parse(artifact.content) as { prompt?: string; style?: string; size?: string };
+    prompt = [parsed.prompt, parsed.style, parsed.size].filter(Boolean).join(" · ") || artifact.content;
+  } catch {
+    // Plain text image prompts are valid too.
+  }
+
+  useEffect(() => {
+    setStatus("idle");
+    setGeneratedUrl("");
+    setError("");
+  }, [artifact.id]);
+
+  const generateImage = () => {
+    setStatus("running");
+    setError("");
+    void fetch("/api/agent/generate-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestPayload),
+    }).then(async (response) => {
+      const payload = await response.json() as { image_url?: string; error?: string };
+      if (!response.ok) throw new Error(payload.error || "image_generation_failed");
+      if (!payload.image_url) throw new Error("image_generation_returned_no_url");
+      setGeneratedUrl(payload.image_url);
+      setStatus("done");
+    }).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : "image_generation_failed");
+      setStatus("failed");
+    });
+  };
+
+  return <div className="artifact-image-request">
+    {generatedUrl ? <img src={generatedUrl} alt={String(requestPayload.prompt || "Generated artifact")} /> : <Image size={30} />}
+    <strong>{generatedUrl ? "Generated image" : "Image request"}</strong>
+    <p>{prompt}</p>
+    <button onClick={generateImage} disabled={status === "running"} title="Generar imagen local"><Zap size={13} /><span>{status === "running" ? "Generating" : status === "done" ? "Regenerate" : "Generate"}</span></button>
+    {error && <small>{error}</small>}
+  </div>;
+}
+
+function MermaidPreview({ content }: { content: string }) {
+  const [svg, setSvg] = useState<string>("");
+  const [error, setError] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setSvg("");
+    setError("");
+    void import("mermaid").then((mermaid) => {
+      mermaid.default.initialize({ startOnLoad: false, theme: "dark" });
+      return mermaid.default.render(`mission-artifact-${Date.now()}`, content);
+    }).then((result) => {
+      if (!cancelled) setSvg(result.svg);
+    }).catch((errorValue: unknown) => {
+      if (!cancelled) setError(errorValue instanceof Error ? errorValue.message : "Mermaid render failed");
+    });
+    return () => { cancelled = true; };
+  }, [content]);
+
+  if (error) return <pre className="artifact-mermaid-error"><code>{error}\n\n{content}</code></pre>;
+  return <div className="artifact-mermaid" dangerouslySetInnerHTML={{ __html: svg || "" }} />;
 }
 
 export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPrompt, renderMarkdown }: ArtifactWorkbenchProps) {
@@ -212,10 +303,14 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
             </div>
           </div>
           <div className={`artifact-stage ${viewMode}`}>
-            {viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg") ? (
+            {viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
               <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={artifactSrcDoc(activeArtifact)} />
             ) : viewMode === "preview" && activeArtifact.kind === "markdown" ? (
               <div className="artifact-markdown">{renderMarkdown(activeArtifact.content)}</div>
+            ) : viewMode === "preview" && activeArtifact.kind === "mermaid" ? (
+              <MermaidPreview content={activeArtifact.content} />
+            ) : viewMode === "preview" && activeArtifact.kind === "image_request" ? (
+              <ImageRequestPreview artifact={activeArtifact} />
             ) : viewMode === "inspect" ? (
               <div className="artifact-inspector">
                 <section>

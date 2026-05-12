@@ -905,6 +905,58 @@ button { font: inherit; }
   overflow: auto;
   padding: 14px;
 }
+.artifact-mermaid,
+.artifact-image-request,
+.artifact-mermaid-error {
+  min-height: 360px;
+  overflow: auto;
+  padding: 16px;
+}
+.artifact-mermaid {
+  display: grid;
+  place-items: center;
+  color: #d8fff3;
+}
+.artifact-mermaid svg { max-width: 100%; height: auto; }
+.artifact-mermaid-error {
+  margin: 0;
+  color: #fecaca;
+  background: rgba(34, 8, 12, 0.72);
+}
+.artifact-image-request {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  text-align: center;
+  color: #a9d8cf;
+}
+.artifact-image-request svg { color: var(--accent); filter: drop-shadow(0 0 18px rgba(25, 242, 168, 0.28)); }
+.artifact-image-request strong { color: #e8fff7; font-size: 14px; }
+.artifact-image-request p { max-width: 46ch; margin: 0; line-height: 1.5; }
+.artifact-image-request img {
+  width: min(100%, 540px);
+  max-height: 520px;
+  object-fit: contain;
+  border: 1px solid rgba(94, 234, 212, 0.18);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+}
+.artifact-image-request button {
+  min-height: 30px;
+  border: 1px solid rgba(25, 242, 168, 0.34);
+  background: rgba(15, 118, 110, 0.2);
+  color: #d9fff5;
+  border-radius: 999px;
+  padding: 6px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 820;
+}
+.artifact-image-request button:disabled { opacity: 0.56; cursor: progress; }
+.artifact-image-request small { color: #fecaca; max-width: 52ch; line-height: 1.4; }
 .artifact-inspector {
   min-height: 360px;
   overflow: auto;

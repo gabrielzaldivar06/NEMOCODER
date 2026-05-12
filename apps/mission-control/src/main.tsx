@@ -79,6 +79,10 @@ type MissionState = {
     heartbeat_minutes: number;
     max_heartbeats: number;
     token_budget: number;
+    context_window_tokens: number;
+    chat_max_tokens: number;
+    image_gen_backend: string;
+    image_gen_url: string;
     validation_policy: string;
     nemo_required: boolean;
     quality_core: string;
@@ -493,9 +497,9 @@ function extractIterationLines(logs: string[] = []): string[] {
 
 const initialState: MissionState = {
   schema_version: 1,
-  product: "NEMO CODE Mission Control",
+  product: "Spacecode Mission Control",
   repo_path: "c:/dev/dev4",
-  runtimes_path: "c:/dev/dev4/.nemo-runtimes",
+  runtimes_path: "c:/dev/dev4/.spacecode-runtimes",
   repos: ["c:/dev/dev4"],
   jobs: [],
   runs: [],
@@ -506,12 +510,16 @@ const initialState: MissionState = {
     provider: "subprocess",
     memory_db: ".nemo-runtimes/nemo-memory.sqlite",
     nemo_mcp_url: DEFAULT_NEMO_MCP_URL,
-    runtime_path: "c:/dev/dev4/.nemo-runtimes",
+    runtime_path: "c:/dev/dev4/.spacecode-runtimes",
     timeout_seconds: 120,
     max_runtime_minutes: 120,
     heartbeat_minutes: 15,
     max_heartbeats: 4,
-    token_budget: 32000,
+    token_budget: 128000,
+    context_window_tokens: 131072,
+    chat_max_tokens: 16384,
+    image_gen_backend: "auto",
+    image_gen_url: "",
     validation_policy: "smoke",
     nemo_required: true,
     quality_core: "product/nemo_code_runtime",
@@ -1213,6 +1221,8 @@ export function App() {
       heartbeat_minutes: settingsDraft.heartbeat_minutes,
       max_heartbeats: settingsDraft.max_heartbeats,
       token_budget: settingsDraft.token_budget,
+      context_window_tokens: settingsDraft.context_window_tokens,
+      chat_max_tokens: settingsDraft.chat_max_tokens,
       nemo_mcp_url: normalizeNemoMcpUrl(settingsDraft.nemo_mcp_url),
       nemo_mcp_prefix: "nemo.",
       require_nemo_mcp_capabilities: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
@@ -1304,6 +1314,8 @@ export function App() {
         default_model: settingsDraft.default_model,
         timeout_seconds: handoffDraft.timeoutSeconds,
         token_budget: settingsDraft.token_budget,
+        context_window_tokens: settingsDraft.context_window_tokens,
+        chat_max_tokens: settingsDraft.chat_max_tokens,
       }, { signal: controller.signal });
     };
 
@@ -2150,8 +2162,8 @@ export function App() {
         <div className="brand-row">
           <Bot size={20} />
           <div>
-            <h1>NEMO CODE</h1>
-            <p>NEMO CODE engine + NEMO memory</p>
+            <h1>Spacecode</h1>
+            <p>Spacecode engine + external NEMO memory</p>
           </div>
         </div>
 
@@ -2467,7 +2479,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
       <div className="mission-v2-header">
         <div className="mission-brand-mark"><Bot size={18} /><span /></div>
         <div>
-          <strong>NEMO CODE</strong>
+          <strong>Spacecode</strong>
           <small>Autonomous coding system</small>
         </div>
         <div className="mission-v2-status"><i /> Autonomous run</div>
@@ -2644,7 +2656,7 @@ function HandoffComposer({ draft, onChange, onSubmit, onClose, running }: { draf
         <label>
           Provider
           <select value={draft.provider} onChange={(event) => update("provider", event.target.value)} disabled={running}>
-            <option value="subprocess">NEMO CODE + LM Studio</option>
+            <option value="subprocess">Spacecode + LM Studio</option>
           </select>
         </label>
         <label>
@@ -3578,7 +3590,7 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
       <label>Modelo<input value={settings.default_model} onChange={(event) => update("default_model", event.target.value)} /></label>
       <label>Modo del agente<select value={settings.provider} onChange={(event) => update("provider", event.target.value)}><option value="subprocess">Real con LM Studio</option></select></label>
       <label>Base de memoria NEMO<input value={settings.memory_db} onChange={(event) => update("memory_db", event.target.value)} /></label>
-      <label>URL MCP NEMO (SSE)<input value={settings.nemo_mcp_url || ""} onChange={(event) => update("nemo_mcp_url", event.target.value)} placeholder="http://localhost:8765/mcp/sse" /></label>
+      <label>Transporte MCP NEMO<input value={settings.nemo_mcp_url || ""} onChange={(event) => update("nemo_mcp_url", event.target.value)} placeholder="stdio://vscode/nemo" /></label>
       <div className={`mcp-watcher ${watcherTone}`}>
         <div>
           <strong>MCP watcher</strong>
@@ -3618,6 +3630,12 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
         <label>Max minutos<input type="number" value={settings.max_runtime_minutes} onChange={(event) => update("max_runtime_minutes", Number(event.target.value))} /></label>
         <label>Heartbeat (min)<input type="number" value={settings.heartbeat_minutes} onChange={(event) => update("heartbeat_minutes", Number(event.target.value))} /></label>
         <label>Presupuesto tokens<input type="number" value={settings.token_budget} onChange={(event) => update("token_budget", Number(event.target.value))} /></label>
+        <label>Ventana contexto<input type="number" value={settings.context_window_tokens} onChange={(event) => update("context_window_tokens", Number(event.target.value))} /></label>
+        <label>Salida chat max<input type="number" value={settings.chat_max_tokens} onChange={(event) => update("chat_max_tokens", Number(event.target.value))} /></label>
+      </div>
+      <div className="settings-grid">
+        <label>Backend imagen<select value={settings.image_gen_backend} onChange={(event) => update("image_gen_backend", event.target.value)}><option value="auto">auto</option><option value="automatic1111">AUTOMATIC1111</option><option value="comfyui">ComfyUI</option></select></label>
+        <label>URL imagen<input value={settings.image_gen_url} onChange={(event) => update("image_gen_url", event.target.value)} placeholder="http://localhost:8188" /></label>
       </div>
       <div className="review-actions"><button onClick={onSaveSettings}><CheckCircle2 size={16} /> Guardar ajustes</button></div>
       <div className="repo-picker">
@@ -3807,6 +3825,7 @@ const _LEGACY_MEMORY_TOOL_NAMES = new Set([
 function _canonicalizeToolName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) return "tool";
+  if (trimmed.startsWith("spacecode.")) return trimmed.slice("spacecode.".length);
   if (!trimmed.startsWith("nemocode.")) return trimmed;
   const leaf = trimmed.slice("nemocode.".length);
   if (_LEGACY_MEMORY_TOOL_NAMES.has(leaf)) return `nemo_memory.${leaf}`;
@@ -3992,7 +4011,7 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
             <Wrench size={13} />
             <div>
               <strong>{_canonicalizeToolName(tool.name)}{tool.source === "inline" ? " (detected)" : ""}</strong>
-              {(tool.alias_name || (tool.name.startsWith("nemocode.") ? tool.name : "")) && <small>legacy alias: {tool.alias_name || tool.name}</small>}
+              {(tool.alias_name || (tool.name.startsWith("spacecode.") || tool.name.startsWith("nemocode.") ? tool.name : "")) && <small>alias: {tool.alias_name || tool.name}</small>}
               <span>{tool.status} / {tool.summary}</span>
             </div>
           </div>

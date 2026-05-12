@@ -3,10 +3,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./main";
+import { planNemoClient } from "./services/planNemoClient";
 
 const statePayload: any = {
   schema_version: 1,
-  product: "NEMO CODE Mission Control",
+  product: "Spacecode Mission Control",
   repo_path: ".",
   runtimes_path: ".nemo-runtimes",
   repos: [],
@@ -23,6 +24,10 @@ const statePayload: any = {
     heartbeat_minutes: 10,
     max_heartbeats: 1,
     token_budget: 8000,
+    context_window_tokens: 131072,
+    chat_max_tokens: 16384,
+    image_gen_backend: "auto",
+    image_gen_url: "",
     validation_policy: "smoke",
     nemo_required: false,
     quality_core: "core",
@@ -223,7 +228,7 @@ beforeEach(() => {
 describe("mission-control app", () => {
   it("renders the shell without crashing", async () => {
     render(<App />);
-    expect(await screen.findByRole("heading", { name: /NEMO CODE/i })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /Spacecode/i })).toBeInTheDocument();
     expect(await screen.findByText(/Agent Runs/i)).toBeInTheDocument();
   });
 
@@ -241,7 +246,7 @@ describe("mission-control app", () => {
     const body = JSON.parse(String((handoffCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
     expect(body.objective).toBe("Add a small local MVP feature");
     expect(body.validation_commands).toBe("npm --prefix apps/mission-control run build");
-    expect(body.nemo_mcp_url).toBe("http://127.0.0.1:8765/mcp/sse");
+    expect(body.nemo_mcp_url).toBe("stdio://vscode/nemo");
     expect(body.nemo_mcp_prefix).toBe("nemo.");
     expect(body.require_nemo_mcp_capabilities).toBe(true);
     expect(body.require_nemo_roundtrip).toBe(true);
@@ -292,6 +297,23 @@ describe("mission-control app", () => {
     const stageCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/api/git/stage"));
     expect(stageCall).toBeTruthy();
     expect((stageCall?.[1] as RequestInit | undefined)?.method).toBe("POST");
+  });
+
+  it("routes plan persistence through the Spacecode backend NEMO tool bridge", async () => {
+    await planNemoClient.syncObjectiveToNemo({
+      objective_id: "objective-1",
+      title: "Persist safely",
+      description: "Use backend MCP bridge",
+      acceptance_criteria: ["no direct browser writes"],
+      status: "planning",
+      created_at: "2026-05-11T00:00:00Z",
+      updated_at: "2026-05-11T00:00:00Z",
+    });
+
+    const fetchMock = vi.mocked(fetch);
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => url.includes("/api/nemo/tool"))).toBe(true);
+    expect(urls.some((url) => url.includes("localhost:8765") || url.includes("/api/memory"))).toBe(false);
   });
 
   it("executes commit action from versioning panel", async () => {

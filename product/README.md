@@ -4,8 +4,8 @@ This directory contains the active product base.
 
 ## Active Base
 
-- `nemo_code_runtime/` is the current embedded NEMO CODE mutation runtime path.
-- It is copied from `reference-repos/aider` and evolved in-place for NEMO CODE.
+- `nemo_code_runtime/` is the current embedded Spacecode mutation runtime path. The directory name is legacy and will be migrated separately.
+- It is copied from `reference-repos/aider` and evolved in-place for Spacecode.
 - The original upstream clone remains in `reference-repos/aider` for comparison.
 
 ## Integration Direction
@@ -14,11 +14,11 @@ The embedded runtime keeps a proven quality/editing foundation and adds:
 
 - OpenCode-style permission contracts and plan/build separation.
 - OpenHands-style autonomy and runtime state contracts.
-- Full NEMO MCP tooling contracts for operating and long-term memory.
+- Full NEMO MCP tooling contracts for operating and long-term memory. NEMO remains the external memory/context service; Spacecode is the coding product.
 
 ## Current Product Extension
 
-The first active NEMO CODE extension lives under:
+The first active Spacecode extension lives under:
 
 ```text
 product/nemo_code_runtime/nemo_code_runtime/nemo_platform/

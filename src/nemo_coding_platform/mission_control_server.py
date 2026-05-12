@@ -49,6 +49,9 @@ DEFAULT_RUN_RESULTS = ".nemo-runtimes/mission-control/runs"
 DEFAULT_JOB_SNAPSHOTS = ".nemo-runtimes/mission-control/jobs"
 JOB_LOG_LIMIT = 10_000
 DECISION_LOG_LIMIT = 200
+DEFAULT_CONTEXT_WINDOW_TOKENS = 131_072
+DEFAULT_CHAT_MAX_TOKENS = 16_384
+MAX_CHAT_MAX_TOKENS = 65_536
 NEMO_TOOL_SCAN_TTL_SECONDS = 30
 LEGACY_NEMO_SSE_URL = "http://127.0.0.1:8765/mcp/sse"
 URL_SOURCE_CACHE_TTL_SECONDS = 300
@@ -476,7 +479,7 @@ class HandoffJobManager:
             "--max-heartbeats",
             str(payload.get("max_heartbeats") or 4),
             "--token-budget",
-            str(payload.get("token_budget") or 32000),
+            str(payload.get("token_budget") or 128000),
             "--plan-minutes",
             str(payload.get("plan_minutes") or 30),
             "--execute-minutes",
@@ -697,7 +700,11 @@ def _default_settings(config: MissionControlServerConfig) -> dict[str, object]:
         "max_runtime_minutes": 240,
         "heartbeat_minutes": 30,
         "max_heartbeats": 8,
-        "token_budget": 64000,
+        "token_budget": 128000,
+        "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
+        "chat_max_tokens": DEFAULT_CHAT_MAX_TOKENS,
+        "image_gen_backend": "auto",
+        "image_gen_url": "",
         "pause_after_minutes": None,
         "plan_minutes": 60,
         "execute_minutes": 120,
@@ -1550,6 +1557,17 @@ def _chat_model(payload: dict[str, object]) -> str:
     return value.strip()
 
 
+def _positive_int(value: object, fallback: int, *, minimum: int = 1, maximum: int | None = None) -> int:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        parsed = fallback
+    parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(parsed, maximum)
+    return parsed
+
+
 def _redact_secrets(text: str) -> str:
     value = str(text)
     for env_name in ("LMSTUDIO_API_KEY", "OPENAI_API_KEY"):
@@ -1708,8 +1726,8 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
             {
                 "role": "system",
                 "content": (
-                    "You are the Mission Control coding agent for the local-first NEMO CODE platform. "
-                    "NEMO CODE is the software-engineering product (planning, coding, testing, review, apply). "
+                    "You are the Spacecode Mission Control coding agent for the local-first Spacecode platform. "
+                    "Spacecode is the software-engineering product (planning, coding, testing, review, apply). "
                     "NEMO MCP is the memory/context plane used by this product; it is not the product itself. "
                     "Do not describe yourself as a generic messaging system. "
                     "Answer in the user's language. Be concise, direct, and operational — never ask for confirmation before acting. "
@@ -1719,6 +1737,23 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "Do not claim you applied code unless an explicit apply action did it. "
                     "Never invent MCP/NEMO tool names or capabilities outside the verified catalog below. "
                     "Never answer with only a raw tool name such as get_current_time, search_memories, or context_bootstrap; explain the actual answer or next action in natural language."
+                ),
+            },
+            {
+                "role": "system",
+                "content": (
+                    "ARTIFACT STUDIO OUTPUT CONTRACT:\n"
+                    "When the user asks for a chart, dashboard, visualization, diagram, interface mockup, visual report, image prompt, or other generated artifact, produce a typed fenced code block so Mission Control can render and version it.\n\n"
+                    "Supported artifact fences:\n"
+                    "- ```html_artifact for complete self-contained HTML documents with inline CSS/JS.\n"
+                    "- ```svg_artifact for SVG with viewBox and xmlns.\n"
+                    "- ```mermaid for diagrams.\n"
+                    "- ```react_artifact for self-contained React components exposing function App().\n"
+                    "- ```image_request for JSON image-generation prompts.\n\n"
+                    "For code, dashboards, UI prototypes, and visual tools, emit full working code rather than summaries. "
+                    "For images, emit image_request JSON with prompt, negative_prompt, size, style, steps, and cfg when useful; Mission Control can send it to a local image backend. "
+                    "Optionally put a title marker as the first line, for example <!-- ARTIFACT:Metrics Dashboard:html -->.\n"
+                    "Prefer generating the actual artifact over describing what it would look like. Keep artifact code self-contained and compatible with a sandboxed preview."
                 ),
             },
             {"role": "system", "content": f"Verified NEMO tool names (all already executed server-side, not by you): {verified_tools}"},
@@ -1761,12 +1796,133 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
 
 
 def _chat_max_tokens(payload: dict[str, object]) -> int:
-    value = payload.get("max_tokens", payload.get("chat_max_tokens", 96))
+    budget = _positive_int(payload.get("token_budget"), 128000, minimum=4096, maximum=512000)
+    fallback = min(max(budget // 4, DEFAULT_CHAT_MAX_TOKENS), MAX_CHAT_MAX_TOKENS)
+    value = payload.get("max_tokens", payload.get("chat_max_tokens", os.environ.get("NEMO_CHAT_MAX_TOKENS", fallback)))
+    return _positive_int(value, fallback, minimum=1024, maximum=MAX_CHAT_MAX_TOKENS)
+
+
+def _agent_context_char_budget(payload: dict[str, object], mode_context_chars: int) -> int:
+    context_window = _positive_int(
+        payload.get("context_window_tokens", os.environ.get("NEMO_CONTEXT_WINDOW_TOKENS", DEFAULT_CONTEXT_WINDOW_TOKENS)),
+        DEFAULT_CONTEXT_WINDOW_TOKENS,
+        minimum=8192,
+        maximum=512000,
+    )
+    output_tokens = _chat_max_tokens(payload)
+    reserved_tokens = max(4096, output_tokens + 2048)
+    available_tokens = max(2048, context_window - reserved_tokens)
+    dynamic_chars = available_tokens * 4
+    return max(mode_context_chars, min(dynamic_chars, 192000))
+
+
+def api_generate_image(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise _bad_request("prompt is required", error_code="missing_prompt")
+    negative_prompt = str(payload.get("negative_prompt") or "").strip()
+    size = str(payload.get("size") or "1024x1024")
+    steps = _positive_int(payload.get("steps"), 28, minimum=1, maximum=120)
+    cfg = float(payload.get("cfg") or 7.0)
+    style = str(payload.get("style") or "").strip()
+
+    width, height = 1024, 1024
     try:
-        tokens = int(value)
-    except (TypeError, ValueError):
-        tokens = 96
-    return max(64, min(tokens, 2048))
+        width_text, height_text = size.lower().split("x", 1)
+        width, height = int(width_text), int(height_text)
+    except (ValueError, AttributeError):
+        pass
+    width = max(256, min(width, 2048))
+    height = max(256, min(height, 2048))
+    if style:
+        prompt = f"({style}), {prompt}"
+
+    settings = _load_settings(config)
+    image_gen_backend = str(settings.get("image_gen_backend") or payload.get("image_gen_backend") or "auto").strip().lower()
+    image_gen_url = str(settings.get("image_gen_url") or payload.get("image_gen_url") or "").strip()
+
+    def _write_generated_image(image_bytes: bytes) -> dict[str, object]:
+        artifacts_dir = Path(config.repo_path) / ".nemo-runtimes" / "mission-control" / "artifacts" / "images"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        image_name = f"gen-{uuid4().hex[:8]}.png"
+        image_path = artifacts_dir / image_name
+        image_path.write_bytes(image_bytes)
+        return {"ok": True, "image_path": str(image_path), "image_url": f"/api/artifacts/image/{image_name}", "prompt": prompt, "size": f"{width}x{height}"}
+
+    def _try_automatic1111(base_url: str) -> dict[str, object]:
+        import base64 as b64
+
+        body = json.dumps({
+            "prompt": prompt,
+            "negative_prompt": negative_prompt or "blurry, low quality, distorted",
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "cfg_scale": cfg,
+        }).encode("utf-8")
+        request = urllib.request.Request(f"{base_url.rstrip('/')}/sdapi/v1/txt2img", data=body, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=180) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        images = result.get("images", []) if isinstance(result, dict) else []
+        if not images:
+            raise ValueError("No images returned from AUTOMATIC1111")
+        return _write_generated_image(b64.b64decode(images[0]))
+
+    def _try_comfyui(base_url: str) -> dict[str, object]:
+        workflow = {
+            "3": {"class_type": "KSampler", "inputs": {"seed": int(time.time()), "steps": steps, "cfg": cfg, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+            "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"}},
+            "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative_prompt or "blurry, low quality", "clip": ["4", 1]}},
+            "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+            "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "nemo_gen", "images": ["8", 0]}},
+        }
+        queue_body = json.dumps({"prompt": workflow}).encode("utf-8")
+        request = urllib.request.Request(f"{base_url.rstrip('/')}/prompt", data=queue_body, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=10) as response:
+            queue_result = json.loads(response.read().decode("utf-8"))
+        prompt_id = queue_result.get("prompt_id") if isinstance(queue_result, dict) else None
+        if not prompt_id:
+            raise ValueError("ComfyUI did not return a prompt_id")
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            time.sleep(1)
+            with urllib.request.urlopen(f"{base_url.rstrip('/')}/history/{prompt_id}", timeout=5) as response:
+                history = json.loads(response.read().decode("utf-8"))
+            if prompt_id not in history:
+                continue
+            outputs = history[prompt_id].get("outputs", {})
+            for node_output in outputs.values():
+                if "images" not in node_output:
+                    continue
+                image_info = node_output["images"][0]
+                image_url = f"{base_url.rstrip('/')}/view?filename={quote_plus(image_info['filename'])}&subfolder={quote_plus(image_info.get('subfolder', ''))}&type={quote_plus(image_info.get('type', 'output'))}"
+                with urllib.request.urlopen(image_url, timeout=30) as image_response:
+                    return _write_generated_image(image_response.read())
+        raise ValueError("ComfyUI generation timed out after 180 seconds")
+
+    if image_gen_backend in {"automatic1111", "a1111"}:
+        backends_to_try = [("a1111", image_gen_url or "http://localhost:7860")]
+    elif image_gen_backend == "comfyui":
+        backends_to_try = [("comfyui", image_gen_url or "http://localhost:8188")]
+    else:
+        backends_to_try = [("a1111", image_gen_url or "http://localhost:7860"), ("comfyui", image_gen_url or "http://localhost:8188")]
+
+    last_error = ""
+    for backend_name, backend_url in backends_to_try:
+        try:
+            check_path = "sdapi/v1/sd-models" if backend_name == "a1111" else "system_stats"
+            with urllib.request.urlopen(f"{backend_url.rstrip('/')}/{check_path}", timeout=3):
+                pass
+            return _try_automatic1111(backend_url) if backend_name == "a1111" else _try_comfyui(backend_url)
+        except Exception as error:  # noqa: BLE001
+            last_error = f"{backend_name} at {backend_url}: {error}"
+            continue
+    raise _bad_request(
+        f"No image generation backend available. Tried: {', '.join(name for name, _ in backends_to_try)}. Last error: {last_error}",
+        error_code="image_gen_unavailable",
+    )
 
 
 def _raw_tool_name_fallback(response: str, message: str) -> str | None:
@@ -1800,13 +1956,13 @@ def _write_apply_memory(result: MergeApplyResult, memory_db: Path | None) -> Non
         NemoLifecyclePhase.REVIEW,
         "store_conversation",
         summary=(
-            f"Mission Control apply completed task={result.task_id} "
+            f"Spacecode apply completed task={result.task_id} "
             f"run={result.run_id} applied_files={','.join(result.applied_files)}"
         ),
-        topic="Mission Control Review Gate",
-        tags=(result.task_id, result.run_id, "mission_control", "apply", "review_to_main"),
+        topic="Spacecode Review Gate",
+        tags=(result.task_id, result.run_id, "spacecode", "apply", "review_to_main"),
         atom_type=MemoryAtomType.DECISION.value,
-        source_scope="mission_control",
+        source_scope="spacecode",
         importance=9,
     )
 
@@ -2007,6 +2163,10 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
         "heartbeat_minutes",
         "max_heartbeats",
         "token_budget",
+        "context_window_tokens",
+        "chat_max_tokens",
+        "image_gen_backend",
+        "image_gen_url",
         "pause_after_minutes",
         "plan_minutes",
         "execute_minutes",
@@ -2034,6 +2194,8 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
         "heartbeat_minutes",
         "max_heartbeats",
         "token_budget",
+        "context_window_tokens",
+        "chat_max_tokens",
         "plan_minutes",
         "execute_minutes",
         "review_minutes",
@@ -2063,6 +2225,8 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
         raise _bad_request("validation_escalation_mode must be boolean", error_code="invalid_setting_value")
     if "real_validation" in payload and not isinstance(payload.get("real_validation"), bool):
         raise _bad_request("real_validation must be boolean", error_code="invalid_setting_value")
+    if "image_gen_backend" in payload and str(payload.get("image_gen_backend") or "").strip().lower() not in {"auto", "automatic1111", "a1111", "comfyui"}:
+        raise _bad_request("image_gen_backend must be auto, automatic1111, a1111, or comfyui", error_code="invalid_setting_value")
     if "model_roles" in payload:
         settings["model_roles"] = _validate_model_roles_payload(payload.get("model_roles"))
     elif "default_model" in payload:
@@ -3318,6 +3482,30 @@ def api_nemo(config: MissionControlServerConfig, payload: dict[str, object]) -> 
     }
 
 
+def api_nemo_tool(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    tool_name = str(payload.get("tool_name") or "").strip()
+    if not tool_name or not re.fullmatch(r"[A-Za-z0-9_.-]+", tool_name):
+        raise _bad_request("tool_name is required and must be a valid NEMO MCP tool name", error_code="invalid_nemo_tool")
+    arguments = payload.get("arguments")
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        raise _bad_request("arguments must be an object", error_code="invalid_nemo_tool_arguments")
+    settings = _load_settings(config)
+    raw_mcp_url = payload.get("nemo_mcp_url") or settings.get("nemo_mcp_url")
+    nemo_mcp_url = _normalize_nemo_mcp_url(config, raw_mcp_url)
+    tool_calls: list[dict[str, object]] = []
+    result = _nemo_chat_tool_call(
+        config,
+        tool_calls,
+        tool_name,
+        lifecycle_phase=str(payload.get("lifecycle_phase") or "plan"),
+        nemo_mcp_url=nemo_mcp_url,
+        **arguments,
+    )
+    return {"ok": True, "tool_name": tool_name, "nemo_mcp_url": nemo_mcp_url, "result": result, "tool_calls": tool_calls}
+
+
 def api_self_mod_insights(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     source_json = _source_json(payload)
     trajectory = self_mod_trajectory(source_json)
@@ -3622,7 +3810,7 @@ def _nemo_chat_tool_call(
     **arguments: Any,
 ) -> dict[str, Any]:
     canonical_name = f"nemo_memory.{tool_name}"
-    alias_name = f"nemocode.{tool_name}"
+    alias_name = f"spacecode.{tool_name}"
     if isinstance(allowed_tools, set) and tool_name not in allowed_tools:
         tool_calls.append(
             {
@@ -4047,7 +4235,10 @@ def _is_echo_memory(memory: dict[str, Any], message: str) -> bool:
     normalized_message = message.strip().lower()
     if content == normalized_message:
         return True
-    return content.startswith("mission control chat user request:") and normalized_message in content
+    return (
+        content.startswith("spacecode chat user request:")
+        or content.startswith("mission control chat user request:")
+    ) and normalized_message in content
 
 
 def _is_discarded_memory(memory: dict[str, Any]) -> bool:
@@ -4066,7 +4257,7 @@ def _is_discarded_memory(memory: dict[str, Any]) -> bool:
 
 def _is_chat_lookup_echo(memory: dict[str, Any]) -> bool:
     content = _memory_content(memory).lower().strip()
-    if not content.startswith("mission control chat user request:"):
+    if not (content.startswith("spacecode chat user request:") or content.startswith("mission control chat user request:")):
         return False
     request = content.split(":", 1)[1].strip() if ":" in content else content
     return not _is_memory_store_request(request)
@@ -4393,7 +4584,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 "id": f"tool-{uuid4().hex[:8]}",
                 "name": canonical_name,
                 "tool_name": tool_name,
-                "alias_name": f"nemocode.{tool_name}",
+                "alias_name": f"spacecode.{tool_name}",
                 "status": "skipped",
                 "summary": summary,
             }
@@ -4520,8 +4711,8 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 "review",
                 content=f"Source note from user URL: {title} ({source_url})\n{snippet[:1200]}",
                 memory_type="evidence",
-                tags=("mission-control", "source", "url", "agent-chat"),
-                context="URL source extracted by Mission Control chat reader",
+                tags=("spacecode", "source", "url", "agent-chat"),
+                context="URL source extracted by Spacecode chat reader",
             )
             tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
         except Exception as error:  # noqa: BLE001
@@ -4656,11 +4847,11 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     _call_nemo(
         "store_conversation",
         "review",
-        summary=f"Mission Control chat user request: {message}",
-        topic="Mission Control conversation",
-        tags=("mission-control", "agent-chat"),
+        summary=f"Spacecode chat user request: {message}",
+        topic="Spacecode conversation",
+        tags=("spacecode", "agent-chat"),
         atom_type=MemoryAtomType.SESSION_SUMMARY.value,
-        source_scope="mission_control_chat",
+        source_scope="spacecode_chat",
         importance=8 if actions else 6,
     )
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
@@ -4673,8 +4864,8 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 "review",
                 content=f'{{"user_name": {declared_name!r}, "source_message": {message!r}}}',
                 memory_type="preference",
-                tags=("mission-control", "user-data", "identity", "agent-chat"),
-                context="User explicitly provided their name in Mission Control chat",
+                tags=("spacecode", "user-data", "identity", "agent-chat"),
+                context="User explicitly provided their name in Spacecode chat",
             )
         else:
             _call_nemo(
@@ -4682,8 +4873,8 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                 "review",
                 content=message,
                 memory_type="preference",
-                tags=("mission-control", "user-data", "agent-chat"),
-                context="User explicitly asked to store this in NEMO memory from Mission Control chat",
+                tags=("spacecode", "user-data", "agent-chat"),
+                context="User explicitly asked to store this in NEMO memory from Spacecode chat",
             )
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
@@ -4737,7 +4928,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         risk_flags,
         mergeable,
         cognitive_preload=cognitive_preload,
-        max_context_chars=mode_profile["context_chars"],
+        max_context_chars=_agent_context_char_budget(payload, mode_profile["context_chars"]),
     )
     verified_memory_response = _verified_nemo_memory_response(message, memory_lookup_payloads)
     if verified_memory_response:
@@ -5160,6 +5351,24 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/kpis":
             self._handle(lambda _: api_kpis(self.server.config), {})
             return
+        if route.startswith("/api/artifacts/image/"):
+            image_name = Path(route[len("/api/artifacts/image/"):]).name
+            image_path = Path(self.server.config.repo_path) / ".nemo-runtimes" / "mission-control" / "artifacts" / "images" / image_name
+            if image_path.exists() and image_path.is_file():
+                try:
+                    image_data = image_path.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(image_data)))
+                    self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(image_data)
+                except OSError:
+                    _json_response(self, 500, {"error": "failed_to_serve_image"})
+            else:
+                _json_response(self, 404, {"error": "image_not_found"})
+            return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
             return
@@ -5197,7 +5406,9 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/jobs/orphans": lambda payload: api_orphan_jobs(self.server, payload),
             "/api/self-modify/start": lambda payload: api_self_modify_start(self.server, payload),
             "/api/agent/message": lambda payload: api_agent_message(self.server.config, payload),
+            "/api/agent/generate-image": lambda payload: api_generate_image(self.server.config, payload),
             "/api/nemo": lambda payload: api_nemo(self.server.config, payload),
+            "/api/nemo/tool": lambda payload: api_nemo_tool(self.server.config, payload),
             "/api/nemo/mcp-status": lambda payload: api_nemo_mcp_status(self.server.config, payload),
             "/api/nemo/cognitive-stats": lambda payload: api_nemo_cognitive_stats(self.server.config, payload),
             "/api/nemo/risk-map": lambda payload: api_nemo_risk_map(self.server.config, payload),

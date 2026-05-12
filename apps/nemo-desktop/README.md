@@ -1,16 +1,16 @@
-# Nemocode Desktop
+# Spacecode Desktop
 
 Local-first AI coding agent with Spec-Driven Development, packaged as a desktop application using Tauri and React.
 
 ## Overview
 
-**Nemocode Desktop** is the graphical interface for the Nemocode AI assistant. It provides:
+**Spacecode Desktop** is the graphical interface for the Spacecode AI assistant. It provides:
 
 - **Repository Picker**: Choose which repository to operate on
 - **Task Workspace**: Define and manage coding tasks
 - **Approval Queue**: Review and approve agent-proposed changes before they're applied
 - **Artifact Timeline**: Visualize the history of generated artifacts and changes
-- **NEMO Memory Trace**: View and interact with the persistent memory system
+- **NEMO Memory Trace**: View and interact with the external NEMO MCP memory system
 - **Model Settings**: Configure LM Studio integration and model parameters
 
 The desktop app is built with:
@@ -126,9 +126,9 @@ Example flows:
 ### Settings Persistence
 
 Application settings are stored in platform-specific directories:
-- **Windows**: `%APPDATA%\nemocode\settings.json`
-- **macOS**: `~/Library/Application Support/nemocode/settings.json`
-- **Linux**: `~/.config/nemocode/settings.json`
+- **Windows**: `%APPDATA%\spacecode\settings.json`
+- **macOS**: `~/Library/Application Support/spacecode/settings.json`
+- **Linux**: `~/.config/spacecode/settings.json`
 
 Current persisted fields:
 - `backend_port`
@@ -171,7 +171,7 @@ Use DevTools for the desktop wrapper to inspect startup/health behavior, and Dev
 
 ### Settings Do Not Persist
 - Verify the platform config directory is writable
-- Delete `%APPDATA%\nemocode\settings.json` on Windows if the file was corrupted
+- Delete `%APPDATA%\spacecode\settings.json` on Windows if the file was corrupted
 - Restart the desktop shell after changing settings to confirm they reload correctly
 
 ### Tauri Build Fails
@@ -185,14 +185,14 @@ Use DevTools for the desktop wrapper to inspect startup/health behavior, and Dev
 
 ## Deep Linking
 
-Nemocode Desktop can be launched with deep links:
+Spacecode Desktop can be launched with deep links:
 
 ```bash
 # Open a specific repository
-nemocode://open-repo?path=/path/to/repo
+spacecode://open-repo?path=/path/to/repo
 
 # Start a task
-nemocode://start-task?name=my-task
+spacecode://start-task?name=my-task
 ```
 
 ## Platform-Specific Notes
@@ -224,4 +224,4 @@ nemocode://start-task?name=my-task
 
 ## License
 
-Same as parent Nemocode project.
+Same as parent Spacecode project.

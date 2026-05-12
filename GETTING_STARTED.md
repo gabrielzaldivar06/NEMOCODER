@@ -1,6 +1,6 @@
-# Getting Started with NEMO CODE
+# Getting Started with Spacecode
 
-This guide walks you through pointing NEMO CODE at an existing git repository and running your first autonomous coding handoff.
+This guide walks you through pointing Spacecode at an existing git repository and running your first autonomous coding handoff.
 
 ---
 
@@ -11,7 +11,7 @@ This guide walks you through pointing NEMO CODE at an existing git repository an
 | Python | 3.12+ | `python --version` |
 | Node.js | 18+ | `node --version` |
 | Git | any | Repository must be a git repo |
-| LM Studio | latest | [lmstudio.ai](https://lmstudio.ai) — for real local NEMO CODE runs |
+| LM Studio | latest | [lmstudio.ai](https://lmstudio.ai) — for real local Spacecode runs |
 
 ---
 
@@ -34,7 +34,7 @@ python -m nemo_coding_platform blueprint
 
 ---
 
-## 2. Configure LM Studio (for real NEMO CODE runs)
+## 2. Configure LM Studio (for real Spacecode runs)
 
 1. Open LM Studio → **Local Server** tab → load `nvidia/agentic-coder-4b` (or any OpenAI-compatible chat model).
 2. Start the server on `http://localhost:1234`.
@@ -53,7 +53,7 @@ Mission Control uses provider mode `subprocess` for real local execution. If LM 
 $env:PYTHONPATH = "src"
 c:/dev/dev4/.venv/Scripts/python.exe -m nemo_coding_platform mission-control-server `
     --repo "C:\path\to\your\project" `
-    --runtimes ".nemo-runtimes"
+    --runtimes ".spacecode-runtimes"
 ```
 
 The server starts on `http://127.0.0.1:8787`. Pass any valid git repository path as `--repo`. The `--runtimes` path is where agent sandboxes and checkpoints are stored (created automatically).
@@ -61,7 +61,7 @@ The server starts on `http://127.0.0.1:8787`. Pass any valid git repository path
 To start without a pre-configured repo (open one from the UI instead):
 ```powershell
 $env:PYTHONPATH = "src"
-c:/dev/dev4/.venv/Scripts/python.exe -m nemo_coding_platform mission-control-server --runtimes ".nemo-runtimes"
+c:/dev/dev4/.venv/Scripts/python.exe -m nemo_coding_platform mission-control-server --runtimes ".spacecode-runtimes"
 ```
 
 ---
@@ -107,7 +107,7 @@ Recent repos are remembered and shown in the sidebar for quick switching.
 2. Fill in:
    - **Objective / PRD**: describe what the agent should build or fix.
    - **Validation commands** (optional): e.g. `python -m pytest tests/` — the agent will run these to verify its work.
-    - **Provider mode**: `subprocess` for real NEMO CODE execution with LM Studio.
+    - **Provider mode**: `subprocess` for real Spacecode execution with LM Studio.
 3. Click **Start Handoff**.
 
 The agent run appears in the Explorer panel. Logs stream in the bottom panel. When the run completes, the diff review surface shows changed files and hunks for human approval.
@@ -156,9 +156,11 @@ NEMO is the memory plane that injects project context into agent prompts. Withou
 
 **Setup:**
 
-1. Clone and start the NEMO MCP server (see [persistent-ai-memory](../memory%20persistence/persistent-ai-memory/README.md)).
-2. It should be running on `http://localhost:8765`.
+1. Configure the VS Code NEMO MCP server named `nemo`.
+2. Spacecode should use the MCP transport `stdio://vscode/nemo` through the Mission Control backend.
 3. In Mission Control **Settings → NEMO**, verify the health indicator is green.
+
+Do not point the browser or frontend plan sync directly at `http://localhost:8765`; legacy SSE endpoints are compatibility-only and bypass Spacecode's backend policy layer.
 
 When NEMO is connected, the agent automatically builds a context portfolio from your project's memory before each mutation and falls back to semantic search if the portfolio is empty.
 
@@ -171,5 +173,5 @@ When NEMO is connected, the agent automatically builds a context portfolio from 
 | `ModuleNotFoundError: nemo_coding_platform` | Set `$env:PYTHONPATH = "src"` or run `pip install -e .` |
 | UI shows blank state | Check the backend is running on port 8787; the Vite proxy must be active |
 | Agent run hangs | Verify LM Studio server is started and the model is loaded |
-| `permission denied` on target file | Add file to `.nemocode-permissions.json` or remove explicit `--target-files` restriction |
+| `permission denied` on target file | Add file to `.spacecode-permissions.json` or remove explicit `--target-files` restriction |
 | Port 8787 already in use | Pass `--port 8788` to the server and update the Vite proxy config in `vite.config.ts` |

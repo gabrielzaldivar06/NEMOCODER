@@ -1,12 +1,12 @@
 {
-  "name": "nemocode-mission-control",
+  "name": "spacecode-mission-control",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "dev:mvp": "powershell -ExecutionPolicy Bypass -File ../../scripts/start-mvp-local.ps1",
-    "dev:api": "set PYTHONPATH=../../src&& ..\\..\\.venv\\Scripts\\python.exe -m nemo_coding_platform mission-control-server --repo ../.. --runtimes .nemo-runtimes",
+    "dev:api": "set PYTHONPATH=../../src&& ..\\..\\.venv\\Scripts\\python.exe -m nemo_coding_platform mission-control-server --repo ../.. --runtimes .spacecode-runtimes",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:smoke": "vitest run --reporter=dot",
@@ -14,17 +14,18 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "typescript": "latest",
+    "lucide-react": "latest",
+    "mermaid": "^11.15.0",
     "react": "latest",
     "react-dom": "latest",
-    "lucide-react": "latest"
+    "typescript": "latest",
+    "vite": "latest"
   },
   "devDependencies": {
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
     "@testing-library/jest-dom": "latest",
     "@testing-library/react": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
     "jsdom": "latest",
     "vitest": "latest"
   }

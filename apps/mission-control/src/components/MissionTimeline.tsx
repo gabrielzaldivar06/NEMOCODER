@@ -45,7 +45,7 @@ export function MissionTimeline({ messages, running, queuedPrompt, cleanAssistan
           return <article className={`mission-event ${message.role}`} key={message.id}>
             <div className="mission-event-node"><span /></div>
             <div className="mission-event-card">
-              <header><strong>{message.role === "assistant" ? "NEMO CODE" : "USER"}</strong><small>{message.role === "assistant" ? "system" : "operator"}</small></header>
+              <header><strong>{message.role === "assistant" ? "Spacecode" : "USER"}</strong><small>{message.role === "assistant" ? "system" : "operator"}</small></header>
               {renderRichText(renderedContent)}
               {message.role === "assistant" && renderMcpEvidence(message.tool_calls ?? [])}
             </div>

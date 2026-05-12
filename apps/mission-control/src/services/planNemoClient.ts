@@ -68,11 +68,35 @@ export interface PlanSummary {
 }
 
 class PlanNemoClient {
-  private nemoEndpoint: string;
   private retryQueue: Array<{ fn: () => Promise<any>; retries: number }> = [];
 
-  constructor(nemoEndpoint: string = "http://localhost:8765") {
-    this.nemoEndpoint = nemoEndpoint;
+  constructor() {}
+
+  private async callNemoTool<T = Record<string, unknown>>(
+    toolName: string,
+    argumentsPayload: Record<string, unknown>,
+    lifecyclePhase: "start" | "plan" | "build" | "review" | "close" = "plan"
+  ): Promise<T> {
+    const response = await fetch("/api/nemo/tool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tool_name: toolName,
+        lifecycle_phase: lifecyclePhase,
+        arguments: argumentsPayload,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`NEMO tool ${toolName} failed: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return (data.result || {}) as T;
+  }
+
+  private queueRetry(fn: () => Promise<any>): void {
+    this.retryQueue.push({ fn, retries: 0 });
   }
 
   /**
@@ -80,39 +104,28 @@ class PlanNemoClient {
    */
   async syncObjectiveToNemo(objective: ObjectiveState): Promise<void> {
     try {
-      const content = JSON.stringify({
-        objective_id: objective.objective_id,
-        title: objective.title,
-        description: objective.description,
-        acceptance_criteria: objective.acceptance_criteria,
-        status: objective.status,
-        plan_id: objective.plan_id,
-        created_at: objective.created_at,
-        updated_at: objective.updated_at,
-      });
-
-      const response = await fetch(`${this.nemoEndpoint}/api/memory`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content,
+      await this.callNemoTool(
+        "cognitive_ingest",
+        {
+          content: JSON.stringify({
+            objective_id: objective.objective_id,
+            title: objective.title,
+            description: objective.description,
+            acceptance_criteria: objective.acceptance_criteria,
+            status: objective.status,
+            plan_id: objective.plan_id,
+            created_at: objective.created_at,
+            updated_at: objective.updated_at,
+          }),
           memory_type: "objective",
-          importance_level: 8,
-          tags: ["planning", "long-term-goal", `objective:${objective.objective_id}`],
-          source_scope: "mission_control",
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`NEMO sync failed: ${response.statusText}`);
-      }
+          tags: ["spacecode", "planning", "long-term-goal", `objective:${objective.objective_id}`],
+          context: "Spacecode Mission Control objective sync",
+        },
+        "review"
+      );
     } catch (error) {
       console.error("[PlanNemoClient] syncObjectiveToNemo failed:", error);
-      // Queue for retry
-      this.retryQueue.push({
-        fn: () => this.syncObjectiveToNemo(objective),
-        retries: 0,
-      });
+      this.queueRetry(() => this.syncObjectiveToNemo(objective));
     }
   }
 
@@ -121,51 +134,31 @@ class PlanNemoClient {
    */
   async syncPlanToNemo(plan: ExecutionPlan): Promise<void> {
     try {
-      const stepsSummary = plan.steps
-        .map((s) => `${s.sequence}. ${s.title}`)
-        .join(" → ");
-
-      const content = JSON.stringify({
-        plan_id: plan.plan_id,
-        objective_id: plan.objective_id,
-        version: plan.version,
-        steps_summary: stepsSummary,
-        total_steps: plan.steps.length,
-        completed_steps: plan.steps.filter((s) => s.status === "completed").length,
-        status: plan.status,
-        reasoning: plan.reasoning,
-        created_at: plan.created_at,
-        updated_at: plan.updated_at,
-      });
-
-      const importance = plan.status === "completed" ? 9 : 7;
-
-      const response = await fetch(`${this.nemoEndpoint}/api/memory`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content,
+      const stepsSummary = plan.steps.map((step) => `${step.sequence}. ${step.title}`).join(" -> ");
+      await this.callNemoTool(
+        "cognitive_ingest",
+        {
+          content: JSON.stringify({
+            plan_id: plan.plan_id,
+            objective_id: plan.objective_id,
+            version: plan.version,
+            steps_summary: stepsSummary,
+            total_steps: plan.steps.length,
+            completed_steps: plan.steps.filter((step) => step.status === "completed").length,
+            status: plan.status,
+            reasoning: plan.reasoning,
+            created_at: plan.created_at,
+            updated_at: plan.updated_at,
+          }),
           memory_type: "plan",
-          importance_level: importance,
-          tags: [
-            "planning",
-            "executable",
-            `plan:${plan.plan_id}`,
-            `objective:${plan.objective_id}`,
-          ],
-          source_scope: "mission_control",
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`NEMO plan sync failed: ${response.statusText}`);
-      }
+          tags: ["spacecode", "planning", "executable", `plan:${plan.plan_id}`, `objective:${plan.objective_id}`],
+          context: "Spacecode Mission Control execution plan sync",
+        },
+        "review"
+      );
     } catch (error) {
       console.error("[PlanNemoClient] syncPlanToNemo failed:", error);
-      this.retryQueue.push({
-        fn: () => this.syncPlanToNemo(plan),
-        retries: 0,
-      });
+      this.queueRetry(() => this.syncPlanToNemo(plan));
     }
   }
 
@@ -176,54 +169,35 @@ class PlanNemoClient {
     plan: ExecutionPlan,
     step: PlanStep
   ): Promise<string | null> {
+    const evidenceHandle = `spacecode_step_outcome_${plan.plan_id}_${step.step_id}`;
     try {
-      const content = JSON.stringify({
-        step_id: step.step_id,
-        plan_id: plan.plan_id,
-        objective_id: plan.objective_id,
-        title: step.title,
-        expected: step.expected_outcome,
-        actual: step.outcome,
-        success: step.success_criteria_met,
-        learnings: step.learnings,
-        artifacts: step.artifacts,
-        sequence: step.sequence,
-        created_at: new Date().toISOString(),
-      });
-
-      // Create evidence handle for detailed step info
-      const evidenceHandle = `step_outcome_${plan.plan_id}_${step.step_id}`;
-
-      const response = await fetch(`${this.nemoEndpoint}/api/memory`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content,
+      await this.callNemoTool(
+        "cognitive_ingest",
+        {
+          content: JSON.stringify({
+            step_id: step.step_id,
+            plan_id: plan.plan_id,
+            objective_id: plan.objective_id,
+            title: step.title,
+            expected: step.expected_outcome,
+            actual: step.outcome,
+            success: step.success_criteria_met,
+            learnings: step.learnings,
+            artifacts: step.artifacts,
+            sequence: step.sequence,
+            evidence_handle: evidenceHandle,
+            created_at: new Date().toISOString(),
+          }),
           memory_type: step.learnings.length > 0 ? "learning" : "decision",
-          importance_level: step.learnings.length > 0 ? 8 : 6,
-          tags: [
-            "planning",
-            "step-outcome",
-            `step:${step.step_id}`,
-            `plan:${plan.plan_id}`,
-            `objective:${plan.objective_id}`,
-          ],
-          evidence_handle: evidenceHandle,
-          source_scope: "mission_control",
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`NEMO step sync failed: ${response.statusText}`);
-      }
-
+          tags: ["spacecode", "planning", "step-outcome", `step:${step.step_id}`, `plan:${plan.plan_id}`, `objective:${plan.objective_id}`],
+          context: "Spacecode Mission Control step outcome sync",
+        },
+        "review"
+      );
       return evidenceHandle;
     } catch (error) {
       console.error("[PlanNemoClient] syncStepOutcomeToNemo failed:", error);
-      this.retryQueue.push({
-        fn: () => this.syncStepOutcomeToNemo(plan, step),
-        retries: 0,
-      });
+      this.queueRetry(() => this.syncStepOutcomeToNemo(plan, step));
       return null;
     }
   }
@@ -233,35 +207,19 @@ class PlanNemoClient {
    */
   async syncPlanSummaryToNemo(summary: PlanSummary): Promise<void> {
     try {
-      const content = JSON.stringify(summary);
-
-      const response = await fetch(`${this.nemoEndpoint}/api/memory`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content,
+      await this.callNemoTool(
+        "cognitive_ingest",
+        {
+          content: JSON.stringify(summary),
           memory_type: "learning",
-          importance_level: 9,
-          tags: [
-            "planning",
-            "completion",
-            "summary",
-            `objective:${summary.objective_id}`,
-            `plan:${summary.plan_id}`,
-          ],
-          source_scope: "mission_control",
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`NEMO summary sync failed: ${response.statusText}`);
-      }
+          tags: ["spacecode", "planning", "completion", "summary", `objective:${summary.objective_id}`, `plan:${summary.plan_id}`],
+          context: "Spacecode Mission Control plan completion summary",
+        },
+        "review"
+      );
     } catch (error) {
       console.error("[PlanNemoClient] syncPlanSummaryToNemo failed:", error);
-      this.retryQueue.push({
-        fn: () => this.syncPlanSummaryToNemo(summary),
-        retries: 0,
-      });
+      this.queueRetry(() => this.syncPlanSummaryToNemo(summary));
     }
   }
 
@@ -270,26 +228,15 @@ class PlanNemoClient {
    */
   async retrievePreviousPlans(limit: number = 5): Promise<ExecutionPlan[]> {
     try {
-      const response = await fetch(
-        `${this.nemoEndpoint}/api/search?query=completed plans&tags=planning&limit=${limit}`,
-        {
-          method: "GET",
-          headers: { "Content-Type": "application/json" },
-        }
+      await this.callNemoTool(
+        "search_memories",
+        { query: "Spacecode completed execution plans", tags_include: ["spacecode", "planning"], limit, compact: true },
+        "review"
       );
-
-      if (!response.ok) {
-        throw new Error("Failed to retrieve previous plans");
-      }
-
-      const data = await response.json();
-      // Parse returned memories into ExecutionPlan structure
-      // This is a simplified version - actual implementation depends on NEMO API
-      return [];
     } catch (error) {
       console.error("[PlanNemoClient] retrievePreviousPlans failed:", error);
-      return [];
     }
+    return [];
   }
 
   /**
@@ -297,25 +244,16 @@ class PlanNemoClient {
    */
   async retrievePreviousLearnings(query: string = ""): Promise<string[]> {
     try {
-      const response = await fetch(
-        `${this.nemoEndpoint}/api/search?query=learnings ${query}&tags=planning,learning&limit=10`,
-        {
-          method: "GET",
-          headers: { "Content-Type": "application/json" },
-        }
+      const result = await this.callNemoTool<{ memories?: Array<{ content?: string; text?: string }> }>(
+        "search_memories",
+        { query: `Spacecode plan learnings ${query}`.trim(), tags_include: ["spacecode", "planning", "learning"], limit: 10, compact: true },
+        "review"
       );
-
-      if (!response.ok) {
-        throw new Error("Failed to retrieve learnings");
-      }
-
-      const data = await response.json();
-      // Extract learnings from memories
-      return [];
+      return (result.memories || []).map((memory) => String(memory.content || memory.text || "")).filter(Boolean);
     } catch (error) {
       console.error("[PlanNemoClient] retrievePreviousLearnings failed:", error);
-      return [];
     }
+    return [];
   }
 
   /**
@@ -326,23 +264,17 @@ class PlanNemoClient {
     tokenBudget: number = 2000
   ): Promise<string> {
     try {
-      const response = await fetch(`${this.nemoEndpoint}/api/context-portfolio`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          task: "execute plan step",
-          topic: "mission_control_planning",
-          tags_include: ["planning"],
+      const result = await this.callNemoTool<{ context?: string; portfolio?: { context?: string }; context_portfolio?: { context?: string } }>(
+        "build_context_portfolio",
+        {
+          task: "execute Spacecode plan step",
+          topic: "spacecode_mission_control_planning",
+          tags_include: ["spacecode", "planning", `plan:${planId}`],
           token_budget: tokenBudget,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to build context portfolio");
-      }
-
-      const data = await response.json();
-      return data.context || "";
+        },
+        "plan"
+      );
+      return result.context || result.portfolio?.context || result.context_portfolio?.context || "";
     } catch (error) {
       console.error("[PlanNemoClient] buildPlanContextPortfolio failed:", error);
       return "";
@@ -373,8 +305,10 @@ class PlanNemoClient {
    */
   async checkHealth(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.nemoEndpoint}/api/health`, {
-        method: "GET",
+      const response = await fetch("/api/nemo/mcp-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ include_capability_probe: false, include_roundtrip_probe: false }),
       });
       return response.ok;
     } catch {

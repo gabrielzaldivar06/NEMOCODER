@@ -16,11 +16,31 @@ from tests.test_review_gate_cli import write_ready_run
 
 class MissionControlServerTests(unittest.TestCase):
     def test_chat_max_tokens_defaults_to_interactive_budget(self) -> None:
-        self.assertEqual(mission_control_server._chat_max_tokens({}), 96)
+        self.assertEqual(mission_control_server._chat_max_tokens({}), 32000)
 
     def test_chat_max_tokens_clamps_invalid_and_small_values(self) -> None:
-        self.assertEqual(mission_control_server._chat_max_tokens({"max_tokens": "invalid"}), 96)
-        self.assertEqual(mission_control_server._chat_max_tokens({"max_tokens": 12}), 64)
+        self.assertEqual(mission_control_server._chat_max_tokens({"max_tokens": "invalid"}), 32000)
+        self.assertEqual(mission_control_server._chat_max_tokens({"max_tokens": 12}), 1024)
+        self.assertEqual(mission_control_server._chat_max_tokens({"max_tokens": 999999}), mission_control_server.MAX_CHAT_MAX_TOKENS)
+
+    def test_agent_context_char_budget_scales_with_context_window(self) -> None:
+        budget = mission_control_server._agent_context_char_budget(
+            {"context_window_tokens": 131072, "chat_max_tokens": 16384},
+            12000,
+        )
+
+        self.assertGreaterEqual(budget, 12000)
+        self.assertGreater(budget, 100000)
+
+    def test_generate_image_requires_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None)
+
+            with self.assertRaises(ApiRequestError) as raised:
+                mission_control_server.api_generate_image(config, {})
+
+        self.assertEqual(raised.exception.error_code, "missing_prompt")
 
     def test_api_search_requires_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
