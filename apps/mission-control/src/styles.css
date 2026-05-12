@@ -2794,7 +2794,6 @@ button { font: inherit; }
 }
 .mission-timeline,
 .mission-telemetry,
-.mission-right-rail,
 .mission-home-v2 .artifact-studio {
   border: 1px solid rgba(94, 234, 212, 0.13);
   background:
@@ -2807,15 +2806,8 @@ button { font: inherit; }
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
-  padding: 12px;
-  overflow: hidden;
-}
-.mission-right-rail .mission-telemetry {
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
-  box-shadow: none;
+  align-content: stretch;
+  overflow: visible;
 }
 .mission-timeline {
   min-width: 0;
@@ -3160,7 +3152,6 @@ button { font: inherit; }
   .mission-v2-header { grid-template-columns: auto minmax(0, 1fr); }
   .mission-session-actions { grid-column: 1 / -1; justify-self: stretch; justify-content: space-between; }
   .mission-v2-steer { grid-column: 1 / -1; }
-  .mission-right-rail { padding: 10px; }
   .mission-telemetry { grid-template-columns: minmax(0, 1fr); }
   .mission-telemetry .telemetry-card:last-child { grid-column: auto; }
 }
