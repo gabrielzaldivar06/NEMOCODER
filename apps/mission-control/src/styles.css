@@ -3188,27 +3188,80 @@ button { font: inherit; }
 .mission-event-card header small { color: #6f8e87; font-size: 10px; text-transform: uppercase; }
 .command-dock {
   margin: 0 12px 12px;
-  border: 1px solid rgba(94, 234, 212, 0.18);
-  background: linear-gradient(180deg, rgba(4, 14, 13, 0.92), rgba(2, 8, 8, 0.96));
+  position: relative;
+  border: 1px solid rgba(94, 234, 212, 0.2);
+  background:
+    radial-gradient(circle at 82% 50%, rgba(25, 242, 168, 0.12), transparent 28%),
+    linear-gradient(180deg, rgba(4, 18, 17, 0.94), rgba(1, 7, 8, 0.98));
   border-radius: 8px;
-  padding: 12px 12px 10px;
+  padding: 10px 12px 10px;
   display: grid;
-  gap: 8px;
-  box-shadow: 0 0 0 1px rgba(25, 242, 168, 0.04), 0 0 36px rgba(25, 242, 168, 0.08);
+  grid-template-rows: auto minmax(78px, auto) auto auto;
+  gap: 7px;
+  box-shadow: 0 0 0 1px rgba(25, 242, 168, 0.045), 0 18px 56px rgba(0, 0, 0, 0.34), 0 0 40px rgba(25, 242, 168, 0.08);
+  overflow: hidden;
+}
+.command-dock::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(94, 234, 212, 0.08) 52%, transparent);
+  opacity: 0.45;
+}
+.command-dock-head {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  min-height: 24px;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  color: #7f9f98;
+  font-family: "DM Mono", "SF Mono", Consolas, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.command-dock-head span,
+.command-dock-head strong,
+.command-dock-head small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-dock-head span { display: inline-flex; align-items: center; gap: 7px; letter-spacing: 0.08em; }
+.command-dock-head span i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--glow);
+}
+.command-dock-head strong { color: #dffcf4; font-weight: 900; }
+.command-dock-head small { color: #67e8f9; text-align: right; }
+.command-dock > textarea,
+.command-dock > .command-dock-actions,
+.command-dock > .home-chat-notes,
+.command-dock > .attachment-strip { position: relative; z-index: 1; }
+.command-dock > textarea {
+  border: 1px solid rgba(94, 234, 212, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 4, 5, 0.26);
+  padding: 10px 12px;
 }
 .command-dock textarea {
   width: 100%;
-  min-height: 88px;
+  min-height: 78px;
   resize: vertical;
-  border: 0;
   outline: 0;
-  background: transparent;
   color: var(--text);
   font: inherit;
   line-height: 1.55;
 }
 .command-dock textarea::placeholder { color: #6d8780; }
-.command-dock-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; overflow: clip; }
+.command-dock-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; overflow: visible; }
 .command-dock-actions .provider-switch { flex: 1 1 210px; min-width: 0; }
 .command-dock-actions .provider-switch select { max-width: 100%; min-width: 0; }
 .command-dock-actions > button {
@@ -3231,6 +3284,45 @@ button { font: inherit; }
 .mission-home-v2 .send-intent { background: var(--accent); box-shadow: 0 0 34px rgba(25, 242, 168, 0.42), 0 0 0 10px rgba(25, 242, 168, 0.045); animation: dockBreath 2400ms ease-in-out infinite; }
 .mission-home-v2 .send-halo-option { border-color: rgba(94, 234, 212, 0.2); background: rgba(2, 10, 9, 0.96); }
 .mission-home-v2 .send-halo-option svg { color: #78f6d8; }
+.mission-home-v2 .send-halo::before,
+.mission-home-v2 .send-halo::after {
+  content: "";
+  position: absolute;
+  inset: 9px;
+  border: 1px solid rgba(94, 234, 212, 0.24);
+  border-radius: 999px;
+  pointer-events: none;
+  box-shadow: 0 0 28px rgba(25, 242, 168, 0.1);
+}
+.mission-home-v2 .send-halo::after {
+  inset: 23px;
+  border-color: rgba(177, 140, 255, 0.22);
+  transform: rotate(24deg);
+}
+.mission-home-v2 .send-intent {
+  width: 50px;
+  height: 50px;
+  position: relative;
+  z-index: 3;
+  border-radius: 999px;
+  color: #03110d;
+}
+.send-halo-label {
+  position: absolute;
+  z-index: 2;
+  color: #74f7da;
+  font-family: "DM Mono", "SF Mono", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-shadow: 0 0 10px rgba(25, 242, 168, 0.42);
+  pointer-events: none;
+}
+.send-halo-label.plan { top: 6px; left: 50%; transform: translateX(-50%); }
+.send-halo-label.queue { top: 50%; right: 0; transform: translateY(-50%); }
+.send-halo-label.steer { bottom: 6px; left: 50%; transform: translateX(-50%); }
+.send-halo-label.hold { top: 50%; left: 0; transform: translateY(-50%); }
 .mission-home-v2 .artifact-studio {
   min-height: auto;
   grid-template-rows: auto auto minmax(0, 1fr);
@@ -3410,6 +3502,7 @@ button { font: inherit; }
   .mission-home-v2 .send-halo { width: 48px; height: 48px; margin-left: auto; }
   .mission-home-v2 .command-dock-actions .send-halo { flex-basis: 48px; }
   .mission-home-v2 .send-halo-menu { display: none; }
+  .send-halo-label { display: none; }
   .mission-right-rail { grid-template-rows: auto auto; }
   .mission-telemetry { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mission-telemetry .telemetry-card:last-child { grid-column: 1 / -1; }

@@ -65,6 +65,11 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
 
   return (
     <div className="command-dock">
+      <div className="command-dock-head" aria-label="Command dock status">
+        <span><i /> Command dock</span>
+        <strong>{running ? "Streaming" : canSendDraft ? "Ready" : "Awaiting objective"}</strong>
+        <small>{queuedPrompts.length > 0 ? `${queuedPrompts.length} queued` : providerLabel}</small>
+      </div>
       <label className="sr-only" htmlFor={attachmentFieldId}>Attach files for the next Space Code prompt</label>
       <input
         id={attachmentFieldId}
@@ -99,6 +104,10 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
         <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
         <label className="provider-switch real" htmlFor={providerFieldId} title="Modo del agente"><Bot size={15} /><span className="sr-only">Agent runtime mode</span><select id={providerFieldId} value={provider} onChange={(event) => onProviderChange(event.target.value)}><option value="subprocess">{providerLabel}</option></select></label>
         <div className={`send-halo ${sendHaloOpen ? "open" : ""}`} onMouseLeave={() => setSendHaloOpen(false)}>
+          <span className="send-halo-label plan">PLAN</span>
+          <span className="send-halo-label queue">QUEUE</span>
+          <span className="send-halo-label steer">STEER</span>
+          <span className="send-halo-label hold">HOLD</span>
           <button className="send-intent" onClick={() => running ? runHaloAction("stop") : runHaloAction("send")} disabled={!running && !canSendDraft} onMouseEnter={() => setSendHaloOpen(true)} onFocus={() => setSendHaloOpen(true)} title={running ? "Detener respuesta" : "Enviar"} aria-label={running ? "Detener respuesta" : "Enviar objetivo"}>{running ? <Square size={16} /> : <ArrowUp size={18} />}</button>
           <div className="send-halo-menu" aria-label="Acciones del agente">
             <button className="send-halo-option plan" onClick={() => runHaloAction("plan")} disabled={!canSendDraft && !running} title="Modo plan" aria-label="Modo plan" data-label="Plan"><Target size={13} /><span>Plan</span></button>
