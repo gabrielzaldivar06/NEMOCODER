@@ -3600,14 +3600,34 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
     ["core reads", capabilities?.supports_core_context_reads],
     ["write/read", capabilities?.supports_write_read_roundtrip],
   ] as const;
+  const fieldIds = {
+    modelBaseUrl: "settings-model-base-url",
+    defaultModel: "settings-default-model",
+    provider: "settings-provider",
+    memoryDb: "settings-memory-db",
+    nemoMcpUrl: "settings-nemo-mcp-url",
+    runtimePath: "settings-runtime-path",
+    validationPolicy: "settings-validation-policy",
+    timeoutSeconds: "settings-timeout-seconds",
+    maxRuntimeMinutes: "settings-max-runtime-minutes",
+    heartbeatMinutes: "settings-heartbeat-minutes",
+    tokenBudget: "settings-token-budget",
+    contextWindowTokens: "settings-context-window-tokens",
+    chatMaxTokens: "settings-chat-max-tokens",
+    imageGenBackend: "settings-image-gen-backend",
+    imageGenUrl: "settings-image-gen-url",
+    repoPath: "settings-repo-path",
+    cloneUrl: "settings-clone-url",
+    cloneDestination: "settings-clone-destination",
+  };
   return (
-    <section className="ops-panel settings-editor">
-      <div className="panel-title"><Settings size={16} /> Ajustes</div>
-      <label>URL de LM Studio<input value={settings.model_base_url} onChange={(event) => update("model_base_url", event.target.value)} /></label>
-      <label>Modelo<input value={settings.default_model} onChange={(event) => update("default_model", event.target.value)} /></label>
-      <label>Modo del agente<select value={settings.provider} onChange={(event) => update("provider", event.target.value)}><option value="subprocess">Real con LM Studio</option></select></label>
-      <label>Base de memoria NEMO<input value={settings.memory_db} onChange={(event) => update("memory_db", event.target.value)} /></label>
-      <label>Transporte MCP NEMO<input value={settings.nemo_mcp_url || ""} onChange={(event) => update("nemo_mcp_url", event.target.value)} placeholder="stdio://vscode/nemo" /></label>
+    <section className="ops-panel settings-editor" aria-labelledby="settings-panel-title">
+      <div className="panel-title"><Settings size={16} /> <span id="settings-panel-title">Ajustes</span></div>
+      <label htmlFor={fieldIds.modelBaseUrl}>URL de LM Studio<input id={fieldIds.modelBaseUrl} value={settings.model_base_url} onChange={(event) => update("model_base_url", event.target.value)} /></label>
+      <label htmlFor={fieldIds.defaultModel}>Modelo<input id={fieldIds.defaultModel} value={settings.default_model} onChange={(event) => update("default_model", event.target.value)} /></label>
+      <label htmlFor={fieldIds.provider}>Modo del agente<select id={fieldIds.provider} value={settings.provider} onChange={(event) => update("provider", event.target.value)}><option value="subprocess">Real con LM Studio</option></select></label>
+      <label htmlFor={fieldIds.memoryDb}>Base de memoria NEMO<input id={fieldIds.memoryDb} value={settings.memory_db} onChange={(event) => update("memory_db", event.target.value)} /></label>
+      <label htmlFor={fieldIds.nemoMcpUrl}>Transporte MCP NEMO<input id={fieldIds.nemoMcpUrl} value={settings.nemo_mcp_url || ""} onChange={(event) => update("nemo_mcp_url", event.target.value)} placeholder="stdio://vscode/nemo" /></label>
       <div className={`mcp-watcher ${watcherTone}`}>
         <div>
           <strong>MCP watcher</strong>
@@ -3617,63 +3637,68 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
         </div>
         <button onClick={onRefreshMcpWatcher}><RefreshCw size={14} /> Comprobar</button>
       </div>
-      <div className="repo-picker">
-        <strong>Capabilities NEMO MCP</strong>
+      <div className="repo-picker" aria-labelledby="nemo-capabilities-title">
+        <strong id="nemo-capabilities-title">Capabilities NEMO MCP</strong>
         <div className="mini-list">
           {capabilityRows.map(([label, ok]) => (
             <span key={label} className={ok ? "ready" : "blocked"}>{label}: {ok ? "ok" : "blocked"}</span>
           ))}
         </div>
       </div>
-      <div className="repo-picker">
-        <strong>Selector de tools MCP por sesion</strong>
+      <div className="repo-picker" aria-labelledby="nemo-tool-selector-title">
+        <strong id="nemo-tool-selector-title">Selector de tools MCP por sesion</strong>
         <div className="mini-list">
-          {(mcpWatcher?.available_tools && mcpWatcher.available_tools.length > 0 ? mcpWatcher.available_tools : DEFAULT_SESSION_NEMO_TOOLS).map((toolName) => (
-            <label key={toolName} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {(mcpWatcher?.available_tools && mcpWatcher.available_tools.length > 0 ? mcpWatcher.available_tools : DEFAULT_SESSION_NEMO_TOOLS).map((toolName) => {
+            const toolInputId = `nemo-tool-${toolName.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+            return <label key={toolName} htmlFor={toolInputId} style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input
+                id={toolInputId}
                 type="checkbox"
                 checked={selectedNemoTools.includes(toolName)}
                 onChange={() => onToggleNemoTool?.(toolName)}
               />
               <span>{toolName}</span>
-            </label>
-          ))}
+            </label>;
+          })}
         </div>
       </div>
-      <label>Carpeta runtime<input value={settings.runtime_path} onChange={(event) => update("runtime_path", event.target.value)} /></label>
-      <label>Nivel de validacion<select value={settings.validation_policy} onChange={(event) => update("validation_policy", event.target.value)}><option value="none">ninguna</option><option value="smoke">rapida</option><option value="targeted">dirigida</option><option value="full">completa</option></select></label>
+      <label htmlFor={fieldIds.runtimePath}>Carpeta runtime<input id={fieldIds.runtimePath} value={settings.runtime_path} onChange={(event) => update("runtime_path", event.target.value)} /></label>
+      <label htmlFor={fieldIds.validationPolicy}>Nivel de validacion<select id={fieldIds.validationPolicy} value={settings.validation_policy} onChange={(event) => update("validation_policy", event.target.value)}><option value="none">ninguna</option><option value="smoke">rapida</option><option value="targeted">dirigida</option><option value="full">completa</option></select></label>
       <div className="settings-grid">
-        <label>Timeout (s)<input type="number" value={settings.timeout_seconds} onChange={(event) => update("timeout_seconds", Number(event.target.value))} /></label>
-        <label>Max minutos<input type="number" value={settings.max_runtime_minutes} onChange={(event) => update("max_runtime_minutes", Number(event.target.value))} /></label>
-        <label>Heartbeat (min)<input type="number" value={settings.heartbeat_minutes} onChange={(event) => update("heartbeat_minutes", Number(event.target.value))} /></label>
-        <label>Presupuesto tokens<input type="number" value={settings.token_budget} onChange={(event) => update("token_budget", Number(event.target.value))} /></label>
-        <label>Ventana contexto<input type="number" value={settings.context_window_tokens} onChange={(event) => update("context_window_tokens", Number(event.target.value))} /></label>
-        <label>Salida chat max<input type="number" value={settings.chat_max_tokens} onChange={(event) => update("chat_max_tokens", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.timeoutSeconds}>Timeout (s)<input id={fieldIds.timeoutSeconds} type="number" value={settings.timeout_seconds} onChange={(event) => update("timeout_seconds", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.maxRuntimeMinutes}>Max minutos<input id={fieldIds.maxRuntimeMinutes} type="number" value={settings.max_runtime_minutes} onChange={(event) => update("max_runtime_minutes", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.heartbeatMinutes}>Heartbeat (min)<input id={fieldIds.heartbeatMinutes} type="number" value={settings.heartbeat_minutes} onChange={(event) => update("heartbeat_minutes", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.tokenBudget}>Presupuesto tokens<input id={fieldIds.tokenBudget} type="number" value={settings.token_budget} onChange={(event) => update("token_budget", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.contextWindowTokens}>Ventana contexto<input id={fieldIds.contextWindowTokens} type="number" value={settings.context_window_tokens} onChange={(event) => update("context_window_tokens", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.chatMaxTokens}>Salida chat max<input id={fieldIds.chatMaxTokens} type="number" value={settings.chat_max_tokens} onChange={(event) => update("chat_max_tokens", Number(event.target.value))} /></label>
       </div>
       <div className="settings-grid">
-        <label>Backend imagen<select value={settings.image_gen_backend} onChange={(event) => update("image_gen_backend", event.target.value)}><option value="auto">auto</option><option value="automatic1111">AUTOMATIC1111</option><option value="comfyui">ComfyUI</option></select></label>
-        <label>URL imagen<input value={settings.image_gen_url} onChange={(event) => update("image_gen_url", event.target.value)} placeholder="http://localhost:8188" /></label>
+        <label htmlFor={fieldIds.imageGenBackend}>Backend imagen<select id={fieldIds.imageGenBackend} value={settings.image_gen_backend} onChange={(event) => update("image_gen_backend", event.target.value)}><option value="auto">auto</option><option value="automatic1111">AUTOMATIC1111</option><option value="comfyui">ComfyUI</option></select></label>
+        <label htmlFor={fieldIds.imageGenUrl}>URL imagen<input id={fieldIds.imageGenUrl} value={settings.image_gen_url} onChange={(event) => update("image_gen_url", event.target.value)} placeholder="http://localhost:8188" /></label>
       </div>
       <div className="review-actions"><button onClick={onSaveSettings}><CheckCircle2 size={16} /> Guardar ajustes</button></div>
-      <div className="repo-picker">
-        <strong>Repository</strong>
-        <input value={repoDraft} onChange={(event) => onRepoDraftChange(event.target.value)} />
+      <div className="repo-picker" aria-labelledby="repo-picker-title">
+        <strong id="repo-picker-title">Repository</strong>
+        <label className="sr-only" htmlFor={fieldIds.repoPath}>Repository path</label>
+        <input id={fieldIds.repoPath} value={repoDraft} onChange={(event) => onRepoDraftChange(event.target.value)} />
         <button onClick={() => onOpenRepo()}><HardDrive size={15} /> Open folder</button>
         <div className="mini-list">{state.settings.recent_repos?.map((repo) => <button key={repo} onClick={() => onOpenRepo(repo)}>{repo}</button>)}</div>
       </div>
-      <div className="repo-picker">
-        <strong>Clone from git</strong>
-        <input value={cloneDraft.url} onChange={(event) => onCloneDraftChange({ ...cloneDraft, url: event.target.value })} placeholder="https://github.com/org/repo.git" />
-        <input value={cloneDraft.destination} onChange={(event) => onCloneDraftChange({ ...cloneDraft, destination: event.target.value })} placeholder="c:/dev/repo" />
+      <div className="repo-picker" aria-labelledby="clone-picker-title">
+        <strong id="clone-picker-title">Clone from git</strong>
+        <label className="sr-only" htmlFor={fieldIds.cloneUrl}>Git clone URL</label>
+        <input id={fieldIds.cloneUrl} value={cloneDraft.url} onChange={(event) => onCloneDraftChange({ ...cloneDraft, url: event.target.value })} placeholder="https://github.com/org/repo.git" />
+        <label className="sr-only" htmlFor={fieldIds.cloneDestination}>Clone destination path</label>
+        <input id={fieldIds.cloneDestination} value={cloneDraft.destination} onChange={(event) => onCloneDraftChange({ ...cloneDraft, destination: event.target.value })} placeholder="c:/dev/repo" />
         <button onClick={onCloneRepo}><GitBranch size={15} /> Clone and open</button>
       </div>
-      <div className="repo-picker">
-        <strong>Limpieza de artefactos</strong>
+      <div className="repo-picker" aria-labelledby="artifact-cleanup-title">
+        <strong id="artifact-cleanup-title">Limpieza de artefactos</strong>
         <div className="review-actions"><button onClick={() => onCleanup(true)}>Escanear</button><button onClick={() => onCleanup(false)}>Borrar encontrados</button></div>
         {cleanupResult && <span className="muted">{cleanupResult.dry_run ? cleanupResult.candidates.length : cleanupResult.deleted.length} file(s) / {cleanupResult.max_age_days} days</span>}
       </div>
-      <div className="repo-picker">
-        <strong>Jobs huerfanos</strong>
+      <div className="repo-picker" aria-labelledby="orphan-cleanup-title">
+        <strong id="orphan-cleanup-title">Jobs huerfanos</strong>
         <div className="review-actions"><button onClick={() => onCleanupOrphans(true)}>Detectar</button><button onClick={() => onCleanupOrphans(false)}>Marcar y limpiar</button></div>
         {orphanCleanupResult && <span className="muted">{orphanCleanupResult.summary.total} huerfano(s) / memoria {orphanCleanupResult.summary.in_memory} / snapshots {orphanCleanupResult.summary.snapshots}</span>}
       </div>

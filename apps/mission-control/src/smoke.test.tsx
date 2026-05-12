@@ -412,6 +412,20 @@ describe("mission-control app", () => {
     expect(await screen.findByTitle(/Memoria/i)).toHaveClass("active");
   });
 
+  it("exposes settings and repository controls with accessible labels", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByTitle(/Ajustes/i));
+
+    expect(await screen.findByRole("region", { name: /^Ajustes$/i })).toBeInTheDocument();
+    expect(await screen.findByLabelText(/URL de LM Studio/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/^Modelo$/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Transporte MCP NEMO/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Repository path/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Git clone URL/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Clone destination path/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/prime_context/i)).toHaveAttribute("type", "checkbox");
+  });
+
   it("performs browser search and shows results", async () => {
     render(<App />);
     fireEvent.click(await screen.findByTitle(/Browser/i));
