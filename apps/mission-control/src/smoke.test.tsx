@@ -249,7 +249,7 @@ describe("mission-control app", () => {
       version: 2,
     });
 
-    expect(diff.changed).toBe(2);
+    expect(diff.changed).toBe(1);
     expect(diff.added).toBe(1);
     expect(diff.removed).toBe(0);
     expect(diff.rows.some((row) => row.kind === "changed" && row.left?.includes("Old") && row.right?.includes("New"))).toBe(true);

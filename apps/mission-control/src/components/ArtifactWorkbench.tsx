@@ -182,40 +182,73 @@ function previousArtifactVersion(activeArtifact: GeneratedArtifact | undefined, 
 }
 
 export function buildArtifactLineDiff(previous: GeneratedArtifact, current: GeneratedArtifact, maxRows = 180): ArtifactDiffResult {
-  const previousLines = previous.content.split(/\r?\n/);
-  const currentLines = current.content.split(/\r?\n/);
-  const totalRows = Math.max(previousLines.length, currentLines.length);
+  const allPreviousLines = previous.content.split(/\r?\n/);
+  const allCurrentLines = current.content.split(/\r?\n/);
+  const previousLines = allPreviousLines.slice(0, maxRows);
+  const currentLines = allCurrentLines.slice(0, maxRows);
+  const lcsTable = Array.from({ length: previousLines.length + 1 }, () => Array(currentLines.length + 1).fill(0) as number[]);
+
+  for (let previousIndex = previousLines.length - 1; previousIndex >= 0; previousIndex -= 1) {
+    for (let currentIndex = currentLines.length - 1; currentIndex >= 0; currentIndex -= 1) {
+      lcsTable[previousIndex][currentIndex] = previousLines[previousIndex] === currentLines[currentIndex]
+        ? lcsTable[previousIndex + 1][currentIndex + 1] + 1
+        : Math.max(lcsTable[previousIndex + 1][currentIndex], lcsTable[previousIndex][currentIndex + 1]);
+    }
+  }
+
+  const rawRows: ArtifactDiffRow[] = [];
+  let previousIndex = 0;
+  let currentIndex = 0;
+
+  while (previousIndex < previousLines.length && currentIndex < currentLines.length) {
+    if (previousLines[previousIndex] === currentLines[currentIndex]) {
+      rawRows.push({ kind: "same", leftLine: previousIndex + 1, rightLine: currentIndex + 1, left: previousLines[previousIndex], right: currentLines[currentIndex] });
+      previousIndex += 1;
+      currentIndex += 1;
+    } else if (lcsTable[previousIndex + 1][currentIndex] >= lcsTable[previousIndex][currentIndex + 1]) {
+      rawRows.push({ kind: "removed", leftLine: previousIndex + 1, left: previousLines[previousIndex] });
+      previousIndex += 1;
+    } else {
+      rawRows.push({ kind: "added", rightLine: currentIndex + 1, right: currentLines[currentIndex] });
+      currentIndex += 1;
+    }
+  }
+
+  while (previousIndex < previousLines.length) {
+    rawRows.push({ kind: "removed", leftLine: previousIndex + 1, left: previousLines[previousIndex] });
+    previousIndex += 1;
+  }
+  while (currentIndex < currentLines.length) {
+    rawRows.push({ kind: "added", rightLine: currentIndex + 1, right: currentLines[currentIndex] });
+    currentIndex += 1;
+  }
+
   const rows: ArtifactDiffRow[] = [];
   let added = 0;
   let removed = 0;
   let changed = 0;
 
-  for (let index = 0; index < Math.min(totalRows, maxRows); index += 1) {
-    const left = previousLines[index];
-    const right = currentLines[index];
-    if (left === right) {
-      rows.push({ kind: "same", leftLine: index + 1, rightLine: index + 1, left, right });
-    } else if (left === undefined) {
-      added += 1;
-      rows.push({ kind: "added", rightLine: index + 1, right });
-    } else if (right === undefined) {
-      removed += 1;
-      rows.push({ kind: "removed", leftLine: index + 1, left });
-    } else {
+  for (let rowIndex = 0; rowIndex < rawRows.length; rowIndex += 1) {
+    const row = rawRows[rowIndex];
+    const nextRow = rawRows[rowIndex + 1];
+    if (row.kind === "removed" && nextRow?.kind === "added") {
+      rows.push({ kind: "changed", leftLine: row.leftLine, rightLine: nextRow.rightLine, left: row.left, right: nextRow.right });
       changed += 1;
-      rows.push({ kind: "changed", leftLine: index + 1, rightLine: index + 1, left, right });
+      rowIndex += 1;
+    } else {
+      rows.push(row);
+      if (row.kind === "added") added += 1;
+      if (row.kind === "removed") removed += 1;
     }
   }
 
-  if (totalRows > maxRows) {
-    for (let index = maxRows; index < totalRows; index += 1) {
-      if (previousLines[index] === undefined) added += 1;
-      else if (currentLines[index] === undefined) removed += 1;
-      else if (previousLines[index] !== currentLines[index]) changed += 1;
-    }
-  }
-
-  return { rows, added, removed, changed, omitted: Math.max(0, totalRows - maxRows) };
+  return {
+    rows,
+    added,
+    removed,
+    changed,
+    omitted: Math.max(0, Math.max(allPreviousLines.length, allCurrentLines.length) - Math.max(previousLines.length, currentLines.length)),
+  };
 }
 
 function ArtifactCompareView({ previous, current }: { previous: GeneratedArtifact; current: GeneratedArtifact }) {
