@@ -6,6 +6,7 @@ import { App } from "./main";
 import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
 import { CommandDock } from "./components/CommandDock";
 import { MissionTimeline } from "./components/MissionTimeline";
+import { TelemetryColumn } from "./components/TelemetryColumn";
 import { buildArtifactPromptAttachment } from "./hooks/useGeneratedArtifacts";
 import { buildArtifactLineDiff } from "./services/artifactUtils";
 import { removeArtifactFromRegistry, toggleArtifactFavorite, type PersistedGeneratedArtifact } from "./services/artifactRegistry";
@@ -324,6 +325,35 @@ describe("mission-control app", () => {
     expect(screen.getByLabelText(/User event 1 of 2/i)).toHaveAttribute("data-state", "settled");
     expect(screen.getByLabelText(/Space Code event 2 of 2/i)).toHaveAttribute("data-state", "active");
     expect(screen.getByText("active")).toBeInTheDocument();
+  });
+
+  it("renders phase-aware telemetry progress", () => {
+    render(<TelemetryColumn
+      activeRun={{ objective: "Implement phase progress", review_status: "needs_review", source_json: "run.json", execution_phase: "review", runtime_state: "reviewing", grade: "review" }}
+      visibleQueue={[]}
+      totalRuns={3}
+      readyRuns={1}
+      blockedRuns={0}
+      queueCount={0}
+      running={false}
+      contextLabel="portfolio"
+      memoryAtomCount={12}
+      evidenceCount={4}
+      feedbackCount={2}
+      sourceReads={8}
+      sourceCacheHitRate={75}
+      status="Reviewing generated patch"
+      onSelectRun={vi.fn()}
+      onOpenMemory={vi.fn()}
+      onRefreshCognitiveStats={vi.fn()}
+      onRefreshMissionStats={vi.fn()}
+    />);
+
+    const progress = screen.getByRole("progressbar", { name: /Run phase Review/i });
+    expect(progress).toHaveClass("reviewing");
+    expect(progress).toHaveAttribute("aria-valuenow", "78");
+    expect(screen.getByText("review")).toBeInTheDocument();
+    expect(screen.getByText("78%")).toBeInTheDocument();
   });
 
   it("builds compact artifact version diffs", () => {

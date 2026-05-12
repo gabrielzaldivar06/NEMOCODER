@@ -4,6 +4,19 @@ export type TelemetryRun = {
   objective: string;
   review_status: string;
   source_json: string;
+  execution_phase?: string | null;
+  runtime_state?: string | null;
+  grade?: string | null;
+  score?: number | null;
+};
+
+type PhaseTone = "idle" | "planning" | "executing" | "reviewing" | "ready" | "blocked";
+
+type PhaseTelemetry = {
+  tone: PhaseTone;
+  label: string;
+  progress: number;
+  detail: string;
 };
 
 type TelemetryColumnProps<RunType extends TelemetryRun> = {
@@ -45,18 +58,35 @@ function shortenObjective(value: string, maxLength = 78): string {
   return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 1)}…` : trimmed;
 }
 
+function activePhaseTelemetry(run: TelemetryRun | undefined, running: boolean): PhaseTelemetry {
+  if (!run) return { tone: "idle", label: "Idle", progress: 8, detail: "awaiting objective" };
+  if (run.review_status === "blocked" || run.runtime_state === "blocked" || run.grade === "blocked") return { tone: "blocked", label: "Blocked", progress: 88, detail: run.runtime_state || run.review_status };
+  if (run.review_status === "approved" || run.grade === "ready") return { tone: "ready", label: "Ready", progress: 100, detail: run.grade || run.review_status };
+
+  const phase = String(run.execution_phase || run.runtime_state || "").toLowerCase();
+  if (phase.includes("review") || run.review_status === "needs_review") return { tone: "reviewing", label: "Review", progress: 78, detail: run.execution_phase || run.review_status };
+  if (phase.includes("execut") || phase.includes("run") || running) return { tone: "executing", label: "Execute", progress: 56, detail: run.execution_phase || run.runtime_state || "live" };
+  if (phase.includes("plan") || phase.includes("queue")) return { tone: "planning", label: "Plan", progress: 28, detail: run.execution_phase || run.runtime_state || "planning" };
+  return { tone: "planning", label: "Plan", progress: 22, detail: run.review_status || "queued" };
+}
+
 export function TelemetryColumn<RunType extends TelemetryRun>({ activeRun, visibleQueue, totalRuns, readyRuns, blockedRuns, queueCount, running, contextLabel, memoryAtomCount, evidenceCount, feedbackCount, sourceReads, sourceCacheHitRate, status, onSelectRun, onOpenMemory, onRefreshCognitiveStats, onRefreshMissionStats }: TelemetryColumnProps<RunType>) {
   const queueByBucket = {
     queued: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "queued"),
     ready: visibleQueue.filter((run) => toQueueBucket(run.review_status) === "ready"),
   };
   const queueSummary = `${visibleQueue.length} pendientes, ${queueByBucket.ready.length} por validacion, ${queueByBucket.queued.length} por contexto`;
+  const phaseTelemetry = activePhaseTelemetry(activeRun, running);
 
   return (
     <aside className="mission-telemetry" aria-label="Mission telemetry">
       <section className="telemetry-card active-run-card">
-        <header><span>Active run</span><b>{activeRun ? "Live" : "Idle"}</b></header>
+        <header><span>Active run</span><b>{phaseTelemetry.label}</b></header>
         <strong>{activeRun?.objective ?? "Esperando objetivo"}</strong>
+        <div className={`phase-progress ${phaseTelemetry.tone}`} aria-label={`Run phase ${phaseTelemetry.label}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={phaseTelemetry.progress} role="progressbar">
+          <span style={{ width: `${phaseTelemetry.progress}%` }} />
+        </div>
+        <div className="phase-progress-meta"><span>{phaseTelemetry.detail}</span><b>{phaseTelemetry.progress}%</b></div>
         <div className="signal-wave"><span /><span /><span /><span /><span /><span /><span /><span /><span /><span /></div>
         <div className="telemetry-metrics">
           <span>Runs <b>{totalRuns}</b></span>
