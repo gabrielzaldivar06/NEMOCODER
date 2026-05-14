@@ -626,6 +626,8 @@ def execute_headless_handoff(
                 token_budget=token_budget,
                 attempt_offset=seeded_repair_cursor,
                 evidence_compactor=_compress_repair_evidence,
+                nemo_adapter=adapter,
+                task_id=task.id,
             )
         merged_attempts = seeded_attempts + tuple(
             RepairAttempt(seeded_repair_cursor + index + 1, item.reason, item.action)
