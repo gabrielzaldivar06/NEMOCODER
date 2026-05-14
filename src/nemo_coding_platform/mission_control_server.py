@@ -6568,7 +6568,51 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             _plan_jobs.pop(plan_job_id, None)
 
     def _handle_timeline_sse(self, job_id: str) -> None:
-        _json_response(self, 501, {"error": "not_implemented"})
+        """Stream HandoffJob.timeline events as Server-Sent Events."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+        def _send(data: dict[str, object]) -> bool:
+            try:
+                line = ("data: " + json.dumps(data, sort_keys=True) + "\n\n").encode("utf-8")
+                self.wfile.write(line)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return False
+
+        _TERMINAL = {"completed", "failed", "permission_denied", "cancelled", "orphaned"}
+        _POLL = 0.5  # seconds
+        offset = 0
+
+        while True:
+            jobs: HandoffJobManager = self.server.jobs
+            with jobs._lock:
+                job = jobs._jobs.get(job_id)
+                if job is None:
+                    _send({"kind": "stream_end", "status": "not_found"})
+                    return
+                events_slice = list(job.timeline[offset:])
+                current_status = str(job.status)
+
+            for event in events_slice:
+                if not _send(event):
+                    return
+                offset += 1
+
+            if current_status in _TERMINAL and not events_slice:
+                _send({"kind": "stream_end", "status": current_status})
+                return
+
+            time.sleep(_POLL)
 
     def do_POST(self) -> None:
         if not self._check_rate_limit():
