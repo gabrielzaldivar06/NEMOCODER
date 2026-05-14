@@ -85,3 +85,61 @@ def test_save_and_load_cache_roundtrip(tmp_path):
     _save_cache(cache_file, data)
     loaded = _load_cache(cache_file)
     assert loaded == data
+
+
+def test_build_repo_map_returns_string(tmp_path):
+    from nemo_coding_platform.core.repo_map import build_repo_map
+    (tmp_path / "main.py").write_text('"""Entry point."""\n', encoding="utf-8")
+    (tmp_path / "util.py").write_text('"""Utilities."""\n', encoding="utf-8")
+    result = build_repo_map(tmp_path)
+    assert isinstance(result, str)
+    assert "main.py" in result
+    assert "util.py" in result
+
+
+def test_mtime_cache_avoids_rescan(tmp_path, monkeypatch):
+    from nemo_coding_platform.core import repo_map as rm
+    call_count = {"n": 0}
+    real_extract = rm._extract_summary
+    def counting_extract(p):
+        call_count["n"] += 1
+        return real_extract(p)
+    monkeypatch.setattr(rm, "_extract_summary", counting_extract)
+
+    f = tmp_path / "mod.py"
+    f.write_text('"""A module."""\n', encoding="utf-8")
+    cache_file = tmp_path / "cache.json"
+
+    rm.build_repo_map(tmp_path, cache_path=cache_file)
+    first_count = call_count["n"]
+
+    # Second call — file unchanged, should NOT call _extract_summary again
+    rm.build_repo_map(tmp_path, cache_path=cache_file)
+    assert call_count["n"] == first_count
+
+
+def test_cache_invalidated_on_file_change(tmp_path):
+    import os
+    from nemo_coding_platform.core import repo_map as rm
+
+    f = tmp_path / "mod.py"
+    f.write_text('"""Original."""\n', encoding="utf-8")
+    cache_file = tmp_path / "cache.json"
+
+    rm.build_repo_map(tmp_path, cache_path=cache_file)
+
+    # Write new content, then bump mtime by 1s to guarantee cache miss
+    f.write_text('"""Updated."""\n', encoding="utf-8")
+    current_mtime = f.stat().st_mtime
+    os.utime(f, (current_mtime + 1, current_mtime + 1))
+
+    result = rm.build_repo_map(tmp_path, cache_path=cache_file)
+    assert "Updated." in result
+
+
+def test_max_chars_truncates_output(tmp_path):
+    from nemo_coding_platform.core.repo_map import build_repo_map
+    for i in range(50):
+        (tmp_path / f"file_{i:03d}.py").write_text(f'"""Module number {i} with a long description that takes space."""\n', encoding="utf-8")
+    result = build_repo_map(tmp_path, max_chars=200)
+    assert len(result) <= 200 + len("\n[truncated]")

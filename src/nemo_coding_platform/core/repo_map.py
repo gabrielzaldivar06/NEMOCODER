@@ -100,3 +100,60 @@ def _save_cache(cache_path: Path, data: dict[str, dict]) -> None:
         cache_path.write_text(json.dumps(data), encoding="utf-8")
     except OSError:
         pass
+
+
+def build_repo_map(
+    repo_path: str | Path,
+    *,
+    cache_path: str | Path | None = None,
+    max_chars: int = 3000,
+) -> str:
+    """Scan repo_path and return a compact markdown map of files and their one-line purposes.
+
+    Args:
+        repo_path:  Root directory to scan (recursive).
+        cache_path: Optional path for mtime-based JSON cache. None = no caching.
+        max_chars:  Maximum output length. Truncated with '[truncated]' marker if exceeded.
+
+    Returns:
+        Compact markdown string, or '' if repo_path is not a directory.
+    """
+    root = Path(repo_path).resolve()
+    if not root.is_dir():
+        return ""
+
+    _cache_path = Path(cache_path).resolve() if cache_path is not None else None
+    cache: dict[str, dict] = _load_cache(_cache_path) if _cache_path is not None else {}
+    cache_dirty = False
+
+    entries: list[tuple[Path, str]] = []
+
+    for file_path in sorted(root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        # Skip the cache file itself to avoid polluting the map
+        if _cache_path is not None and file_path.resolve() == _cache_path:
+            continue
+        try:
+            rel = str(file_path.relative_to(root)).replace("\\", "/")
+            mtime = file_path.stat().st_mtime
+        except (OSError, ValueError):
+            continue
+
+        cached = cache.get(rel)
+        if cached is not None and cached.get("mtime") == mtime:
+            summary = cached["summary"]
+        else:
+            summary = _extract_summary(file_path)
+            cache[rel] = {"mtime": mtime, "summary": summary}
+            cache_dirty = True
+
+        entries.append((file_path, summary))
+
+    if cache_dirty and _cache_path is not None:
+        _save_cache(_cache_path, cache)
+
+    result = _format_tree(entries, root)
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n[truncated]"
+    return result
