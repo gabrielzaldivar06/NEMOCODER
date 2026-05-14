@@ -1,4 +1,4 @@
-import io, json, sys
+import json
 import pytest
 
 
