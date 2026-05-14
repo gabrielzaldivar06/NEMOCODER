@@ -36,7 +36,7 @@ from nemo_coding_platform.core.task_run import (
 from nemo_coding_platform.core.todo_guard import build_todo_reminder, extract_todos_from_plan
 from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
 from nemo_coding_platform.core.workspace import Workspace
-from nemo_coding_platform.core.event_emitter import emit_event, reset_sequence
+from nemo_coding_platform.core.event_emitter import emit_event
 from nemo_coding_platform.core.worktree_runtime import (
     initialize_git_worktree_runtime,
     snapshot_runtime_files,
@@ -255,7 +255,6 @@ def execute_headless_handoff(
     resume_snapshot_runtime_path: str | None = None,
     use_git_worktree: bool = False,
 ) -> HeadlessRunResult:
-    reset_sequence()
     validate_handoff_request(request)
     plan = build_handoff_plan(request)
     emit_event("plan_created", f"Plan: {len(plan.steps)} steps — {request.objective_summary or ''}", "plan", {"steps": [s.kind.value for s in plan.steps]})
