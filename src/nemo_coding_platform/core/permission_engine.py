@@ -112,13 +112,14 @@ class PermissionAnalyzer:
                 or "/.github/" in fl
                 or "\\.github\\" in fl
                 or fl.startswith(".github/")
-                or "/scripts/" in fl
+                or fl.startswith("scripts/")
+                or fl.startswith("scripts\\")
             ):
                 detected.add(PermissionCategory.CONFIG_FILE_WRITE)
 
         # file_write_outside_worktree — path traversal or absolute paths
         for f in target_files:
-            if ".." in f or f.startswith("/") or (len(f) > 2 and f[1] == ":"):
+            if ".." in f or f.startswith("/") or (len(f) > 2 and f[1] == ":") or f.startswith("\\\\"):
                 detected.add(PermissionCategory.FILE_WRITE_OUTSIDE_WORKTREE)
 
         categories = tuple(sorted(detected, key=lambda c: c.value))
