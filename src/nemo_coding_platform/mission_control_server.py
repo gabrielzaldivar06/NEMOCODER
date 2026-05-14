@@ -6371,6 +6371,22 @@ def api_worktree_cleanup(config: "MissionControlServerConfig", job_id: str, jobs
     return {"cleaned_up": True, "branch": branch}
 
 
+def api_permission_grant(
+    config: "MissionControlServerConfig", job_id: str, payload: dict[str, object], jobs: "HandoffJobManager"
+) -> dict[str, object]:
+    note = str(payload.get("note") or "")
+    job = jobs.grant_permission(config, job_id, note)
+    return {"granted": True, "job_id": job_id, "status": job.status}
+
+
+def api_permission_deny(
+    config: "MissionControlServerConfig", job_id: str, payload: dict[str, object], jobs: "HandoffJobManager"
+) -> dict[str, object]:
+    note = str(payload.get("note") or "")
+    job = jobs.deny_permission(job_id, note)
+    return {"denied": True, "job_id": job_id, "status": job.status}
+
+
 class MissionControlRequestHandler(BaseHTTPRequestHandler):
     server: "MissionControlHttpServer"
     _RATE_LIMIT_EXEMPT_PATHS = frozenset({
@@ -6526,6 +6542,24 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route.startswith("/api/run/") and route.endswith("/worktree-cleanup"):
             job_id = route[len("/api/run/"): -len("/worktree-cleanup")].strip("/")
             self._handle(lambda _: api_worktree_cleanup(self.server.config, job_id, self.server.jobs), {})
+            return
+        if route.startswith("/api/run/") and route.endswith("/permission-grant"):
+            job_id = route[len("/api/run/"): -len("/permission-grant")].strip("/")
+            try:
+                body = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle(lambda payload: api_permission_grant(self.server.config, job_id, payload, self.server.jobs), body)
+            return
+        if route.startswith("/api/run/") and route.endswith("/permission-deny"):
+            job_id = route[len("/api/run/"): -len("/permission-deny")].strip("/")
+            try:
+                body = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle(lambda payload: api_permission_deny(self.server.config, job_id, payload, self.server.jobs), body)
             return
         handlers = {
             "/api/refresh": lambda payload: api_state(self.server.config, self.server.jobs),
