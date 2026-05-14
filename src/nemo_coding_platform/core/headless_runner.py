@@ -36,6 +36,7 @@ from nemo_coding_platform.core.task_run import (
 from nemo_coding_platform.core.todo_guard import build_todo_reminder, extract_todos_from_plan
 from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
 from nemo_coding_platform.core.workspace import Workspace
+from nemo_coding_platform.core.event_emitter import emit_event, reset_sequence
 from nemo_coding_platform.core.worktree_runtime import (
     initialize_git_worktree_runtime,
     snapshot_runtime_files,
@@ -254,8 +255,10 @@ def execute_headless_handoff(
     resume_snapshot_runtime_path: str | None = None,
     use_git_worktree: bool = False,
 ) -> HeadlessRunResult:
+    reset_sequence()
     validate_handoff_request(request)
     plan = build_handoff_plan(request)
+    emit_event("plan_created", f"Plan: {len(plan.steps)} steps — {request.objective_summary or ''}", "plan", {"steps": [s.kind.value for s in plan.steps]})
     spec_content = _build_generated_spec(request)
     task = Task(
         task_id,
@@ -354,6 +357,7 @@ def execute_headless_handoff(
     )
     nemo_results.append(portfolio_result)
     nemo_context = _bounded_nemo_context(str(portfolio_result.payload.get("context", "")))
+    emit_event("context_bootstrapped", f"NEMO context loaded ({len(nemo_context)} chars)", "plan")
     if not nemo_context:
         search_query = f"{task.title}: {request.prd[:120]}"
         adapter, search_result = adapter.call(
@@ -431,6 +435,7 @@ def execute_headless_handoff(
         image_path=image_path,
     )
     mutation_result = apply_mutation_request(engine, provider, mutation_request)
+    emit_event("mutation_created", f"Mutation applied: {len(mutation_result.changed_files or mutation_result.applied_files)} files", "execute", {"files": list(mutation_result.changed_files or mutation_result.applied_files)})
     if _should_retry_chunked(request, mutation_result):
         retry_request = MutationRequest(
             _chunked_retry_objective(request),
@@ -502,6 +507,7 @@ def execute_headless_handoff(
         real_validation=real_validation,
         mutation_result=mutation_result,
     )
+    emit_event("validation_run", f"Validation: {'passed' if validation.passed else 'failed'}", "execute", {"passed": validation.passed})
     repair_result: RepairRunResult | None = None
     seeded_repair_cursor = max(0, int(resume_repair_cursor or 0))
     seeded_attempts = tuple(
@@ -905,6 +911,7 @@ def execute_headless_handoff(
     )
     nemo_results.append(result)
     artifacts = artifacts + (review.to_artifact("artifact-review"),)
+    emit_event("review_package_created", "Run completed — review package ready", "review")
     HandoffCompletionGuard().validate(run, timeline, artifacts)
     runtime_files = snapshot_runtime_files(runtime)
     return HeadlessRunResult(

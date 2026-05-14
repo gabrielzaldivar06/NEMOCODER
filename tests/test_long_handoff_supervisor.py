@@ -368,7 +368,7 @@ class LongHandoffSupervisorTests(unittest.TestCase):
                 "fake",
                 "--json",
             ])
-        payload = json.loads(output.getvalue())
+        payload = _load_cli_payload(output)
         atoms = PersistentMemoryStore(memory_db).search_atoms(limit=50)
 
         self.assertEqual(code, 0)

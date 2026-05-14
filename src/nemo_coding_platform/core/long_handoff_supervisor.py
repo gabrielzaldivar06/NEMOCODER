@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nemo_coding_platform.core.event_emitter import emit_event
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.headless_runner import HeadlessRunResult, execute_headless_handoff
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, PersistentNemoAdapter
@@ -473,7 +474,9 @@ def execute_long_handoff_supervisor(
     active_budget.validate()
     active_handoff_kwargs: dict[str, object] = dict(handoff_kwargs)
     active_handoff_kwargs.setdefault("provider_mode", "fake")
+    emit_event("heartbeat", "Supervisor: starting headless handoff", "execute", {"iteration": 1})
     result = execute_headless_handoff(request, bounded_simulation=True, **active_handoff_kwargs)
+    emit_event("heartbeat", "Supervisor: headless handoff complete", "execute", {"iteration": 1})
     heartbeats = _planned_heartbeats(active_budget)
     escalation_flags = _escalation_flags(result, active_budget)
     resume_token = (
