@@ -10,6 +10,7 @@ from nemo_coding_platform.core.repair import RepairBudget, RepairPlan
 from nemo_coding_platform.core.validation import ValidationSuiteResult, simulate_validation
 from nemo_coding_platform.core.context_compaction import compact_context, prune_tool_output
 from nemo_coding_platform.core.post_mutation_lint import lint_changed_files, format_lint_evidence
+from nemo_coding_platform.core.nemo_patterns import nemo_before_attempt, nemo_after_failure, nemo_after_success
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,8 @@ def run_repair_loop(
     token_budget: int | None = None,
     attempt_offset: int = 0,
     evidence_compactor: Callable[[str, int], tuple[str, str | None]] | None = None,
+    nemo_adapter: object = None,
+    task_id: str = "",
 ) -> RepairRunResult:
     plan = RepairPlan(budget)
     validation = initial_validation
@@ -122,6 +125,11 @@ def run_repair_loop(
 
         # Classify the failure to frame the repair objective clearly.
         noop_attempt = not mutations[-1].changed_files if mutations else False
+        nemo_snippet = nemo_before_attempt(
+            nemo_adapter,
+            query=f"repair failure: {failed}",
+            tags=("repair_failure",),
+        )
 
         repair_evidence_lines = [
             "# Repair Evidence",
@@ -135,11 +143,12 @@ def run_repair_loop(
         repair_context = "\n".join(
             item
             for item in (
+                nemo_snippet,
                 base_request.context,
                 "",
                 *repair_evidence_lines,
             )
-            if item is not None
+            if item
         )
         
         # --- Context Compaction (inspired by opencode) ---
@@ -183,7 +192,8 @@ def run_repair_loop(
         # --- Post-Mutation Linting (inspired by aider) ---
         lint_results = lint_changed_files(mutation.changed_files, base_request.runtime_path)
         lint_evidence = format_lint_evidence(lint_results)
-        
+        nemo_after_failure(nemo_adapter, raw_validation_evidence, task_id, attempt_number)
+
         if not mutation.changed_files and not mutation.applied_files:
             stop_reason = "repair_noop"
             break
@@ -198,5 +208,11 @@ def run_repair_loop(
         validation = validator() if validator else simulate_validation(commands, fail_validation)
     if not validation.passed and not stop_reason and not plan.can_record_attempt():
         stop_reason = "repair_budget_exhausted"
+    if validation.passed and mutations:
+        nemo_after_success(
+            nemo_adapter,
+            f"fixed: {base_request.objective}. diff: {mutations[-1].diff_artifact[:500]}",
+            task_id,
+        )
     return RepairRunResult(plan, tuple(mutations), validation, stop_reason, tokens_consumed=_tokens_consumed)
 
