@@ -740,13 +740,14 @@ class HandoffJobManager:
             if job.process.stdout:
                 try:
                     for raw_line in job.process.stdout:
-                        line = raw_line.rstrip("\n")
+                        line = raw_line.rstrip("\r\n")
                         if line.startswith(NEMO_EVENT_PREFIX):
                             try:
                                 event = json.loads(line[len(NEMO_EVENT_PREFIX):])
                                 with self._lock:
                                     job.timeline.append(event)
                                     job.updated_at = datetime.now(timezone.utc).isoformat()
+                                    self._persist_job(job)
                             except (json.JSONDecodeError, ValueError):
                                 pass
                         else:
