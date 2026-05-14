@@ -4,6 +4,8 @@ import ast
 import json
 from pathlib import Path
 
+_COMMENT_PREFIXES = ("#", "//", "/*", '"""', "'''")
+
 
 def _is_text_file(file_path: Path) -> bool:
     """Return True if file_path appears to be a text file (no null bytes in first 512 bytes)."""
@@ -38,14 +40,13 @@ def _extract_summary(file_path: Path) -> str:
                 return first_line[:120]
         return ""
 
-    comment_prefixes = ("#", "//", "/*", '"""', "'''")
     for line in source.splitlines()[:4]:
         stripped = line.strip()
         if not stripped:
             continue
         if stripped.startswith("#!"):
             continue
-        for prefix in comment_prefixes:
+        for prefix in _COMMENT_PREFIXES:
             if stripped.startswith(prefix):
                 summary = stripped.lstrip("#/!*\"' \t").strip()
                 return summary[:120]

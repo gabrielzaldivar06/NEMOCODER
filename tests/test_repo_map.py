@@ -45,3 +45,15 @@ def test_is_text_file_false_for_binary(tmp_path):
     f = tmp_path / "data.bin"
     f.write_bytes(b"hello\x00world")
     assert _is_text_file(f) is False
+
+
+def test_python_no_docstring_returns_empty(tmp_path):
+    from nemo_coding_platform.core.repo_map import _extract_summary
+    f = tmp_path / "nodoc.py"
+    f.write_text("def foo():\n    pass\n", encoding="utf-8")
+    assert _extract_summary(f) == ""
+
+
+def test_is_text_file_false_for_missing_file(tmp_path):
+    from nemo_coding_platform.core.repo_map import _is_text_file
+    assert _is_text_file(tmp_path / "does_not_exist.py") is False
