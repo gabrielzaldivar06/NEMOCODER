@@ -175,6 +175,7 @@ def run_repair_loop(
             repair_attempt=attempt_number,
             previous_diff=previous_diff,
             skill_prompt=base_request.skill_prompt,
+            repo_map=base_request.repo_map,
         )
         mutation = apply_mutation_request(engine, provider, repair_request)
         mutations.append(mutation)

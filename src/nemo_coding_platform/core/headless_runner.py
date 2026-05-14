@@ -421,7 +421,7 @@ def execute_headless_handoff(
 
     _repo_map = build_repo_map(
         request.repo_path,
-        cache_path=runtime.worktree_path / "repo-map-cache.json",
+        cache_path=Path(request.repo_path) / ".nemo-runtimes" / "repo-map-cache.json",
     )
     mutation_request = MutationRequest(
         request.prd,

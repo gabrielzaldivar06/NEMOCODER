@@ -9,7 +9,7 @@ _COMMENT_PREFIXES = ("#", "//", "/*", '"""', "'''")
 _EXCLUDED_DIRS = frozenset({
     ".git", ".venv", "venv", "node_modules", "__pycache__",
     ".worktrees", ".claude", "dist", "build", ".mypy_cache",
-    ".pytest_cache", ".ruff_cache",
+    ".pytest_cache", ".ruff_cache", ".nemo-runtimes", ".spacecode-runtimes",
 })
 
 
