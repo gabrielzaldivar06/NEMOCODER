@@ -42,6 +42,7 @@ def render_engine_message(request: MutationRequest) -> str:
     else:
         raw = request.validation_output.strip()
         validation_section = ("\n", "# Previous Validation Output", raw) if raw else ()
+    repo_map_section = ("\n", "# Repo Map", request.repo_map) if request.repo_map.strip() else ()
     return "\n".join(
         (
             "You are implementing a NEMO Full Handoff task inside an isolated runtime worktree.",
@@ -61,6 +62,7 @@ def render_engine_message(request: MutationRequest) -> str:
             "",
             "# NEMO Context",
             context,
+            *repo_map_section,
             *validation_section,
             "",
             "# Memory Tools",
@@ -147,6 +149,7 @@ class MutationRequest:
     skill_prompt: str = ""
     image_path: str = ""
     role: str = ""  # Optional role (planner, editor, reviewer, summarizer) for role-specific timeout/error handling
+    repo_map: str = ""  # Compact markdown repo map injected as "# Repo Map" section
 
 
 @dataclass(frozen=True, slots=True)
