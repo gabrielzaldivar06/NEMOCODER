@@ -57,3 +57,31 @@ def test_python_no_docstring_returns_empty(tmp_path):
 def test_is_text_file_false_for_missing_file(tmp_path):
     from nemo_coding_platform.core.repo_map import _is_text_file
     assert _is_text_file(tmp_path / "does_not_exist.py") is False
+
+
+def test_format_tree_groups_by_directory(tmp_path):
+    from nemo_coding_platform.core.repo_map import _format_tree
+    a = tmp_path / "src" / "core" / "foo.py"
+    b = tmp_path / "src" / "core" / "bar.py"
+    c = tmp_path / "tests" / "test_foo.py"
+    entries = [(a, "Foo module."), (b, ""), (c, "Tests for foo.")]
+    result = _format_tree(entries, tmp_path)
+    assert "## src/core/" in result
+    assert "foo.py — Foo module." in result
+    assert "bar.py" in result
+    assert "## tests/" in result
+    assert "test_foo.py — Tests for foo." in result
+
+
+def test_load_cache_returns_empty_on_missing(tmp_path):
+    from nemo_coding_platform.core.repo_map import _load_cache
+    assert _load_cache(tmp_path / "nonexistent.json") == {}
+
+
+def test_save_and_load_cache_roundtrip(tmp_path):
+    from nemo_coding_platform.core.repo_map import _load_cache, _save_cache
+    data = {"src/foo.py": {"mtime": 1234567890.0, "summary": "My module."}}
+    cache_file = tmp_path / "cache.json"
+    _save_cache(cache_file, data)
+    loaded = _load_cache(cache_file)
+    assert loaded == data
