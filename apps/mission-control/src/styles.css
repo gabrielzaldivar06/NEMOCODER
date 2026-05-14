@@ -4276,4 +4276,22 @@ textarea:focus-visible,
 .permission-deny-btn:hover:not(:disabled) { background: #2d1010; border-color: #f85149; }
 .permission-deny-btn:disabled { opacity: 0.5; cursor: default; }
 
+/* ── TimelinePanel ──────────────────────────────────────────────────── */
+.timeline-panel { display: flex; flex-direction: column; gap: 0; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; margin: 8px 0; }
+.timeline-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: #161b22; border-bottom: 1px solid #30363d; font-size: 11px; color: #8b949e; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+.timeline-live-dot { width: 7px; height: 7px; border-radius: 50%; background: #f85149; display: inline-block; animation: pulse-dot 1.2s ease-in-out infinite; }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.timeline-events { display: flex; flex-direction: column; max-height: 340px; overflow-y: auto; }
+.timeline-event { display: grid; grid-template-columns: 20px 56px 1fr; gap: 6px; align-items: start; padding: 7px 12px; border-bottom: 1px solid #21262d; font-size: 11px; }
+.timeline-event:last-child { border-bottom: none; }
+.timeline-event-icon { color: #8b949e; font-size: 12px; padding-top: 1px; }
+.timeline-phase-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+.timeline-phase-badge.plan    { background: #1c2d4a; color: #79c0ff; }
+.timeline-phase-badge.execute { background: #1a2d1a; color: #56d364; }
+.timeline-phase-badge.review  { background: #2d1a3a; color: #d2a8ff; }
+.timeline-event-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.timeline-event-summary { color: #e6edf3; line-height: 1.4; word-break: break-word; }
+.timeline-event-meta { color: #8b949e; font-size: 10px; }
+.timeline-empty { padding: 20px; text-align: center; color: #8b949e; font-size: 12px; }
+
 @keyframes slideInPlan { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
