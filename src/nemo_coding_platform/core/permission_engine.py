@@ -162,3 +162,70 @@ def _build_rationale(objective: str, requires: tuple[PermissionCategory, ...]) -
 # SIGNAL_FILE = ".nemo-permission-request.json"   # placeholder constant, not used yet
 # class MidRunSignalHandler:  # placeholder, not implemented
 #     pass
+
+
+# ── Backward-compatibility: Legacy permission ruleset system ──────────────────
+# headless_runner.py and self_modification.py import these symbols.
+# Kept here for import compatibility while the full handoff system uses them.
+import fnmatch as _fnmatch
+import json as _json
+from enum import StrEnum as _StrEnum
+from pathlib import Path as _Path
+
+
+class PermissionAction(_StrEnum):
+    ALLOW = "allow"
+    DENY = "deny"
+
+
+@dataclass(frozen=True, slots=True)
+class PermissionRule:
+    permission: str
+    pattern: str
+    action: PermissionAction
+
+
+@dataclass
+class PermissionRuleset:
+    rules: list[PermissionRule]
+
+    def evaluate(self, permission: str, pattern: str) -> PermissionAction:
+        result = PermissionAction.DENY
+        for rule in self.rules:
+            if rule.permission == "*" or rule.permission == permission:
+                if _fnmatch.fnmatch(pattern, rule.pattern):
+                    result = rule.action
+        return result
+
+
+def default_ruleset(autonomy: object) -> PermissionRuleset:
+    try:
+        from nemo_coding_platform.core.product import AutonomyLevel
+        if autonomy == AutonomyLevel.FULL_HANDOFF:
+            return PermissionRuleset([PermissionRule("*", "*", PermissionAction.ALLOW)])
+        if autonomy == AutonomyLevel.MANUAL:
+            return PermissionRuleset([PermissionRule("*", "*", PermissionAction.DENY)])
+    except Exception:
+        pass
+    return PermissionRuleset([
+        PermissionRule("write_file", "*", PermissionAction.ALLOW),
+        PermissionRule("run_command", "*", PermissionAction.ALLOW),
+    ])
+
+
+def load_ruleset_from_file(path: str | _Path) -> PermissionRuleset:
+    path = _Path(path)
+    if not path.exists():
+        return PermissionRuleset([])
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        rules = []
+        for permission, value in data.items():
+            if isinstance(value, str):
+                rules.append(PermissionRule(permission, "*", PermissionAction(value)))
+            elif isinstance(value, dict):
+                for pattern, action in value.items():
+                    rules.append(PermissionRule(permission, pattern, PermissionAction(action)))
+        return PermissionRuleset(rules)
+    except Exception:
+        return PermissionRuleset([])
