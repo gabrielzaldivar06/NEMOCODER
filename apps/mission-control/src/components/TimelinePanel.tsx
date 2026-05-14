@@ -51,10 +51,12 @@ export function TimelinePanel({ jobId, isLive, onStreamEnd }: Props) {
 
     if (isLive) {
       const es = new EventSource(`/api/run/${jobId}/timeline/stream`);
+      let streamEndedCleanly = false;
       es.onmessage = (e) => {
         try {
           const event: TimelineEvent = JSON.parse(e.data);
           if (event.kind === "stream_end") {
+            streamEndedCleanly = true;
             setLive(false);
             es.close();
             onStreamEnd?.();
@@ -68,6 +70,7 @@ export function TimelinePanel({ jobId, isLive, onStreamEnd }: Props) {
       es.onerror = () => {
         setLive(false);
         es.close();
+        if (!streamEndedCleanly) onStreamEnd?.();
       };
       return () => es.close();
     } else {
@@ -98,8 +101,8 @@ export function TimelinePanel({ jobId, isLive, onStreamEnd }: Props) {
             {live ? "Esperando eventos…" : "Sin eventos registrados."}
           </div>
         )}
-        {events.map((ev, i) => (
-          <div className="timeline-event" key={i}>
+        {events.map((ev) => (
+          <div className="timeline-event" key={`${ev.sequence}-${ev.kind}`}>
             <span className="timeline-event-icon">{KIND_ICON[ev.kind] ?? "·"}</span>
             <span className={`timeline-phase-badge ${phaseLabel(ev.phase)}`}>
               {phaseLabel(ev.phase)}
