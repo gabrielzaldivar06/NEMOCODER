@@ -127,6 +127,7 @@ type HandoffJob = {
   returncode: number | null;
   error: string | null;
   logs: string[];
+  objective?: string | null;
   permission_request?: {
     job_id: string;
     categories: string[];
@@ -3432,7 +3433,7 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
       {permissionJob && permissionJob.permission_request && onGrantPermission && onDenyPermission && (
         <PermissionRequestPanel
           jobId={permissionJob.job_id}
-          objective={String(permissionJob.permission_request.rationale || "")}
+          objective={String(permissionJob.objective || permissionJob.permission_request.rationale || "")}
           permissionRequest={permissionJob.permission_request as { job_id: string; categories: string[]; rationale: string; auto_approved: string[]; requires_user_approval: string[] }}
           onGranted={() => onGrantPermission(permissionJob.job_id, "")}
           onDenied={() => onDenyPermission(permissionJob.job_id, "")}
