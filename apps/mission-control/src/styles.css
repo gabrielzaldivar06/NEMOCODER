@@ -4292,6 +4292,18 @@ textarea:focus-visible,
 .timeline-event-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .timeline-event-summary { color: #e6edf3; line-height: 1.4; word-break: break-word; }
 .timeline-event-meta { color: #8b949e; font-size: 10px; }
+@keyframes tl-flash-slide-in {
+  0%   { opacity: 0; transform: translateX(-8px); background-color: #1a3a5c; }
+  40%  { opacity: 1; transform: translateX(0);    background-color: #1a3a5c; }
+  100% { background-color: transparent; }
+}
+.timeline-event { animation: tl-flash-slide-in 0.5s ease forwards; }
+.review-seg-tabs { display: flex; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; width: fit-content; margin-bottom: 12px; }
+.review-seg-tab { padding: 5px 16px; font-size: 11px; color: #8b949e; font-family: inherit; background: none; border: none; border-right: 1px solid #30363d; cursor: pointer; transition: background 0.15s ease, color 0.15s ease; }
+.review-seg-tab:last-child { border-right: none; }
+.review-seg-tab.active { background: #21262d; color: #e6edf3; font-weight: 600; }
+.review-live-badge { font-size: 9px; background: #3fb950; color: #000; border-radius: 3px; padding: 1px 4px; margin-left: 5px; font-weight: 700; letter-spacing: 0.5px; }
+.review-subtab-content { transition: opacity 0.2s ease; }
 .timeline-empty { padding: 20px; text-align: center; color: #8b949e; font-size: 12px; }
 
 @keyframes slideInPlan { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
