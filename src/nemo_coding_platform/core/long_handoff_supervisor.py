@@ -10,6 +10,7 @@ from nemo_coding_platform.core.event_emitter import emit_event
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.headless_runner import HeadlessRunResult, execute_headless_handoff
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, PersistentNemoAdapter
+from nemo_coding_platform.core.nemo_patterns import nemo_cross_run_context
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
 from nemo_coding_platform.core.task_run import AppendOnlyTimeline, Artifact, ArtifactType, EventKind, MemoryTrace, RunEvent
 from nemo_coding_platform.core.worktree_runtime import WorktreeRuntimeSpec, snapshot_runtime_files, write_runtime_file
@@ -407,6 +408,14 @@ def execute_long_handoff_continuation(
         "execute",
         {"elapsed_minutes": 0.0},
     )
+    _prior_nemo_adapter = continuation_kwargs.get("nemo_adapter")
+    prior_context = nemo_cross_run_context(
+        _prior_nemo_adapter,
+        task_id=plan.task_id or "",
+        objective=source_objective,
+    )
+    if prior_context:
+        resume_objective = prior_context + "\n\n" + resume_objective
     result = execute_long_handoff_supervisor(
         HandoffRequest(
             resume_objective,
