@@ -37,6 +37,7 @@ from nemo_coding_platform.core.todo_guard import build_todo_reminder, extract_to
 from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
 from nemo_coding_platform.core.workspace import Workspace
 from nemo_coding_platform.core.event_emitter import emit_event
+from nemo_coding_platform.core.repo_map import build_repo_map
 from nemo_coding_platform.core.worktree_runtime import (
     initialize_git_worktree_runtime,
     snapshot_runtime_files,
@@ -418,6 +419,10 @@ def execute_headless_handoff(
         runtime_target.parent.mkdir(parents=True, exist_ok=True)
         runtime_target.write_bytes(source_path.read_bytes())
 
+    _repo_map = build_repo_map(
+        request.repo_path,
+        cache_path=runtime.worktree_path / "repo-map-cache.json",
+    )
     mutation_request = MutationRequest(
         request.prd,
         "generated-spec.md",
@@ -432,6 +437,7 @@ def execute_headless_handoff(
         timeout_seconds,
         skill_prompt=skill_prompt,
         image_path=image_path,
+        repo_map=_repo_map,
     )
     mutation_result = apply_mutation_request(engine, provider, mutation_request)
     emit_event("mutation_created", f"Mutation applied: {len(mutation_result.changed_files or mutation_result.applied_files)} files", "execute", {"files": list(mutation_result.changed_files or mutation_result.applied_files)})
@@ -456,6 +462,7 @@ def execute_headless_handoff(
             skill_prompt=mutation_request.skill_prompt,
             image_path=mutation_request.image_path,
             role=mutation_request.role,
+            repo_map=mutation_request.repo_map,
         )
         retried_mutation = apply_mutation_request(engine, provider, retry_request)
         if retried_mutation.changed_files or retried_mutation.applied_files:
