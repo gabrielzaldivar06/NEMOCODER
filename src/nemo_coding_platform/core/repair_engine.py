@@ -148,7 +148,7 @@ def run_repair_loop(
                 "",
                 *repair_evidence_lines,
             )
-            if item
+            if item is not None
         )
         
         # --- Context Compaction (inspired by opencode) ---
