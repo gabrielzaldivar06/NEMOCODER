@@ -61,6 +61,7 @@ class HandoffJobStatus(StrEnum):
 
 
 NEMO_EVENT_PREFIX = "NEMO_EVENT:"
+_TIMELINE_PERSIST_BATCH = 5
 
 DEFAULT_APPLY_RESULTS = ".nemo-runtimes/mission-control/apply-results"
 DEFAULT_RUN_RESULTS = ".nemo-runtimes/mission-control/runs"
@@ -747,7 +748,9 @@ class HandoffJobManager:
                                 with self._lock:
                                     job.timeline.append(event)
                                     job.updated_at = datetime.now(timezone.utc).isoformat()
-                                    self._persist_job(job)
+                                    job._tl_event_count = getattr(job, "_tl_event_count", 0) + 1
+                                    if job._tl_event_count % _TIMELINE_PERSIST_BATCH == 0:
+                                        self._persist_job(job)
                             except (json.JSONDecodeError, ValueError):
                                 pass
                         else:
