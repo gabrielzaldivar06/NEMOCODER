@@ -11,6 +11,7 @@ import { PlanProgress } from "./components/PlanProgress";
 import { TelemetryColumn } from "./components/TelemetryColumn";
 import { WorktreeDiffPanel } from "./components/WorktreeDiffPanel";
 import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
+import { TimelinePanel } from "./components/TimelinePanel";
 import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
 import { usePlanState } from "./hooks/usePlanState";
 import { usePlanNemoSync } from "./hooks/usePlanNemoSync";
@@ -142,6 +143,14 @@ type HandoffJob = {
       note: string;
     };
   } | null;
+  timeline?: Array<{
+    kind: string;
+    summary: string;
+    phase: string;
+    sequence: number;
+    ts: string;
+    payload?: Record<string, unknown>;
+  }>;
 };
 type HandoffJobResult = { job: HandoffJob; state?: MissionState };
 type AgentToolCall = {
@@ -984,6 +993,7 @@ export function App() {
   const selectedRun = useMemo(() => state.runs.find((run) => run.source_json === selectedRunSource) ?? state.runs[0], [state.runs, selectedRunSource]);
   const selectedJob = useMemo(() => state.jobs.find((j) => j.task_id === selectedRun?.task_id && j.run_id === selectedRun?.run_id), [state.jobs, selectedRun]);
   const jobAwaitingPermission = useMemo(() => state.jobs.find((j) => j.status === "awaiting_permission") ?? null, [state.jobs]);
+  const jobRunning = useMemo(() => state.jobs.find((j) => j.status === "running") ?? null, [state.jobs]);
   const readyRuns = state.runs.filter((run) => run.review_status === "awaiting_review").length;
   const blockedRuns = state.runs.filter((run) => run.review_status === "blocked").length;
   const activeFile = selectedFile || selectedRun?.changed_files[0] || "";
@@ -2691,6 +2701,7 @@ export function App() {
               permissionJob={jobAwaitingPermission}
               onGrantPermission={grantPermission}
               onDenyPermission={denyPermission}
+              runningJob={jobRunning}
             />}
           </div>
         </>}
@@ -3254,6 +3265,7 @@ type AgentPaneProps = {
   permissionJob?: HandoffJob | null;
   onGrantPermission?: (jobId: string, note: string) => void;
   onDenyPermission?: (jobId: string, note: string) => void;
+  runningJob?: HandoffJob | null;
 };
 
 type FlowStep = {
@@ -3424,7 +3436,7 @@ function InsightSection({
   );
 }
 
-function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true, permissionJob, onGrantPermission, onDenyPermission }: AgentPaneProps) {
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true, permissionJob, onGrantPermission, onDenyPermission, runningJob }: AgentPaneProps) {
   const [compactView, setCompactView] = useState(true);
   const riskCount = run?.risk_flags.length ?? 0;
 
@@ -3437,6 +3449,12 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
           permissionRequest={permissionJob.permission_request as { job_id: string; categories: string[]; rationale: string; auto_approved: string[]; requires_user_approval: string[] }}
           onGranted={() => onGrantPermission(permissionJob.job_id, "")}
           onDenied={() => onDenyPermission(permissionJob.job_id, "")}
+        />
+      )}
+      {runningJob && (
+        <TimelinePanel
+          jobId={runningJob.job_id}
+          isLive={true}
         />
       )}
       <div className="panel-title"><Bot size={16} /> Control del Agente</div>
