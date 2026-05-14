@@ -272,7 +272,7 @@ repair_context = "\n".join(
         "",
         *repair_evidence_lines,
     )
-    if item is not None
+    if item
 )
 ```
 
