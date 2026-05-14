@@ -739,8 +739,18 @@ class HandoffJobManager:
             self._start_heartbeat(config, job)
             if job.process.stdout:
                 try:
-                    for line in job.process.stdout:
-                        self._append_log(job, line.rstrip())
+                    for raw_line in job.process.stdout:
+                        line = raw_line.rstrip("\n")
+                        if line.startswith(NEMO_EVENT_PREFIX):
+                            try:
+                                event = json.loads(line[len(NEMO_EVENT_PREFIX):])
+                                with self._lock:
+                                    job.timeline.append(event)
+                                    job.updated_at = datetime.now(timezone.utc).isoformat()
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                        else:
+                            self._append_log(job, line)
                 finally:
                     job.process.stdout.close()
             job.returncode = job.process.wait()
@@ -6388,6 +6398,23 @@ def api_worktree_cleanup(config: "MissionControlServerConfig", job_id: str, jobs
     return {"cleaned_up": True, "branch": branch}
 
 
+def api_run_timeline(
+    config: "MissionControlServerConfig",
+    job_id: str,
+    jobs: "HandoffJobManager",
+) -> dict[str, object]:
+    with jobs._lock:
+        job = jobs._jobs.get(job_id)
+        if not job:
+            return {"error": f"job not found: {job_id}"}
+        return {
+            "job_id": job_id,
+            "status": str(job.status),
+            "timeline": list(job.timeline),
+            "event_count": len(job.timeline),
+        }
+
+
 def api_permission_grant(
     config: "MissionControlServerConfig", job_id: str, payload: dict[str, object], jobs: "HandoffJobManager"
 ) -> dict[str, object]:
@@ -6492,6 +6519,14 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             job_id = route[len("/api/run/"): -len("/worktree-diff")].strip("/")
             self._handle(lambda _: api_worktree_diff(self.server.config, job_id, self.server.jobs), {})
             return
+        if route.startswith("/api/run/") and route.endswith("/timeline/stream"):
+            job_id = route[len("/api/run/"): -len("/timeline/stream")].strip("/")
+            self._handle_timeline_sse(job_id)
+            return
+        if route.startswith("/api/run/") and route.endswith("/timeline"):
+            job_id = route[len("/api/run/"): -len("/timeline")].strip("/")
+            self._handle(lambda _: api_run_timeline(self.server.config, job_id, self.server.jobs), {})
+            return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
             return
@@ -6530,6 +6565,9 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             _send_event({"type": "error", "error": str(error), "error_code": "internal_error"})
         finally:
             _plan_jobs.pop(plan_job_id, None)
+
+    def _handle_timeline_sse(self, job_id: str) -> None:
+        _json_response(self, 501, {"error": "not_implemented"})
 
     def do_POST(self) -> None:
         if not self._check_rate_limit():
