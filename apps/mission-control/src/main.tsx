@@ -9,6 +9,8 @@ import { NemoMemoryOrbitCopy, type NemoMemoryOrbitEdge, type NemoMemoryOrbitNode
 import { ObjectiveDefinition } from "./components/ObjectiveDefinition";
 import { PlanProgress } from "./components/PlanProgress";
 import { TelemetryColumn } from "./components/TelemetryColumn";
+import { WorktreeDiffPanel } from "./components/WorktreeDiffPanel";
+import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
 import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
 import { usePlanState } from "./hooks/usePlanState";
 import { usePlanNemoSync } from "./hooks/usePlanNemoSync";
@@ -125,6 +127,20 @@ type HandoffJob = {
   returncode: number | null;
   error: string | null;
   logs: string[];
+  permission_request?: {
+    job_id: string;
+    categories: string[];
+    rationale: string;
+    auto_approved: string[];
+    requires_user_approval: string[];
+    decision?: {
+      decided_at: string;
+      decided_by: string;
+      approved: boolean;
+      categories: string[];
+      note: string;
+    };
+  } | null;
 };
 type HandoffJobResult = { job: HandoffJob; state?: MissionState };
 type AgentToolCall = {
@@ -157,7 +173,7 @@ type RenderedToolCall = AgentToolCall & {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -576,8 +592,8 @@ const initialState: MissionState = {
   runs: [],
   approval_queue: [],
   settings: {
-    model_base_url: "http://localhost:1234/v1",
-    default_model: "nvidia.agentic.coder-4b",
+    model_base_url: "http://127.0.0.1:1234/v1",
+    default_model: "",
     provider: "subprocess",
     memory_db: ".nemo-runtimes/nemo-memory.sqlite",
     nemo_mcp_url: DEFAULT_NEMO_MCP_URL,
@@ -866,6 +882,8 @@ export function App() {
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [queuedAgentPrompts, setQueuedAgentPrompts] = useState<string[]>([]);
   const [runTreeCollapsed, setRunTreeCollapsed] = useState<boolean>(false);
+  const [lmStudioModel, setLmStudioModel] = useState<string | null>(null);
+  const [lmStudioOnline, setLmStudioOnline] = useState<boolean | null>(null);
   const [expandedRunSources, setExpandedRunSources] = useState<Record<string, boolean>>({});
   const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("trusted");
   const [activeSection, setActiveSection] = useState<AppSection>("home");
@@ -963,6 +981,8 @@ export function App() {
   };
 
   const selectedRun = useMemo(() => state.runs.find((run) => run.source_json === selectedRunSource) ?? state.runs[0], [state.runs, selectedRunSource]);
+  const selectedJob = useMemo(() => state.jobs.find((j) => j.task_id === selectedRun?.task_id && j.run_id === selectedRun?.run_id), [state.jobs, selectedRun]);
+  const jobAwaitingPermission = useMemo(() => state.jobs.find((j) => j.status === "awaiting_permission") ?? null, [state.jobs]);
   const readyRuns = state.runs.filter((run) => run.review_status === "awaiting_review").length;
   const blockedRuns = state.runs.filter((run) => run.review_status === "blocked").length;
   const activeFile = selectedFile || selectedRun?.changed_files[0] || "";
@@ -1030,6 +1050,24 @@ export function App() {
     if (!payload) throw new Error("Empty response from server");
     return payload as T;
   });
+
+  const grantPermission = async (jobId: string, note: string) => {
+    await fetch(`/api/run/${jobId}/permission-grant`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    });
+    refreshState();
+  };
+
+  const denyPermission = async (jobId: string, note: string) => {
+    await fetch(`/api/run/${jobId}/permission-deny`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    });
+    refreshState();
+  };
 
   const refreshState = () => {
     setStatus("Refreshing workspace state");
@@ -1372,8 +1410,14 @@ export function App() {
           `${continuityBlock}\n\nMensaje usuario:\n${content}`;
       }
 
+      const recentHistory = agentMessages
+        .slice(-12)
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({ role: m.role, content: m.content }));
+
       return postJson<AgentMessageResult>("/api/agent/message", {
         message: enrichedMessage,
+        history: recentHistory,
         source_json: shouldAttachRunContextToMessage(content) ? selectedRun?.source_json : undefined,
         chat_mode: routeChatMode(content, Boolean(selectedRun?.source_json)),
         selected_nemo_tools: selectedNemoTools,
@@ -1562,6 +1606,178 @@ export function App() {
           setStatus(`${action.kind} started: ${payload.job.job_id}`);
         })
         .catch((error: Error) => setStatus(error.message));
+      return;
+    }
+    if (action.kind === "plan_generate") {
+      const planPayload = action.payload as Record<string, unknown>;
+      const objective = String(planPayload.objective || action.label || "Generate code");
+      setStatus(`Generating: ${objective.slice(0, 60)}`);
+
+      const planMsgId = `plan-${Date.now()}`;
+      setAgentMessages((prev) => [
+        ...prev,
+        {
+          id: planMsgId,
+          role: "assistant" as const,
+          content: `**Generando:** ${objective.slice(0, 80)}\nIteraciones en progreso…`,
+          tool_calls: [],
+          actions: [],
+        },
+      ]);
+
+      fetch("/api/agent/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(planPayload),
+      })
+        .then(async (resp) => {
+          const reader = resp.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          const iterations: string[] = [];
+          let planJobId = "";
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                const evt = JSON.parse(line.slice(6)) as Record<string, unknown>;
+
+                if (evt.type === "start") {
+                  planJobId = String(evt.job_id || "");
+                  // Inject Stop + Steer controls as actions on the plan message
+                  if (planJobId) {
+                    setAgentMessages((prev) =>
+                      prev.map((m) =>
+                        m.id === planMsgId
+                          ? {
+                              ...m,
+                              actions: [
+                                {
+                                  id: `stop-${planJobId}`,
+                                  kind: "plan_cancel",
+                                  label: "Stop",
+                                  summary: "Cancel after current iteration",
+                                  payload: { job_id: planJobId },
+                                },
+                                {
+                                  id: `steer-${planJobId}`,
+                                  kind: "plan_steer",
+                                  label: "Steer",
+                                  summary: "Inject a directive into the next iteration",
+                                  payload: { job_id: planJobId },
+                                },
+                              ],
+                            }
+                          : m
+                      )
+                    );
+                  }
+                }
+
+                if (evt.type === "iteration") {
+                  const ok = evt.exec_ok ? "✓" : "✗";
+                  const score = Number(evt.score ?? 0);
+                  const scoreBar = "█".repeat(Math.round(score)) + "░".repeat(10 - Math.round(score));
+                  const outputLines = String(evt.exec_output || "").trim().split("\n").filter(Boolean).slice(0, 4);
+                  const thinkRaw = String(evt.think_snippet || "").trim();
+                  let iterLine = `**Iter ${evt.iteration}** ${ok}  score ${score}/10  \`${scoreBar}\``;
+                  if (outputLines.length > 0) iterLine += `\n> ${outputLines.join("\n> ")}`;
+                  if (thinkRaw) iterLine += `\n> 💭 ${thinkRaw.slice(0, 160).replace(/\n/g, " ")}`;
+                  iterations.push(iterLine);
+                  setAgentMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === planMsgId
+                        ? { ...m, content: `**Generando:** ${objective.slice(0, 70)}\n\n${iterations.join("\n\n")}` }
+                        : m
+                    )
+                  );
+                }
+
+                if (evt.type === "cancelled") {
+                  setAgentMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === planMsgId
+                        ? {
+                            ...m,
+                            content: `**Plan cancelado:** ${objective.slice(0, 70)}\n\n${iterations.join("\n\n")}`,
+                            actions: [],
+                          }
+                        : m
+                    )
+                  );
+                  setStatus("Plan cancelled");
+                }
+
+                if (evt.type === "done") {
+                  const score = Number(evt.final_score ?? 0);
+                  const iters = Number(evt.iterations_run ?? 0);
+                  const completed = Boolean(evt.completed);
+                  const artifactFile = String(evt.artifact_file || "");
+                  const scoreBar = "█".repeat(Math.round(score)) + "░".repeat(10 - Math.round(score));
+                  let finalContent = [
+                    `**Plan completado:** ${objective.slice(0, 70)}`,
+                    `Score final: **${score}/10** \`${scoreBar}\`  |  ${iters} iteraciones${!completed ? "  *(no alcanzó threshold)*" : ""}`,
+                    iterations.join("\n\n"),
+                  ].join("\n\n");
+
+                  if (artifactFile && score > 0) {
+                    const imgData = JSON.stringify({ src: `/api/artifacts/image/${artifactFile}`, alt: objective });
+                    finalContent += `\n\`\`\`image\n${imgData}\n\`\`\``;
+                  }
+
+                  setAgentMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === planMsgId ? { ...m, content: finalContent, actions: [] } : m
+                    )
+                  );
+                  setStatus(`Plan done: ${score}/10`);
+                }
+              } catch {
+                // ignore malformed SSE lines
+              }
+            }
+          }
+        })
+        .catch((err: Error) => {
+          setStatus(`Plan error: ${err.message}`);
+          setAgentMessages((prev) =>
+            prev.map((m) =>
+              m.id === planMsgId
+                ? { ...m, content: `Error en plan_generate: ${err.message}`, actions: [] }
+                : m
+            )
+          );
+        });
+      return;
+    }
+    if (action.kind === "plan_cancel") {
+      const jobId = String(action.payload.job_id || "");
+      if (jobId) {
+        fetch("/api/agent/plan/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ job_id: jobId }),
+        }).catch(() => null);
+      }
+      return;
+    }
+    if (action.kind === "plan_steer") {
+      const jobId = String(action.payload.job_id || "");
+      if (!jobId) return;
+      const directive = window.prompt("Directiva para la siguiente iteración:");
+      if (!directive?.trim()) return;
+      fetch("/api/agent/plan/steer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId, directive: directive.trim() }),
+      }).catch(() => null);
       return;
     }
     if (action.kind === "pc_control") {
@@ -2167,6 +2383,25 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const probe = () => {
+      fetch("/lm-proxy/v1/models", { signal: AbortSignal.timeout(3000) })
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((data: { data?: Array<{ id: string }> }) => {
+          const chatModel = data?.data?.find((m) => !/embed|rerank|bge|nomic/i.test(m.id))?.id ?? data?.data?.[0]?.id ?? null;
+          setLmStudioModel(chatModel);
+          setLmStudioOnline(true);
+        })
+        .catch(() => {
+          setLmStudioModel(null);
+          setLmStudioOnline(false);
+        });
+    };
+    probe();
+    const id = setInterval(probe, 10_000);
+    return () => clearInterval(id);
+  }, [settingsDraft.model_base_url]);
+
+  useEffect(() => {
     const snapshot: ChatSessionSnapshot = {
       version: 1,
       agentMessages,
@@ -2285,7 +2520,7 @@ export function App() {
               const isExpanded = expandedRunSources[run.source_json] ?? isSelected;
               return (
                 <article className={`tree-run-card ${isSelected ? "selected" : ""}`} key={run.source_json}>
-                  <button className="tree-run-button" onClick={() => selectRun(run)}>
+                  <button className="tree-run-button" onClick={() => { selectRun(run); setActiveSection("runs"); }}>
                     <span className={`tree-run-dot ${statusTone(run.review_status)}`} />
                     <div className="tree-run-copy">
                       <strong>{run.objective}</strong>
@@ -2325,7 +2560,7 @@ export function App() {
             <strong>Space Code</strong>
             <span>Autonomous coding with external NEMO memory</span>
           </div>
-          <div className="cockpit-live"><i /> Autonomous run</div>
+          <div className={`cockpit-live ${agentBusy ? "live" : ""}`}><i /> {agentBusy ? "Running" : shellActiveRun ? "Standby" : "Ready"}</div>
           <div className="cockpit-run-readout">
             <span>{shellRuntimeLabel}</span>
             <b>{shellPhaseLabel}</b>
@@ -2349,7 +2584,7 @@ export function App() {
           status={status}
           draft={homeAgentDraft}
           provider={settingsDraft.provider}
-          modelName={settingsDraft.default_model}
+          modelName={lmStudioOnline === false ? "sin conexión" : (lmStudioModel ?? settingsDraft.default_model)}
           messages={agentMessages}
           onDraftChange={setHomeAgentDraft}
           onSubmit={sendHomeAgentMessage}
@@ -2364,6 +2599,7 @@ export function App() {
           onArchiveChat={archiveAgentChat}
           onClearChat={clearAgentChat}
           onSelectRun={(run) => { selectRun(run); setActiveSection("runs"); }}
+          onRunAction={runAgentAction}
         />}
 
         {activeSection === "runs" && <>
@@ -2380,7 +2616,7 @@ export function App() {
           </div>
 
           <div className="workspace-main" style={runsWorkbenchTab === "file" ? undefined : { gridTemplateColumns: "minmax(0, 1fr)" }}>
-            {runsWorkbenchTab !== "agent" && <EditorPane
+            {runsWorkbenchTab === "file" && <EditorPane
               run={selectedRun}
               filePreview={filePreview}
               activeFile={activeFile}
@@ -2388,6 +2624,11 @@ export function App() {
               onToggleHunk={toggleHunkDecision}
               onSetFileDecision={setFileDecision}
               onApplySelected={applySelectedDiff}
+            />}
+            {runsWorkbenchTab === "review" && <WorktreeDiffPanel
+              jobId={selectedJob?.job_id ?? ""}
+              onMerged={() => { /* state will refresh via polling */ }}
+              onRejected={() => { /* state will refresh via polling */ }}
             />}
             {runsWorkbenchTab !== "review" && <AgentPane
               run={selectedRun}
@@ -2446,6 +2687,9 @@ export function App() {
               onGeneratePlan={generatePlanPrompt}
               onSelectPlanStep={handlePlanStepSelect}
               showSettingsPanel={false}
+              permissionJob={jobAwaitingPermission}
+              onGrantPermission={grantPermission}
+              onDenyPermission={denyPermission}
             />}
           </div>
         </>}
@@ -2605,13 +2849,20 @@ function latestHomeLayoutCommand(messages: AgentMessage[]): { command: HomeLayou
   return null;
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
   const [layoutMode, setLayoutMode] = useState<HomeLayoutMode>("full-cockpit");
   const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: false, telemetry: false });
   const [layoutSource, setLayoutSource] = useState<string>("manual");
   const appliedLayoutCommandRef = useRef<string>("");
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
   const { artifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite } = useGeneratedArtifacts({ messages, draft, onDraftChange });
+  const prevArtifactsLenRef = useRef(artifacts.length);
+  useEffect(() => {
+    if (artifacts.length > prevArtifactsLenRef.current) {
+      setCollapsedPanels((prev) => ({ ...prev, artifact: false }));
+    }
+    prevArtifactsLenRef.current = artifacts.length;
+  }, [artifacts.length]);
   const atomCount = nemoState?.health.atom_count ?? 0;
   const evidenceCount = nemoState?.health.evidence_count ?? 0;
   const feedbackCount = nemoState?.health.feedback_count ?? 0;
@@ -2706,7 +2957,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
           <strong>Space Code</strong>
           <small>Autonomous coding system</small>
         </div>
-        <div className="mission-v2-status"><i /> Autonomous run</div>
+        <div className={`mission-v2-status ${running ? "live" : ""}`}><i /> {running ? status.slice(0, 40) || "Running" : "Ready"}</div>
         <div className="mission-v2-ops" aria-label="Estado operacional compacto">
           <span><b>NEMO</b>{contextLabel}</span>
           <span><b>Artifacts</b>{artifacts.length}</span>
@@ -2737,6 +2988,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
               renderMcpEvidence={(tools) => <HomeMcpEvidence tools={tools as AgentToolCall[]} />}
               liveStatus={<AgentLiveStatus busy={running} queuedPrompt={queuedPrompt} messages={messages} compact />}
               commandDock={commandDockElement}
+              onRunAction={onRunAction ? (action) => onRunAction(action as AgentAction) : undefined}
             />
           </>}
         </div>
@@ -2879,7 +3131,6 @@ function HandoffComposer({ draft, onChange, onSubmit, onClose, running }: { draf
   const update = (key: keyof typeof draft, value: string) => onChange({ ...draft, [key]: value });
   const fieldIds = {
     objective: "handoff-objective",
-    provider: "handoff-provider",
     timeoutSeconds: "handoff-timeout-seconds",
     validationPolicy: "handoff-validation-policy",
     acceptance: "handoff-acceptance",
@@ -2905,12 +3156,10 @@ function HandoffComposer({ draft, onChange, onSubmit, onClose, running }: { draf
         />
       </label>
       <div className="composer-grid">
-        <label htmlFor={fieldIds.provider}>
-          Provider
-          <select id={fieldIds.provider} value={draft.provider} onChange={(event) => update("provider", event.target.value)} disabled={running}>
-            <option value="subprocess">Space Code + LM Studio</option>
-          </select>
-        </label>
+        <div className="composer-static-field">
+          <span>Provider</span>
+          <code>Space Code + LM Studio</code>
+        </div>
         <label htmlFor={fieldIds.timeoutSeconds}>
           Timeout seconds
           <input id={fieldIds.timeoutSeconds} value={draft.timeoutSeconds} onChange={(event) => update("timeoutSeconds", event.target.value)} disabled={running} />
@@ -3001,6 +3250,9 @@ type AgentPaneProps = {
   onGeneratePlan: () => void;
   onSelectPlanStep: (stepId: string) => void;
   showSettingsPanel?: boolean;
+  permissionJob?: HandoffJob | null;
+  onGrantPermission?: (jobId: string, note: string) => void;
+  onDenyPermission?: (jobId: string, note: string) => void;
 };
 
 type FlowStep = {
@@ -3171,12 +3423,21 @@ function InsightSection({
   );
 }
 
-function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true }: AgentPaneProps) {
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true, permissionJob, onGrantPermission, onDenyPermission }: AgentPaneProps) {
   const [compactView, setCompactView] = useState(true);
   const riskCount = run?.risk_flags.length ?? 0;
 
   return (
     <aside className="agent-pane">
+      {permissionJob && permissionJob.permission_request && onGrantPermission && onDenyPermission && (
+        <PermissionRequestPanel
+          jobId={permissionJob.job_id}
+          objective={String(permissionJob.permission_request.rationale || "")}
+          permissionRequest={permissionJob.permission_request as { job_id: string; categories: string[]; rationale: string; auto_approved: string[]; requires_user_approval: string[] }}
+          onGranted={() => onGrantPermission(permissionJob.job_id, "")}
+          onDenied={() => onDenyPermission(permissionJob.job_id, "")}
+        />
+      )}
       <div className="panel-title"><Bot size={16} /> Control del Agente</div>
       <div className="chat-controls">
         <button onClick={onClearChat} title="Borrar historial del chat"><span>🗑️</span> Limpiar</button>
@@ -3578,13 +3839,6 @@ function VersioningPanel({
         ))}</div>}
       </div>
 
-      <div className="ops-panel">
-        <div className="panel-title"><GitCompare size={16} /> Proximo incremento</div>
-        <div className="mini-list">
-          <span>Siguiente: staging por hunk y commit message sugerido por IA.</span>
-          <span>Siguiente: pull/push con seleccion de remote y manejo de conflictos.</span>
-        </div>
-      </div>
     </section>
   );
 }
