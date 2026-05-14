@@ -144,3 +144,41 @@ def test_api_run_timeline_returns_events(tmp_path):
     assert result["job_id"] == "j99"
     assert result["event_count"] == 1
     assert result["timeline"][0]["kind"] == "heartbeat"
+
+
+def test_supervisor_heartbeat_emitted_per_iteration(capsys):
+    from nemo_coding_platform.core.event_emitter import emit_event, reset_sequence
+    import json as _json
+    reset_sequence()
+    emit_event("heartbeat", "Iteration 1 — 0.0 min elapsed", "execute",
+               payload={"iteration": 1, "elapsed_minutes": 0.0})
+    emit_event("heartbeat", "Iteration 2 — 5.0 min elapsed", "execute",
+               payload={"iteration": 2, "elapsed_minutes": 5.0})
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert len(lines) == 2
+    e1 = _json.loads(lines[0][len("NEMO_EVENT:"):])
+    e2 = _json.loads(lines[1][len("NEMO_EVENT:"):])
+    assert e1["kind"] == "heartbeat"
+    assert e1["payload"]["iteration"] == 1
+    assert e1["payload"]["elapsed_minutes"] == 0.0
+    assert e2["payload"]["iteration"] == 2
+    assert e2["payload"]["elapsed_minutes"] == 5.0
+
+
+def test_supervisor_paused_resumed_events(capsys):
+    from nemo_coding_platform.core.event_emitter import emit_event, reset_sequence
+    import json as _json
+    reset_sequence()
+    emit_event("paused", "Paused — resuming in 10 min", "execute",
+               payload={"pause_minutes": 10, "elapsed_minutes": 20.0})
+    emit_event("resumed", "Resumed — 30.0 min elapsed", "execute",
+               payload={"elapsed_minutes": 30.0})
+    lines = capsys.readouterr().out.strip().splitlines()
+    paused  = _json.loads(lines[0][len("NEMO_EVENT:"):])
+    resumed = _json.loads(lines[1][len("NEMO_EVENT:"):])
+    assert paused["kind"] == "paused"
+    assert paused["payload"]["pause_minutes"] == 10
+    assert paused["payload"]["elapsed_minutes"] == 20.0
+    assert resumed["kind"] == "resumed"
+    assert resumed["payload"]["elapsed_minutes"] == 30.0
+    assert resumed["sequence"] > paused["sequence"]
