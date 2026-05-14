@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from os import environ
 
 
-DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
-DEFAULT_LMSTUDIO_MODEL = "nvidia.agentic.coder-4b"
+DEFAULT_LMSTUDIO_BASE_URL = "http://127.0.0.1:1234/v1"
+DEFAULT_LMSTUDIO_MODEL = ""  # auto-discovered from LM Studio at runtime
 QUALITY_FALLBACK_LMSTUDIO_MODEL = "opus4.7-gods.ghost.codex-4b.gguf"
 MODEL_ROLES = ("planner", "editor", "reviewer", "summarizer")
 

@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Activity, Braces, Camera, Code2, Copy, Crosshair, Download, Eye, FileText, Film, Headphones, History, Image, Info, Layers3, Maximize2, MoreHorizontal, Paperclip, Pin, Puzzle, Search, Trash2, Zap } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Braces, Code2, Copy, Download, Eye, FileText, Film, Headphones, History, Image, Info, Layers3, Maximize2, Minimize2, Paperclip, Pin, Puzzle, Search, Trash2, Zap } from "lucide-react";
 import { buildArtifactLineDiff, type GeneratedArtifact, type GeneratedArtifactKind } from "../services/artifactUtils";
 
 type ArtifactViewMode = "preview" | "source" | "inspect" | "compare";
-type ArtifactViewportAction = "expand" | "capture" | "center" | "more";
 
 type ArtifactWorkbenchProps = {
   artifacts: GeneratedArtifact[];
@@ -16,14 +15,6 @@ type ArtifactWorkbenchProps = {
 };
 
 type ArtifactKindFilter = "all" | GeneratedArtifactKind;
-type ArtifactPerformanceSnapshot = { fps: number; cpu: number; gpu: number; drawCalls: string };
-const ARTIFACT_VIEWPORT_STATUS: Record<ArtifactViewportAction | "idle", string> = {
-  idle: "Viewport locked",
-  expand: "Viewport expanded",
-  capture: "Frame captured",
-  center: "Target centered",
-  more: "Controls armed",
-};
 
 function artifactSrcDoc(artifact: GeneratedArtifact): string {
   if (artifact.kind === "svg") {
@@ -73,29 +64,6 @@ function artifactLineCount(artifact: GeneratedArtifact): number {
   return artifact.content.split(/\r?\n/).length;
 }
 
-function artifactPerformanceSnapshot(artifact: GeneratedArtifact | undefined): ArtifactPerformanceSnapshot {
-  const seed = artifact ? artifact.content.length + artifact.title.length * 13 + artifact.kind.length * 31 : 64;
-  const fps = 48 + (seed % 13);
-  const cpu = 18 + (seed % 19);
-  const gpu = 44 + (seed % 33);
-  const drawCalls = `${((seed % 34) + 12) / 10}K`;
-  return { fps, cpu, gpu, drawCalls };
-}
-
-function artifactSourceExcerpt(artifact: GeneratedArtifact): string[] {
-  const lines = artifact.content.split(/\r?\n/).slice(0, 7);
-  return lines.length > 0 ? lines : [artifact.content];
-}
-
-function artifactStandbySourceExcerpt(): string[] {
-  return [
-    "// Awaiting generated artifact",
-    "render.pipeline.attach(activeArtifact)",
-    "telemetry.mode = 'standby'",
-    "viewport.target = 'center-stage'",
-  ];
-}
-
 function artifactKindIcon(kind: GeneratedArtifactKind): ReactNode {
   if (kind === "image_request") return <Image size={15} />;
   if (kind === "image") return <Image size={15} />;
@@ -128,6 +96,29 @@ function previousArtifactVersion(activeArtifact: GeneratedArtifact | undefined, 
 function artifactFilterOptions(artifacts: GeneratedArtifact[]): ArtifactKindFilter[] {
   const kinds = Array.from(new Set(artifacts.map((artifact) => artifact.kind))).sort();
   return ["all", ...kinds] as ArtifactKindFilter[];
+}
+
+function FullscreenButton({ stageRef }: { stageRef: React.RefObject<HTMLDivElement | null> }) {
+  const [isFs, setIsFs] = useState(false);
+  useEffect(() => {
+    const handler = () => setIsFs(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+  const toggle = () => {
+    if (!stageRef.current) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => null);
+    } else {
+      stageRef.current.requestFullscreen().catch(() => null);
+    }
+  };
+  return (
+    <button type="button" className="artifact-fullscreen-btn" onClick={toggle} title={isFs ? "Exit fullscreen" : "Fullscreen"}>
+      {isFs ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+      <span>{isFs ? "Exit" : "Full"}</span>
+    </button>
+  );
 }
 
 function ArtifactCompareView({ previous, current }: { previous: GeneratedArtifact; current: GeneratedArtifact }) {
@@ -260,96 +251,14 @@ function MermaidPreview({ content }: { content: string }) {
   return <div className="artifact-mermaid" dangerouslySetInnerHTML={{ __html: svg || "" }} />;
 }
 
-function ArtifactRuntimeDeck({ artifact, performance }: { artifact: GeneratedArtifact | undefined; performance: ArtifactPerformanceSnapshot }) {
-  const sourceExcerpt = artifact ? artifactSourceExcerpt(artifact) : artifactStandbySourceExcerpt();
-  const sourceKeyPrefix = artifact?.id ?? "standby";
-
-  return (
-    <div className="artifact-runtime-deck" aria-label="Artifact runtime deck">
-      <div className="artifact-runtime-tabs" aria-label="Artifact runtime views">
-        <span className="active">Code</span>
-        <span>Scene</span>
-        <span>Assets</span>
-        <span>Profiler</span>
-        <span>Terminal</span>
-      </div>
-      <div className="artifact-code-preview" aria-label="Active artifact source preview">
-        {sourceExcerpt.map((line, index) => <div key={`${sourceKeyPrefix}-line-${index}`}><span>{index + 1}</span><code>{line || " "}</code></div>)}
-      </div>
-      <div className="artifact-performance-panel" aria-label="Artifact performance telemetry">
-        <header><span>Performance</span><b>{performance.fps}</b></header>
-        <div><span>CPU</span><i><em style={{ width: `${performance.cpu}%` }} /></i><b>{performance.cpu}%</b></div>
-        <div><span>GPU</span><i><em style={{ width: `${performance.gpu}%` }} /></i><b>{performance.gpu}%</b></div>
-        <div><span>Draw</span><i><em style={{ width: "62%" }} /></i><b>{performance.drawCalls}</b></div>
-      </div>
-    </div>
-  );
-}
-
-function ArtifactViewportActions({ onAction }: { onAction: (action: ArtifactViewportAction) => void }) {
-  return (
-    <div className="artifact-viewport-actions" aria-label="Viewport controls">
-      <button type="button" onClick={() => onAction("expand")} title="Expand viewport"><Maximize2 size={12} /></button>
-      <button type="button" onClick={() => onAction("capture")} title="Capture frame"><Camera size={12} /></button>
-      <button type="button" onClick={() => onAction("center")} title="Center target"><Crosshair size={12} /></button>
-      <button type="button" onClick={() => onAction("more")} title="More viewport actions"><MoreHorizontal size={12} /></button>
-    </div>
-  );
-}
-
-function ArtifactStandbyCanvas({ performance, viewportStatus, onViewportAction }: { performance: ArtifactPerformanceSnapshot; viewportStatus: string; onViewportAction: (action: ArtifactViewportAction) => void }) {
+function ArtifactStandbyCanvas() {
   return (
     <div className="artifact-canvas artifact-canvas-standby" aria-label="Standby artifact canvas">
-      <div className="artifact-active-summary artifact-standby-summary">
-        <div className="artifact-active-icon" aria-hidden="true"><Puzzle size={15} /></div>
-        <div className="artifact-active-copy">
-          <span>standby</span>
-          <strong>Orchestrator viewport</strong>
-        </div>
-        <div className="artifact-active-pills" aria-label="Standby artifact metadata">
-          <span>live</span>
-          <span>{performance.fps} FPS</span>
-          <span>scene</span>
-        </div>
-        <ArtifactViewportActions onAction={onViewportAction} />
+      <div className="artifact-standby-placeholder">
+        <Puzzle size={32} />
+        <strong>Artifact Studio</strong>
+        <span>Los artifacts generados por el agente aparecerán aquí automáticamente.</span>
       </div>
-      <div className="artifact-canvas-bar">
-        <div className="artifact-canvas-meta">
-          <span>mission scene</span>
-          <span>lighting pass</span>
-          <span>memory linked</span>
-        </div>
-        <span className="artifact-viewport-status" aria-live="polite">{viewportStatus}</span>
-        <div className="artifact-view-switch artifact-view-switch-static" aria-label="Standby artifact mode">
-          <span className="active">Preview</span>
-          <span>Source</span>
-          <span>Inspect</span>
-        </div>
-      </div>
-      <div className="artifact-stage preview artifact-standby-stage">
-        <div className="artifact-standby-scene" aria-label="NEMO live render standby scene">
-          <div className="artifact-scene-beam" />
-          <div className="artifact-scene-tower tower-a" />
-          <div className="artifact-scene-tower tower-b" />
-          <div className="artifact-scene-tower tower-c" />
-          <div className="artifact-scene-tower tower-d" />
-          <div className="artifact-scene-horizon" />
-          <div className="artifact-scene-avatar"><span /><i /></div>
-          <div className="artifact-scene-target"><span /></div>
-          <div className="artifact-scene-reflection" />
-          <div className="artifact-standby-hud">
-            <span>LIVE</span>
-            <strong>Mission render armed</strong>
-            <small>Awaiting artifact stream</small>
-          </div>
-          <div className="artifact-standby-metrics" aria-label="Standby render passes">
-            <span>shader graph</span>
-            <span>environment pass</span>
-            <span>memory map</span>
-          </div>
-        </div>
-      </div>
-      <ArtifactRuntimeDeck artifact={undefined} performance={performance} />
     </div>
   );
 }
@@ -357,6 +266,7 @@ function ArtifactStandbyCanvas({ performance, viewportStatus, onViewportAction }
 export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPrompt, onRemoveArtifact, onToggleFavorite, renderMarkdown }: ArtifactWorkbenchProps) {
   const [libraryQuery, setLibraryQuery] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<ArtifactKindFilter>("all");
+  const stageRef = useRef<HTMLDivElement>(null);
   const filterOptions = useMemo(() => artifactFilterOptions(artifacts), [artifacts]);
   const filteredArtifacts = useMemo(() => {
     const query = libraryQuery.trim().toLowerCase();
@@ -372,11 +282,8 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
     .filter((artifact) => artifact.versionGroup === activeArtifact.versionGroup)
     .sort((left, right) => (left.version ?? 0) - (right.version ?? 0)) : [];
   const previousArtifact = previousArtifactVersion(activeArtifact, versionSiblings);
-  const performance = artifactPerformanceSnapshot(activeArtifact);
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
-  const [viewportAction, setViewportAction] = useState<ArtifactViewportAction | "idle">("idle");
-  const viewportStatus = ARTIFACT_VIEWPORT_STATUS[viewportAction];
 
   useEffect(() => {
     setViewMode(renderable ? "preview" : "source");
@@ -408,11 +315,6 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
     URL.revokeObjectURL(url);
   };
 
-  const handleViewportAction = (action: ArtifactViewportAction) => {
-    setViewportAction(action);
-    window.setTimeout(() => setViewportAction("idle"), 1500);
-  };
-
   const viewOptions: Array<{ mode: ArtifactViewMode; label: string; icon: ReactNode; disabled?: boolean }> = [
     { mode: "preview", label: "Preview", icon: <Eye size={13} />, disabled: !renderable },
     { mode: "source", label: "Source", icon: <Code2 size={13} /> },
@@ -428,10 +330,9 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
           <strong>Artifact Studio</strong>
           <small>{artifacts.length ? `${artifacts.length} artifact(s) indexados` : "listo para multimodal"}</small>
         </div>
-        <div className="artifact-live-hud" aria-label="Live render telemetry">
-          <span><Activity size={11} /> Real-time</span>
-          <span>{performance.fps} FPS</span>
+        <div className="artifact-live-hud" aria-label="Artifact kind">
           <span>{activeArtifact?.kind ?? "standby"}</span>
+          {activeArtifact && <span>{artifactLineCount(activeArtifact)} lines</span>}
         </div>
         <div className="artifact-toolbar-actions">
           <button onClick={copyArtifact} disabled={!activeArtifact} title="Copiar artifact"><Copy size={13} /><span>{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy?" : "Copy"}</span></button>
@@ -477,7 +378,7 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <span>#{shortArtifactHash(activeArtifact)}</span>
               <span>{formatArtifactTime(activeArtifact.updatedAt ?? activeArtifact.createdAt)}</span>
             </div>
-            <ArtifactViewportActions onAction={handleViewportAction} />
+            <FullscreenButton stageRef={stageRef} />
           </div>
           <div className="artifact-canvas-bar">
             <div className="artifact-canvas-meta">
@@ -485,7 +386,6 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <span>{activeArtifact.tokenEstimate} tok</span>
               <span>{artifactLineCount(activeArtifact)} lines</span>
             </div>
-            <span className="artifact-viewport-status" aria-live="polite">{viewportStatus}</span>
             <div className="artifact-library-actions" aria-label="Acciones de biblioteca">
               <button onClick={() => onToggleFavorite(activeArtifact.id)} title={activeArtifact.favorite ? "Quitar pin" : "Fijar artifact"}><Pin size={12} /><span>{activeArtifact.favorite ? "Pinned" : "Pin"}</span></button>
               <button className="danger" onClick={() => onRemoveArtifact(activeArtifact.id)} title="Eliminar artifact del registry"><Trash2 size={12} /><span>Delete</span></button>
@@ -494,7 +394,7 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               {viewOptions.map((option) => <button key={option.mode} className={viewMode === option.mode ? "active" : ""} onClick={() => setViewMode(option.mode)} disabled={option.disabled} title={option.label}>{option.icon}<span>{option.label}</span></button>)}
             </div>
           </div>
-          <div className={`artifact-stage ${viewMode}`}>
+          <div ref={stageRef} className={`artifact-stage ${viewMode}`}>
             {viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
               <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={artifactSrcDoc(activeArtifact)} />
             ) : viewMode === "preview" && (activeArtifact.kind === "image" || activeArtifact.kind === "video" || activeArtifact.kind === "audio") ? (
@@ -530,9 +430,8 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <pre><code>{activeArtifact.content}</code></pre>
             )}
           </div>
-          <ArtifactRuntimeDeck artifact={activeArtifact} performance={performance} />
         </div>}
-      </> : <ArtifactStandbyCanvas performance={performance} viewportStatus={viewportStatus} onViewportAction={handleViewportAction} />}
+      </> : <ArtifactStandbyCanvas />}
     </aside>
   );
 }

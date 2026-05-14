@@ -18,8 +18,7 @@ def _get_adapter(memory_db: str = ".nemo-memory.db", mcp_url: str = "", mcp_pref
     if mcp_url.strip():
         if mcp_url.strip().lower() == VSCODE_STDIO_NEMO_URL:
             return StdioMcpNemoAdapter(server_name="nemo", tool_prefix=mcp_prefix)
-        effective_prefix = mcp_prefix if mcp_prefix else "spacecode."
-        return McpNemoAdapter(mcp_url.strip(), tool_prefix=effective_prefix)
+        return McpNemoAdapter(mcp_url.strip(), tool_prefix=mcp_prefix)
     store = PersistentMemoryStore(Path(memory_db))
     return PersistentNemoAdapter(store)
 

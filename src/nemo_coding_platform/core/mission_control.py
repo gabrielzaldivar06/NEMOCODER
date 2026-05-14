@@ -221,10 +221,10 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
     runs.sort(key=lambda item: (_source_mtime(item), item.source_json), reverse=True)
     review_queue = [run for run in runs if run.review_status in {"awaiting_review", "blocked"}]
     repos = sorted({run.repo_path for run in runs if run.repo_path} | {str(repo)} | set(recent_repos))
-    role_models = default_model_role_profile("nvidia.agentic.coder-4b")
+    role_models = default_model_role_profile("")
     state_settings = {
-        "model_base_url": "http://localhost:1234/v1",
-        "default_model": "nvidia.agentic.coder-4b",
+        "model_base_url": "http://127.0.0.1:1234/v1",
+        "default_model": "",
         "model_roles": {
             "planner": role_models.planner,
             "editor": role_models.editor,

@@ -71,10 +71,6 @@ function activePhaseTelemetry(run: TelemetryRun | undefined, running: boolean): 
   return { tone: "planning", label: "Plan", progress: 22, detail: run.review_status || "queued" };
 }
 
-function sparkValues(seed: number): number[] {
-  return Array.from({ length: 14 }, (_, index) => 18 + ((seed + index * 17 + (index % 3) * 11) % 62));
-}
-
 function memoryFieldLoad(memoryAtomCount: number, evidenceCount: number, feedbackCount: number): number {
   return Math.max(8, Math.min(99, Math.round(memoryAtomCount * 0.9 + evidenceCount * 3 + feedbackCount * 4)));
 }
@@ -87,16 +83,12 @@ export function TelemetryColumn<RunType extends TelemetryRun>({ activeRun, visib
   const queueSummary = `${visibleQueue.length} pendientes, ${queueByBucket.ready.length} por validacion, ${queueByBucket.queued.length} por contexto`;
   const phaseTelemetry = activePhaseTelemetry(activeRun, running);
   const memoryLoad = memoryFieldLoad(memoryAtomCount, evidenceCount, feedbackCount);
-  const runSeed = totalRuns + readyRuns * 3 + blockedRuns * 7 + queueCount * 11;
 
   return (
     <aside className="mission-telemetry" aria-label="Mission telemetry">
       <section className="telemetry-card active-run-card">
         <header><span>Active run</span><b>{phaseTelemetry.label}</b></header>
         <strong>{activeRun?.objective ?? "Esperando objetivo"}</strong>
-        <div className="telemetry-sparkline" aria-label="Active run activity sparkline">
-          {sparkValues(runSeed).map((value, index) => <i key={index} style={{ height: `${value}%` }} />)}
-        </div>
         <div className={`phase-progress ${phaseTelemetry.tone}`} aria-label={`Run phase ${phaseTelemetry.label}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={phaseTelemetry.progress} role="progressbar">
           <span style={{ width: `${phaseTelemetry.progress}%` }} />
         </div>
@@ -111,16 +103,20 @@ export function TelemetryColumn<RunType extends TelemetryRun>({ activeRun, visib
         {activeRun && <button onClick={() => onSelectRun(activeRun)}>View run <ArrowUp size={13} /></button>}
       </section>
       <section className="telemetry-card handoff-card">
-        <header><span>Handoff chain</span><b>Auto</b></header>
-        <div className="handoff-chain-map" aria-label="Handoff chain mini map">
-          {["Planner", "Engineer", "Tester", "Deploy"].map((step, index) => <i key={step} className={index === 1 && running ? "active" : index < Math.max(1, readyRuns) ? "complete" : blockedRuns > 0 && index === 2 ? "attention" : ""} title={step} />)}
-        </div>
-        {[
-          ["Planner", "Mission Architect", readyRuns > 0 ? "complete" : "ready"],
-          ["Engineer", "Core Executor", running ? "active" : "ready"],
-          ["Tester", "Quality Sentinel", blockedRuns > 0 ? "attention" : "waiting"],
-          ["Deployer", "Release Steward", "waiting"],
-        ].map(([name, detail, stateName]) => <div className={`handoff-row ${stateName}`} key={name}><Circle size={10} /><div><strong>{name}</strong><small>{detail}</small></div><span>{stateName}</span></div>)}
+        <header><span>Pipeline</span><b>{phaseTelemetry.label}</b></header>
+        {(["planning", "executing", "reviewing", "ready"] as const).map((tone, idx) => {
+          const labels: Record<string, string> = { planning: "Plan", executing: "Execute", reviewing: "Review", ready: "Apply" };
+          const order = ["planning", "executing", "reviewing", "ready"];
+          const currentIdx = order.indexOf(phaseTelemetry.tone);
+          const isActive = phaseTelemetry.tone === tone;
+          const isDone = currentIdx > idx;
+          const stateClass = isDone ? "complete" : isActive ? "active" : "";
+          return <div className={`handoff-row ${stateClass}`} key={tone}>
+            <Circle size={10} />
+            <div><strong>{labels[tone]}</strong></div>
+            <span>{isActive ? phaseTelemetry.detail : stateClass || "waiting"}</span>
+          </div>;
+        })}
       </section>
       <section className="telemetry-card memory-field-card">
         <header><span>Memory field</span><b>{contextLabel}</b></header>

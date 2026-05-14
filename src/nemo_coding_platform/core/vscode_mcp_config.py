@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -81,13 +82,28 @@ def discover_vscode_mcp_server(name: str = "nemo", repo_path: Path | None = None
     return None
 
 
+_NEMO_SSE_BASE = "http://127.0.0.1:8765"
+
+
+def _nemo_sse_available() -> bool:
+    try:
+        with urllib.request.urlopen(f"{_NEMO_SSE_BASE}/health", timeout=1) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 def default_nemo_mcp_url(repo_path: Path | None = None) -> str:
     env_url = os.environ.get("SPACE_CODE_NEMO_MCP_URL")
     if env_url:
         return env_url
+    # Prefer the persistent SSE server — no subprocess spawn per call
+    if _nemo_sse_available():
+        return f"{_NEMO_SSE_BASE}/mcp/sse"
+    # Fall back to VS Code stdio bridge if SSE is not up
     if discover_vscode_mcp_server("nemo", repo_path) is not None:
         return VSCODE_STDIO_NEMO_URL
-    return "http://127.0.0.1:8765/mcp/sse"
+    return f"{_NEMO_SSE_BASE}/mcp/sse"
 
 
 def _server_entry(data: dict[str, Any], name: str) -> object:

@@ -1,4 +1,4 @@
-# PRD Global: NEMO Desktop Coding Platform
+# PRD Global: Space Code
 
 ## 1. Vision
 

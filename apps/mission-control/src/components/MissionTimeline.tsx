@@ -10,11 +10,20 @@ export type MissionTimelineToolCall = {
   summary?: string;
 };
 
+export type MissionTimelineAction = {
+  id: string;
+  kind: string;
+  label: string;
+  summary: string;
+  payload?: Record<string, unknown>;
+};
+
 export type MissionTimelineMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
   tool_calls?: MissionTimelineToolCall[];
+  actions?: MissionTimelineAction[];
 };
 
 type MissionTimelineProps = {
@@ -26,6 +35,7 @@ type MissionTimelineProps = {
   renderMcpEvidence: (tools: MissionTimelineToolCall[]) => ReactNode;
   liveStatus: ReactNode;
   commandDock: ReactNode;
+  onRunAction?: (action: MissionTimelineAction) => void;
 };
 
 function countArtifactBlocks(content: string): number {
@@ -46,7 +56,7 @@ function wordCount(content: string): number {
   return content.trim().split(/\s+/).filter(Boolean).length;
 }
 
-export function MissionTimeline({ messages, running, queuedPrompt, cleanAssistantContent, renderRichText, renderMcpEvidence, liveStatus, commandDock }: MissionTimelineProps) {
+export function MissionTimeline({ messages, running, queuedPrompt, cleanAssistantContent, renderRichText, renderMcpEvidence, liveStatus, commandDock, onRunAction }: MissionTimelineProps) {
   const visibleMessages = messages.slice(-8);
   const activeEventId = visibleMessages.at(-1)?.id ?? null;
 
@@ -82,6 +92,20 @@ export function MissionTimeline({ messages, running, queuedPrompt, cleanAssistan
               </div>
               {renderRichText(renderedContent)}
               {message.role === "assistant" && renderMcpEvidence(message.tool_calls ?? [])}
+              {message.role === "assistant" && onRunAction && (message.actions ?? []).length > 0 && (
+                <div className="mission-event-actions">
+                  {(message.actions ?? []).map((action) => (
+                    <button
+                      key={action.id}
+                      className={`mission-action-btn ${action.kind}`}
+                      title={action.summary}
+                      onClick={() => onRunAction(action)}
+                    >
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </article>;
         })}

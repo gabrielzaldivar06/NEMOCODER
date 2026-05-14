@@ -1,7 +1,7 @@
 param(
     [int]$ApiPort = 8787,
     [int]$UiPort = 5173,
-    [string]$NemoMcpUrl = "stdio://vscode/nemo",
+    [string]$NemoMcpUrl = "",
     [string]$PythonExe = "",
     [switch]$SkipNemoCheck
 )

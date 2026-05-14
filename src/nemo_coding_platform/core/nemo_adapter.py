@@ -47,7 +47,6 @@ class NemoCallResult:
 class McpNemoAdapter:
     sse_url: str
     tool_prefix: str = ""
-    _endpoint_cache: dict[str, str] = field(default_factory=dict)
 
     def call(self, phase: NemoLifecyclePhase, tool_name: str, **arguments: Any) -> tuple[McpNemoAdapter, NemoCallResult]:
         call = NemoCall(phase, tool_name, dict(arguments))
@@ -55,68 +54,28 @@ class McpNemoAdapter:
             raise PermissionError(f"NEMO tool {tool_name} is not allowed in lifecycle phase {phase}")
 
         try:
-            endpoint = self._get_endpoint()
-            mcp_tool_name = f"{self.tool_prefix}{tool_name}"
-            
-            # JSON-RPC tool call
-            payload = {
-                "jsonrpc": "2.0",
-                "id": str(uuid.uuid4()),
-                "method": "tools/call",
-                "params": {
-                    "name": mcp_tool_name,
-                    "arguments": arguments
-                }
-            }
+            # Use the REST /api/tools/{name} endpoint on the NEMO server.
+            # The SSE /mcp/sse path requires keeping the SSE connection open for the
+            # full session; opening+closing per-call invalidates the session before
+            # the POST can be sent. The REST path is session-less and simpler.
+            parsed = urllib.parse.urlparse(self.sse_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+            rest_url = f"{base_url}/api/tools/{tool_name}"
 
             req = urllib.request.Request(
-                endpoint,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
+                rest_url,
+                data=json.dumps({"arguments": arguments}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
-            
             with urllib.request.urlopen(req, timeout=30) as f:
                 response = json.loads(f.read().decode("utf-8"))
-                
-            if "error" in response:
-                return self, NemoCallResult(call, False, {"error": response["error"]})
-                
-            # MCP response structure: result.content[0].text
-            result = response.get("result", {})
-            content = result.get("content", [])
-            if content and content[0].get("type") == "text":
-                text_payload = content[0].get("text", "{}")
-                try:
-                    data = json.loads(text_payload)
-                except json.JSONDecodeError:
-                    data = {"raw_text": text_payload}
-                return self, NemoCallResult(call, True, data)
-            
-            return self, NemoCallResult(call, True, result)
 
-        except Exception as e:
-            return self, NemoCallResult(call, False, {"error": str(e)})
+            data = _mcp_tool_result_payload(response.get("result", response))
+            return self, NemoCallResult(call, True, data)
 
-    def _get_endpoint(self) -> str:
-        if self.sse_url in self._endpoint_cache:
-            return self._endpoint_cache[self.sse_url]
-        
-        # Handshake: GET the SSE stream and find the 'endpoint' event
-        # This is a bit hacky without a real SSE client, but usually the first few lines contain it.
-        with urllib.request.urlopen(self.sse_url, timeout=10) as f:
-            for _ in range(20): # Look at first 20 lines
-                line = f.readline().decode("utf-8").strip()
-                if line.startswith("event: endpoint"):
-                    data_line = f.readline().decode("utf-8").strip()
-                    if data_line.startswith("data: "):
-                        endpoint_path = data_line[6:]
-                        # Resolve relative path
-                        from urllib.parse import urljoin
-                        endpoint = urljoin(self.sse_url, endpoint_path)
-                        self._endpoint_cache[self.sse_url] = endpoint
-                        return endpoint
-        
-        raise ConnectionError(f"Could not find MCP endpoint in SSE stream at {self.sse_url}")
+        except Exception as exc:
+            return self, NemoCallResult(call, False, {"error": str(exc)})
 
 
 @dataclass(frozen=True, slots=True)

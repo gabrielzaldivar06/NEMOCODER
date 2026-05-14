@@ -4,12 +4,12 @@ from nemo_coding_platform.core.model_config import DEFAULT_LMSTUDIO_BASE_URL, DE
 
 
 class ModelConfigTests(unittest.TestCase):
-    def test_default_lmstudio_model_is_small_coder(self) -> None:
+    def test_default_lmstudio_model_is_empty_for_auto_discovery(self) -> None:
         profile = default_model_profile()
 
         self.assertEqual(profile.base_url, DEFAULT_LMSTUDIO_BASE_URL)
         self.assertEqual(profile.model, DEFAULT_LMSTUDIO_MODEL)
-        self.assertEqual(profile.model, "nvidia.agentic.coder-4b")
+        self.assertEqual(profile.model, "")
 
     def test_model_role_profile_defaults_to_primary_model(self) -> None:
         roles = default_model_role_profile("role-base-model")

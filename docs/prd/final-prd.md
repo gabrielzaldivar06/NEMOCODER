@@ -1,8 +1,8 @@
-# PRD Final: NEMO Desktop Coding Platform
+# PRD Final: Space Code
 
 ## 1. Resumen Ejecutivo
 
-NEMO Desktop Coding Platform es una app desktop local-first para coding agentico serio. La base activa del producto es `product/aider`, un fork modificable de Aider. Aider aporta el nucleo confiable de edicion, repo map, git workflow, validacion y compatibilidad con modelos locales. Sobre esa base se agregan las capacidades que faltan para convertirlo en un entorno autonomo moderno:
+Space Code es una app desktop local-first para coding agentico serio. La base activa del producto es `product/aider`, un fork modificable de Aider. Aider aporta el nucleo confiable de edicion, repo map, git workflow, validacion y compatibilidad con modelos locales. Sobre esa base se agregan las capacidades que faltan para convertirlo en un entorno autonomo moderno:
 
 - OpenCode aporta el modelo de workflow plan/build/review, permisos ergonomicos, agentes configurables y experiencia de CLI/TUI seria.
 - OpenHands aporta runtime agentico fuerte: sandbox, tareas largas, terminal persistente, subagentes, event stream, pause/resume/cancel y ejecucion aislada.

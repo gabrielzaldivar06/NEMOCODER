@@ -100,6 +100,27 @@ def build_default_engine_command(profile: ModelProfile, message_file: str | Path
     )
 
 
+def build_git_engine_command(profile: ModelProfile, message_file: str | Path) -> tuple[str, ...]:
+    """Like build_default_engine_command but with git enabled so Aider commits inside a worktree."""
+    return (
+        sys.executable,
+        "-m",
+        "nemo_code_runtime",
+        "--model",
+        _runtime_model_name(profile),
+        "--openai-api-base",
+        profile.base_url,
+        "--openai-api-key",
+        profile.api_key,
+        "--message-file",
+        str(message_file),
+        "--yes-always",
+        "--no-show-model-warnings",
+        "--no-analytics",
+        # --no-git / --no-auto-commits intentionally absent: Aider commits in the worktree branch
+    )
+
+
 def _is_recursive_platform_command(command: tuple[str, ...]) -> bool:
     lowered = tuple(item.lower() for item in command)
     if "nemo_coding_platform" not in lowered:
@@ -187,9 +208,16 @@ class FakeEngineProvider:
 class SubprocessEngineProvider:
     name = "subprocess-space-code"
 
-    def __init__(self, command: tuple[str, ...] | None = None, cwd: str | Path = ".") -> None:
+    def __init__(
+        self,
+        command: tuple[str, ...] | None = None,
+        cwd: str | Path = ".",
+        *,
+        use_git: bool = False,
+    ) -> None:
         self.command = command
         self.cwd = Path(cwd)
+        self.use_git = use_git
         self.last_returncode: int | None = None
         self.last_stdout = ""
         self.last_stderr = ""
@@ -247,7 +275,14 @@ class SubprocessEngineProvider:
         cwd = Path(request.runtime_path).resolve() if request.runtime_path else self.cwd
         message_file = write_engine_message(cwd, request)
         using_default_command = self.command is None
-        command = self.command or build_default_engine_command(profile, message_file)
+        if using_default_command:
+            command = (
+                build_git_engine_command(profile, message_file)
+                if self.use_git
+                else build_default_engine_command(profile, message_file)
+            )
+        else:
+            command = self.command
         if _is_recursive_platform_command(tuple(command)):
             using_default_command = True
             command = build_default_engine_command(profile, message_file)
@@ -318,11 +353,13 @@ def create_engine_provider(
     provider_mode: str,
     command: tuple[str, ...] | None = None,
     cwd: str | Path = ".",
+    *,
+    use_git: bool = False,
 ) -> EngineProvider:
     if provider_mode == "fake":
         return FakeEngineProvider()
     if provider_mode == "subprocess":
-        return SubprocessEngineProvider(command, cwd=cwd)
+        return SubprocessEngineProvider(command, cwd=cwd, use_git=use_git)
     raise ValueError(f"unsupported Space Code provider mode: {provider_mode}")
 
 

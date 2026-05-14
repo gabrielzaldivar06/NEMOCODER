@@ -83,6 +83,66 @@
       "tool_fail_rate": 0.0,
       "trace_events_count": 18,
       "ts": "2026-05-12T04:50:31.405333+00:00"
+    },
+    {
+      "duration_ms": 76582,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 17,
+      "ts": "2026-05-12T20:58:08.393753+00:00"
+    },
+    {
+      "duration_ms": 29324,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 17,
+      "ts": "2026-05-12T20:58:45.064314+00:00"
+    },
+    {
+      "duration_ms": 26769,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 17,
+      "ts": "2026-05-12T20:59:18.092482+00:00"
+    },
+    {
+      "duration_ms": 31439,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 17,
+      "ts": "2026-05-12T21:03:37.357427+00:00"
+    },
+    {
+      "duration_ms": 19467,
+      "tool_fail_rate": 0.125,
+      "trace_events_count": 17,
+      "ts": "2026-05-12T21:20:42.842241+00:00"
+    },
+    {
+      "duration_ms": 6165,
+      "tool_fail_rate": 0.125,
+      "trace_events_count": 17,
+      "ts": "2026-05-13T18:22:08.171469+00:00"
+    },
+    {
+      "duration_ms": 306892,
+      "tool_fail_rate": 0.125,
+      "trace_events_count": 17,
+      "ts": "2026-05-13T18:54:28.289201+00:00"
+    },
+    {
+      "duration_ms": 321542,
+      "tool_fail_rate": 0.125,
+      "trace_events_count": 17,
+      "ts": "2026-05-13T18:59:02.028496+00:00"
+    },
+    {
+      "duration_ms": 141200,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 17,
+      "ts": "2026-05-13T19:11:11.785272+00:00"
+    },
+    {
+      "duration_ms": 114113,
+      "tool_fail_rate": 0.0,
+      "trace_events_count": 17,
+      "ts": "2026-05-13T19:36:10.228607+00:00"
     }
   ],
   "context_window_tokens": 131072,

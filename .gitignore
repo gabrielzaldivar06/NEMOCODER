@@ -5,6 +5,7 @@ __pycache__/
 
 # Runtime and local memory artifacts
 .nemo-runtimes/
+.worktrees/
 .nemo-memory.db
 *.sqlite-shm
 *.sqlite-wal

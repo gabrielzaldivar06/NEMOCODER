@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,12 @@ from nemo_coding_platform.core.task_run import (
 from nemo_coding_platform.core.todo_guard import build_todo_reminder, extract_todos_from_plan
 from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
 from nemo_coding_platform.core.workspace import Workspace
-from nemo_coding_platform.core.worktree_runtime import snapshot_runtime_files, write_runtime_file
+from nemo_coding_platform.core.worktree_runtime import (
+    initialize_git_worktree_runtime,
+    snapshot_runtime_files,
+    worktree_branch_name,
+    write_runtime_file,
+)
 
 
 _CONTEXT_OVERFLOW_MARKERS = (
@@ -247,6 +252,7 @@ def execute_headless_handoff(
     resume_validation_state: tuple[str, ...] = (),
     resume_mode: str = "phase_boundary",
     resume_snapshot_runtime_path: str | None = None,
+    use_git_worktree: bool = False,
 ) -> HeadlessRunResult:
     validate_handoff_request(request)
     plan = build_handoff_plan(request)
@@ -262,6 +268,12 @@ def execute_headless_handoff(
     )
     agent_runtime = AgentRuntime.create(task.id, run_id, ".nemo-runtimes")
     runtime = agent_runtime.worktree
+    if use_git_worktree:
+        repo_root = Path(request.repo_path).resolve()
+        wt_path = repo_root / ".worktrees" / runtime.runtime_id
+        runtime = replace(runtime, worktree_path=wt_path)
+        branch = worktree_branch_name(runtime.runtime_id)
+        initialize_git_worktree_runtime(runtime, repo_root, branch)
     execution_snapshots: dict[str, Any] = {}
 
     def _capture_execution_snapshot(
@@ -372,7 +384,9 @@ def execute_headless_handoff(
         ),
     )
 
-    provider = mutation_provider or create_engine_provider(provider_mode, engine_command, cwd=Path("product/nemo_code_runtime"))
+    provider = mutation_provider or create_engine_provider(
+        provider_mode, engine_command, cwd=Path("product/nemo_code_runtime"), use_git=use_git_worktree
+    )
     engine = QualityMutationEngine(Workspace.from_path(runtime.worktree_path))
 
     # --- Permission System (inspired by opencode) ---

@@ -178,13 +178,15 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--image", help="Path to a design reference image (Vision)")
     long_run.add_argument("--prd-text", help="Optional full PRD/spec text persisted separately from the objective summary")
     long_run.add_argument("--spec-mode", choices=("auto", "sdd"), default="auto")
+    long_run.add_argument("--use-git-worktree", action="store_true",
+        help="Isolate task in a real git worktree branch; leaves branch for merge gate review on success")
     long_run.add_argument("--json", action="store_true")
 
     watch = subparsers.add_parser("watch", help="Watch for # ai! comments in the repository and trigger handoffs")
     watch.add_argument("--repo", default=".", help="Repository root to watch")
     watch.add_argument("--provider", default="subprocess", choices=["fake", "subprocess"])
-    watch.add_argument("--model-profile", default="nvidia.agentic.coder-4b")
-    watch.add_argument("--lmstudio-base-url", default="http://localhost:1234/v1")
+    watch.add_argument("--model-profile", default="")
+    watch.add_argument("--lmstudio-base-url", default="http://127.0.0.1:1234/v1")
     show_run = subparsers.add_parser("show-run-json", help="Summarize a persisted headless run JSON file")
     show_run.add_argument("path")
     show_run.add_argument("--json", action="store_true")
@@ -272,6 +274,8 @@ def build_parser() -> argparse.ArgumentParser:
     continue_long.add_argument("--allow-non-mcp", action="store_true", help=argparse.SUPPRESS)
     continue_long.add_argument("--lineage-context", action="append", default=[], help="Existing run JSON to use as autonomy lineage context")
     continue_long.add_argument("--allow-fork", action="store_true", help="Allow continuing a source run that already has a continuation")
+    continue_long.add_argument("--use-git-worktree", action="store_true",
+        help="Isolate continuation task in a real git worktree branch")
     continue_long.add_argument("--json", action="store_true")
     lineage = subparsers.add_parser("long-handoff-lineage", help="Build a lineage summary from long handoff JSON files")
     lineage.add_argument("paths", nargs="+")
@@ -758,6 +762,7 @@ def main(argv: list[str] | None = None) -> int:
             repair_time_limit_seconds=args.repair_time_limit_seconds,
             validation_time_budget_seconds=args.validation_time_budget_seconds,
             validation_escalation_mode=args.validation_escalation_mode,
+            use_git_worktree=args.use_git_worktree,
         )
         score = score_headless_result(result)
         if args.save_json:
@@ -999,6 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
                 repair_time_limit_seconds=args.repair_time_limit_seconds,
                 validation_time_budget_seconds=args.validation_time_budget_seconds,
                 validation_escalation_mode=args.validation_escalation_mode,
+                use_git_worktree=args.use_git_worktree,
             )
         except ValueError as error:
             print(f"error={error}")

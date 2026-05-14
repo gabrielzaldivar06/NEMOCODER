@@ -1,6 +1,6 @@
 # NEMO Product Base
 
-This directory is the active Aider-based fork for the NEMO Desktop Coding Platform.
+This directory is the active Aider-based fork for Space Code.
 
 ## Role
 
