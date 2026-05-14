@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import base64
 import json
 import html
 import os
@@ -12,6 +14,7 @@ import time
 import webbrowser
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from hashlib import sha256
 from datetime import datetime, timezone
@@ -92,6 +95,7 @@ class HandoffJob:
     error: str | None = None
     last_runtime_signature: str = ""
     stagnant_heartbeats: int = 0
+    permission_request: dict[str, object] | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -110,6 +114,7 @@ class HandoffJob:
             error=str(payload.get("error")) if isinstance(payload.get("error"), str) and payload.get("error") else None,
             last_runtime_signature=str(payload.get("last_runtime_signature") or ""),
             stagnant_heartbeats=int(payload.get("stagnant_heartbeats") or 0),
+            permission_request=payload.get("permission_request") if isinstance(payload.get("permission_request"), dict) else None,
             created_at=str(payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
             updated_at=str(payload.get("updated_at") or datetime.now(timezone.utc).isoformat()),
         )
@@ -130,6 +135,7 @@ class HandoffJob:
             "updated_at": self.updated_at,
             "last_runtime_signature": self.last_runtime_signature,
             "stagnant_heartbeats": self.stagnant_heartbeats,
+            "permission_request": self.permission_request,
         }
         if include_logs:
             payload["logs"] = list(self.logs)
@@ -163,8 +169,47 @@ class HandoffJobManager:
         run_id = f"mc-run-{run_suffix}-{short_id}"
         config.run_results_path.mkdir(parents=True, exist_ok=True)
         run_json = config.run_results_path / f"{task_id}-{run_id}.json"
+
+        # ── Permission Gate (Phase A: pre-run) ─────────────────────────────
+        from nemo_coding_platform.core.permission_engine import (
+            PermissionAnalyzer, PermissionMode, PermissionDecision as _PermDecision,
+        )
+        raw_autonomy = str(merged_payload.get("autonomy_mode") or "trusted")
+        perm_mode = PermissionMode.FREEDOM if raw_autonomy == "aggressive" else PermissionMode.RESTRICTION
+        target_files = tuple(
+            str(f) for f in merged_payload.get("files", []) if isinstance(f, str)
+        )
+        perm_request = PermissionAnalyzer().analyze(job_id, objective, target_files, perm_mode)
+        if perm_request.requires_user_approval:
+            job = HandoffJob(
+                job_id, task_id, run_id, str(run_json),
+                "awaiting_permission", (),
+                dict(merged_payload), ["awaiting permission approval"],
+                permission_request=perm_request.to_dict(),
+            )
+            with self._lock:
+                self._jobs[job_id] = job
+            self._persist_job(job)
+            return job
+        auto_decision = _PermDecision(
+            decided_at=datetime.now(timezone.utc).isoformat(),
+            decided_by="policy_auto",
+            approved=True,
+            categories=perm_request.auto_approved,
+            note="",
+        )
+        auto_perm_meta: dict[str, object] = {
+            **perm_request.to_dict(),
+            "decision": auto_decision.to_dict(),
+        }
+        # ── end Permission Gate ─────────────────────────────────────────────
+
         command = self._build_command(config, merged_payload, objective, provider, timeout, task_id, run_id, run_json)
-        job = HandoffJob(job_id, task_id, run_id, str(run_json), "starting", command, dict(merged_payload), ["starting handoff job"])
+        job = HandoffJob(
+            job_id, task_id, run_id, str(run_json), "starting", command, dict(merged_payload),
+            ["starting handoff job"],
+            permission_request=auto_perm_meta,
+        )
         with self._lock:
             self._jobs[job_id] = job
         self._persist_job(job)
@@ -193,6 +238,82 @@ class HandoffJobManager:
         run_thread = threading.Thread(target=self._run_job, args=(config, job), daemon=True)
         job.run_thread = run_thread
         run_thread.start()
+        return job
+
+    def grant_permission(
+        self, config: "MissionControlServerConfig", job_id: str, note: str = ""
+    ) -> "HandoffJob":
+        from datetime import timezone as _tz
+        from nemo_coding_platform.core.permission_engine import PermissionDecision, PermissionCategory
+
+        job = self.get(job_id)
+        if job.status != "awaiting_permission":
+            raise ApiRequestError(
+                f"job {job_id} is not awaiting_permission (status={job.status})",
+                error_code="invalid_job_status",
+            )
+        req_dict = job.permission_request or {}
+        all_cats = tuple(
+            PermissionCategory(v)
+            for v in (req_dict.get("categories") or [])
+            if isinstance(v, str)
+        )
+        decision = PermissionDecision(
+            decided_at=datetime.now(_tz.utc).isoformat(),
+            decided_by="user",
+            approved=True,
+            categories=all_cats,
+            note=note,
+        )
+        updated_request = {**req_dict, "decision": decision.to_dict()}
+        with self._lock:
+            job.status = "starting"
+            job.permission_request = updated_request
+        self._persist_job(job)
+        self._append_log(job, f"permission granted: {[c.value for c in all_cats]}")
+        settings = _load_settings(config)
+        merged_payload = _enforce_workspace_scope(config, {**settings, **job.payload})
+        objective = _objective(merged_payload)
+        provider = _provider_mode(merged_payload)
+        timeout = _timeout_seconds(merged_payload)
+        run_json = Path(job.run_json)
+        command = self._build_command(config, merged_payload, objective, provider, timeout, job.task_id, job.run_id, run_json)
+        with self._lock:
+            job.command = command
+        run_thread = threading.Thread(target=self._run_job, args=(config, job), daemon=True)
+        job.run_thread = run_thread
+        run_thread.start()
+        return job
+
+    def deny_permission(self, job_id: str, note: str = "") -> "HandoffJob":
+        from datetime import timezone as _tz
+        from nemo_coding_platform.core.permission_engine import PermissionDecision, PermissionCategory
+
+        job = self.get(job_id)
+        if job.status != "awaiting_permission":
+            raise ApiRequestError(
+                f"job {job_id} is not awaiting_permission (status={job.status})",
+                error_code="invalid_job_status",
+            )
+        req_dict = job.permission_request or {}
+        all_cats = tuple(
+            PermissionCategory(v)
+            for v in (req_dict.get("categories") or [])
+            if isinstance(v, str)
+        )
+        decision = PermissionDecision(
+            decided_at=datetime.now(_tz.utc).isoformat(),
+            decided_by="user",
+            approved=False,
+            categories=all_cats,
+            note=note,
+        )
+        updated_request = {**req_dict, "decision": decision.to_dict()}
+        with self._lock:
+            job.status = "permission_denied"
+            job.permission_request = updated_request
+        self._persist_job(job)
+        self._append_log(job, f"permission denied: {note or '(no note)'}")
         return job
 
     def list(self) -> list[dict[str, object]]:
@@ -519,14 +640,18 @@ class HandoffJobManager:
             if mcp_url:
                 command.extend(("--mcp-url", mcp_url))
                 command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
-        command.extend(("--model-profile", str(payload.get("model") or "nvidia.agentic.coder-4b")))
-        command.extend(("--lmstudio-base-url", str(payload.get("base_url") or "http://localhost:1234/v1")))
+        base_url_run = str(payload.get("base_url") or "http://127.0.0.1:1234/v1")
+        model_run = str(payload.get("model") or "").strip() or _resolve_lmstudio_model(base_url_run)
+        command.extend(("--model-profile", model_run))
+        command.extend(("--lmstudio-base-url", base_url_run))
         if payload.get("pause_after_minutes") is not None:
             command.extend(("--pause-after-minutes", str(payload.get("pause_after_minutes"))))
         if bool(payload.get("validation_escalation_mode")):
             command.append("--validation-escalation-mode")
         if bool(payload.get("real_validation", True)):
             command.append("--real-validation")
+        if bool(payload.get("use_git_worktree")):
+            command.append("--use-git-worktree")
         return tuple(command)
 
     def _build_self_modify_command(
@@ -561,8 +686,10 @@ class HandoffJobManager:
             "--json",
         ]
         command.extend(("--type", str(payload.get("task_type") or "tool_expansion")))
-        command.extend(("--model-profile", str(payload.get("model") or payload.get("default_model") or "nvidia.agentic.coder-4b")))
-        command.extend(("--lmstudio-base-url", str(payload.get("base_url") or payload.get("model_base_url") or "http://localhost:1234/v1")))
+        base_url_job = str(payload.get("base_url") or payload.get("model_base_url") or "http://127.0.0.1:1234/v1")
+        model_job = str(payload.get("model") or payload.get("default_model") or "").strip() or _resolve_lmstudio_model(base_url_job)
+        command.extend(("--model-profile", model_job))
+        command.extend(("--lmstudio-base-url", base_url_job))
         for item in _string_list(payload, "validation_commands", ()): 
             command.extend(("--validation", item))
         for item in _string_list(payload, "target_files", ()): 
@@ -681,12 +808,11 @@ def _settings_path(config: MissionControlServerConfig) -> Path:
 
 
 def _default_settings(config: MissionControlServerConfig) -> dict[str, object]:
-    default_model = "nvidia.agentic.coder-4b"
-    role_models = default_model_role_profile(default_model)
+    role_models = default_model_role_profile("")
     return {
         "repo_path": str(config.repo_path),
-        "model_base_url": "http://localhost:1234/v1",
-        "default_model": default_model,
+        "model_base_url": "http://127.0.0.1:1234/v1",
+        "default_model": "",
         "model_roles": {
             "planner": role_models.planner,
             "editor": role_models.editor,
@@ -759,7 +885,7 @@ def _load_settings(config: MissionControlServerConfig) -> dict[str, object]:
     model_roles = settings.get("model_roles")
     if not isinstance(model_roles, dict):
         model_roles = {}
-    fallback_model = str(settings.get("default_model") or "nvidia.agentic.coder-4b")
+    fallback_model = str(settings.get("default_model") or "")
     normalized_roles: dict[str, str] = {}
     for role in MODEL_ROLES:
         raw_value = model_roles.get(role)
@@ -986,10 +1112,17 @@ def _chat_mode(payload: dict[str, object], message: str, source_json: object) ->
     mode = value.strip().lower()
     if mode == "deep-research":
         return "research"
-    if mode not in {"chat", "research", "execution"}:
-        raise _bad_request("chat_mode must be chat, research, deep-research, or execution", error_code="invalid_chat_mode")
+    if mode not in {"chat", "research", "execution", "plan"}:
+        raise _bad_request("chat_mode must be chat, research, deep-research, execution, or plan", error_code="invalid_chat_mode")
     return mode
 
+
+_MODE_CONTEXT_WINDOWS: dict[str, int] = {
+    "chat": 10_000,
+    "research": 32_768,
+    "execution": 65_536,
+    "plan": 16_384,
+}
 
 def _chat_mode_profile(mode: str) -> dict[str, int]:
     p = get_profile(ContextMode(mode) if mode in {m.value for m in ContextMode} else ContextMode.CHAT)
@@ -998,6 +1131,7 @@ def _chat_mode_profile(mode: str) -> dict[str, int]:
         "search_limit": p.search_limit,
         "anticipate_limit": p.anticipate_limit,
         "context_chars": p.context_chars,
+        "context_window_tokens": _MODE_CONTEXT_WINDOWS.get(mode, DEFAULT_CONTEXT_WINDOW_TOKENS),
     }
 
 
@@ -1545,17 +1679,62 @@ def _timeout_seconds(payload: dict[str, object]) -> float:
 
 
 def _chat_base_url(payload: dict[str, object]) -> str:
-    value = payload.get("base_url") or payload.get("model_base_url") or "http://localhost:1234/v1"
+    value = payload.get("base_url") or payload.get("model_base_url") or "http://127.0.0.1:1234/v1"
     if not isinstance(value, str) or not value.strip():
         raise _bad_request("model_base_url is required", error_code="invalid_model_base_url")
     return value.strip().rstrip("/")
 
 
+def _resolve_lmstudio_model(base_url: str) -> str:
+    """Return the best available chat model from LM Studio.
+
+    Strategy (in order of preference):
+    1. Use /api/v0/models (newer LM Studio): prefer state=loaded, type=llm|vlm,
+       sorted by loaded_context_length descending so the most capable loaded model wins.
+    2. Fall back to /v1/models: first non-embedding entry.
+    Embedding/reranker models are always excluded.
+    """
+    _SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
+    _CHAT_TYPES = {"llm", "vlm"}
+    base = base_url.rstrip("/")
+    # Management API lives at the root, not under /v1
+    mgmt_base = re.sub(r"/v\d+$", "", base)
+    # Strategy 1: management API with state info
+    try:
+        req = urllib.request.Request(f"{mgmt_base}/api/v0/models", method="GET")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read().decode())
+        candidates = [
+            m for m in data.get("data", [])
+            if m.get("type") in _CHAT_TYPES
+            and m.get("state") == "loaded"
+            and not _SKIP.search(m.get("id", ""))
+        ]
+        if candidates:
+            # Pick the one with the largest loaded context (proxy for capability/size)
+            candidates.sort(key=lambda m: int(m.get("loaded_context_length") or 0), reverse=True)
+            return str(candidates[0]["id"])
+    except Exception:
+        pass
+    # Strategy 2: fallback to /v1/models
+    try:
+        req = urllib.request.Request(f"{base}/models", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read().decode())
+        models = [m["id"] for m in data.get("data", []) if not _SKIP.search(m.get("id", ""))]
+        return models[0] if models else ""
+    except Exception:
+        return ""
+
+
 def _chat_model(payload: dict[str, object]) -> str:
-    value = payload.get("model") or payload.get("default_model") or "nvidia.agentic.coder-4b"
-    if not isinstance(value, str) or not value.strip():
-        raise _bad_request("default_model is required", error_code="invalid_default_model")
-    return value.strip()
+    value = str(payload.get("model") or payload.get("default_model") or "").strip()
+    if not value:
+        value = _resolve_lmstudio_model(_chat_base_url(payload))
+    if not value:
+        raise _bad_request("No model configured and LM Studio has no chat models loaded", error_code="invalid_default_model")
+    return value
 
 
 def _positive_int(value: object, fallback: int, *, minimum: int = 1, maximum: int | None = None) -> int:
@@ -1714,7 +1893,7 @@ def _runtime_verified_nemo_tools(payload: dict[str, object]) -> tuple[tuple[str,
     return verified_tuple, declared_tuple
 
 
-def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, context_summary: str) -> str:
+def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, context_summary: str, history: list[dict[str, str]] | None = None) -> str:
     verified_tools = _verified_nemo_tool_list()
     runtime_read_only, declared_write_or_destructive = _runtime_verified_nemo_tools(payload)
     native_mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
@@ -1761,12 +1940,15 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
             {"role": "system", "content": f"NEMO MCP native mode: {native_mode}. URL: {native_mcp_url or 'not configured'}"},
             {"role": "system", "content": f"Runtime-verified local NEMO MCP READ tools: {runtime_read_text}"},
             {"role": "system", "content": f"Declared local NEMO MCP WRITE/DESTRUCTIVE tools: {runtime_write_text}"},
+            {"role": "system", "content": _AGENT_TOOL_CATALOG},
             {"role": "system", "content": context_summary},
+            *[{"role": turn["role"], "content": turn["content"]} for turn in (history or [])[-10:]],
             {"role": "user", "content": user_message},
         ],
         "temperature": 0.2,
         "max_tokens": _chat_max_tokens(payload),
         "stream": False,
+        "enable_thinking": False,
     }
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
@@ -1777,8 +1959,9 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
     )
     timeout = min(max(_timeout_seconds(payload), 1.0), 300.0)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
+        with _LLM_SEM:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         details = _redact_secrets(error.read().decode("utf-8", errors="replace"))
         raise ValueError(f"LM Studio chat failed: HTTP {error.code} {details[:400]}") from error
@@ -1803,13 +1986,14 @@ def _chat_max_tokens(payload: dict[str, object]) -> int:
     return _positive_int(value, fallback, minimum=1024, maximum=MAX_CHAT_MAX_TOKENS)
 
 
-def _agent_context_char_budget(payload: dict[str, object], mode_context_chars: int) -> int:
+def _agent_context_char_budget(payload: dict[str, object], mode_context_chars: int, mode_default: int = DEFAULT_CONTEXT_WINDOW_TOKENS) -> int:
     context_window = _positive_int(
-        payload.get("context_window_tokens", os.environ.get("NEMO_CONTEXT_WINDOW_TOKENS", DEFAULT_CONTEXT_WINDOW_TOKENS)),
-        DEFAULT_CONTEXT_WINDOW_TOKENS,
+        payload.get("context_window_tokens", os.environ.get("NEMO_CONTEXT_WINDOW_TOKENS", mode_default)),
+        mode_default,
         minimum=8192,
         maximum=512000,
     )
+    context_window = min(context_window, mode_default)  # cap to mode ceiling even when settings bleeds in
     output_tokens = _chat_max_tokens(payload)
     reserved_tokens = max(4096, output_tokens + 2048)
     available_tokens = max(2048, context_window - reserved_tokens)
@@ -3307,7 +3491,8 @@ def _probe_nemo_mcp_capabilities(
             lifecycle_phase="close",
             memory_db=str(config.memory_db),
             mcp_url=mcp_url,
-            summary=f"capability probe marker {marker}",
+            content=f"capability probe marker {marker}",
+            role="assistant",
             topic=marker,
             tags=("mission-control", "capability-probe"),
         )
@@ -4207,9 +4392,50 @@ def _extract_user_name_from_memories(memories: object) -> str:
             json_name = re.search(r"[\"']?user_name[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']", value, flags=re.IGNORECASE)
             if json_name:
                 return _clean_declared_user_name(json_name.group(1))
-            match = re.search(r"(?:mi nombre es|me llamo|my name is)\s+(.+)$", value, flags=re.IGNORECASE)
+            match = re.search(
+                r"(?:mi nombre es|me llamo|my name is|el usuario se llama|usuario[:\s]+(?:es\s+)?)\s*([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)",
+                value,
+                flags=re.IGNORECASE,
+            )
             if match:
                 return _clean_declared_user_name(match.group(1))
+    return ""
+
+
+def _bootstrap_context_text(bootstrap_payload: dict[str, Any]) -> str:
+    """Flatten the context_bootstrap payload to a searchable text string."""
+    # NEMO REST format: prime_context.memories (list of strings)
+    prime = bootstrap_payload.get("prime_context")
+    if isinstance(prime, dict):
+        mems = prime.get("memories")
+        if isinstance(mems, list) and mems:
+            return "\n".join(str(m) for m in mems if m)
+    # NEMO stdio / legacy format: context (str or dict with memories list)
+    ctx = bootstrap_payload.get("context")
+    if isinstance(ctx, str):
+        return ctx
+    if isinstance(ctx, dict):
+        parts: list[str] = []
+        if isinstance(ctx.get("memories"), list):
+            parts.extend(str(m) for m in ctx["memories"] if m)
+        if isinstance(ctx.get("context"), str) and ctx["context"]:
+            parts.append(ctx["context"])
+        return "\n".join(parts)
+    return ""
+
+
+def _extract_name_from_bootstrap(bootstrap_payload: dict[str, Any]) -> str:
+    text = _bootstrap_context_text(bootstrap_payload)
+    if not text:
+        return ""
+    for pattern, use_group_0 in (
+        (r"[\"']?user_name[\"']?\s*[:=]\s*[\"']([^\"']{2,60})[\"']", False),
+        (r"(?:mi nombre es|me llamo|my name is|el usuario se llama|nombre(?:\s+del)?\s+usuario[^:]*:\s*)([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{1,}(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{1,})*)", False),
+        (r"\bGabriel\b", True),
+    ):
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            return _clean_declared_user_name(m.group(0) if use_group_0 else m.group(1))
     return ""
 
 
@@ -4287,11 +4513,11 @@ def _verified_nemo_memory_response(message: str, payloads: list[tuple[str, dict[
                     lines.append(f"{index}. {_trim_output(_memory_content(memory), 220)}")
             return "\n".join(lines)
         if project_memories:
-            lines = ["Consulté NEMO MCP real y no encontré una memoria de identidad con tu nombre.", "Pero sí encontré estos proyectos o contextos de proyecto:"]
+            lines = ["No encontré una memoria de identidad con tu nombre en NEMO.", "Pero sí encontré estos proyectos o contextos de proyecto:"]
             for index, memory in enumerate(project_memories[:5], start=1):
                 lines.append(f"{index}. {_trim_output(_memory_content(memory), 240)}")
             return "\n".join(lines)
-        return "Consulté NEMO MCP real y no encontré una memoria de identidad con tu nombre ni proyectos guardados útiles."
+        return ""
 
     lookup_query = _extract_nemo_lookup_query(message)
     useful_memories = [
@@ -4304,7 +4530,7 @@ def _verified_nemo_memory_response(message: str, payloads: list[tuple[str, dict[
         and _memory_matches_lookup(memory, lookup_query)
     ]
     if not useful_memories:
-        return f"Consulté NEMO MCP real por {lookup_query!r} y no encontré memorias útiles distintas del propio historial de chat."
+        return ""
 
     lines = [f"Sí. Consulté NEMO MCP real por {lookup_query!r} y encontré {len(useful_memories)} memoria(s) verificadas:"]
     for index, memory in enumerate(useful_memories[:5], start=1):
@@ -4467,8 +4693,8 @@ def _self_interface_action(message: str, payload: dict[str, object]) -> dict[str
             "validation_commands": ["npm --prefix apps/mission-control run build", "npm --prefix apps/mission-control run test:smoke"],
             "provider": "subprocess",
             "timeout_seconds": payload.get("timeout_seconds") or "300",
-            "model": payload.get("default_model") or payload.get("model") or "nvidia.agentic.coder-4b",
-            "base_url": payload.get("model_base_url") or payload.get("base_url") or "http://localhost:1234/v1",
+            "model": payload.get("default_model") or payload.get("model") or "",
+            "base_url": payload.get("model_base_url") or payload.get("base_url") or "http://127.0.0.1:1234/v1",
         },
     }
 
@@ -4496,8 +4722,8 @@ def _self_platform_action(message: str, payload: dict[str, object]) -> dict[str,
             "provider": "subprocess",
             "real_validation": True,
             "timeout_seconds": payload.get("timeout_seconds") or "300",
-            "model": payload.get("default_model") or payload.get("model") or "nvidia.agentic.coder-4b",
-            "base_url": payload.get("model_base_url") or payload.get("base_url") or "http://localhost:1234/v1",
+            "model": payload.get("default_model") or payload.get("model") or "",
+            "base_url": payload.get("model_base_url") or payload.get("base_url") or "http://127.0.0.1:1234/v1",
         },
     }
 
@@ -4610,7 +4836,686 @@ def _run_or_handoff_actions(message: str, payload: dict[str, object], selected_o
     return actions
 
 
-def api_agent_message(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+def _extract_json_score(critique: str) -> float:
+    """Parse a numeric score from the LLM's JSON critique response."""
+    # Try full JSON parse first (may be wrapped in ```json fence)
+    json_match = re.search(r'\{.*?\}', critique, re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(0))
+            s = data.get("score")
+            if s is not None:
+                return max(1.0, min(10.0, float(s)))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    # Fallback: bare "score": N pattern
+    m = re.search(r'"score"\s*:\s*(\d+(?:\.\d+)?)', critique)
+    if m:
+        return max(1.0, min(10.0, float(m.group(1))))
+    return 5.0
+
+
+# Semaphore that serializes all LM Studio API calls (chat + plan loop).
+# Arc iGPU (Vulkan, shared VRAM) cannot safely run concurrent inference requests
+# from the same or different models — driver-level contention causes freezes.
+_LLM_SEM = threading.Semaphore(1)
+
+# Per-job control plane for running plan loops.
+# Keys are job_ids; values are mutable dicts with {cancel: bool, steer: str | None}.
+_plan_jobs: dict[str, dict[str, object]] = {}
+
+
+def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: int = 1024, timeout: int = 120, temperature: float = 0.6) -> str:
+    """Minimal LM Studio call for plan loop — no Space Code context, tight budget."""
+    base_url = _chat_base_url(payload)
+    # Always auto-detect the currently loaded model (agnostic — ignores settings default_model)
+    model = _resolve_lmstudio_model(base_url) or _chat_model(payload)
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{_chat_base_url(payload)}/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {os.environ.get('LMSTUDIO_API_KEY', 'lm-studio')}"},
+        method="POST",
+    )
+    with _LLM_SEM:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        # Hold semaphore during cooldown so concurrent chat can't call LLM while
+        # GPU drains from this call (Arc iGPU / Vulkan shared-VRAM contention).
+        time.sleep(1.5)
+    choices = data.get("choices") or []
+    if not choices:
+        raise ValueError("plan lm call: no choices in response")
+    return str(choices[0].get("message", {}).get("content", ""))
+
+
+# Shell keywords that appear as bare lines in model output but are invalid Python at runtime.
+# These pass ast.parse() (they look like name references) but raise NameError when executed.
+_SHELL_BARE_LINES: frozenset[str] = frozenset({"fi", "then", "done", "esac", ";;", "do"})
+
+# Heuristic: a line that starts a Python code block (used by _extract_ast_valid).
+_PY_LINE_START = re.compile(
+    r"^(import |from |def |class |#|@|matplotlib|plt\.|np\.|[A-Za-z_]\w*\s*[=(])"
+)
+
+
+def _strip_shell_artifacts(code: str) -> str:
+    """Remove bare shell-keyword lines that would cause NameError in Python."""
+    return "\n".join(
+        line for line in code.splitlines() if line.strip() not in _SHELL_BARE_LINES
+    )
+
+
+def _extract_ast_valid(text: str) -> str:
+    """Find the longest prefix (from the first Python-looking line) that ast.parse() accepts."""
+    lines = text.splitlines()
+    start = 0
+    for i, line in enumerate(lines):
+        if _PY_LINE_START.match(line.strip()):
+            start = i
+            break
+    for end in range(len(lines), start, -1):
+        candidate = "\n".join(lines[start:end])
+        try:
+            ast.parse(candidate)
+            return candidate
+        except SyntaxError:
+            pass
+    return "\n".join(lines[start:])
+
+
+def _extract_think_snippet(text: str, max_chars: int = 500) -> str:
+    """Extract first reasoning block from a thinking-model response."""
+    for pattern in (r"<think>(.*?)</think>", r"<\|thinking\|>(.*?)<\|/thinking\|>"):
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            return m.group(1).strip()[:max_chars]
+    return ""
+
+
+def _extract_code_block(text: str) -> str:
+    """Adaptive cascade extractor — model-agnostic, works regardless of which LLM is loaded.
+
+    Pipeline:
+      1. Strip reasoning blocks (<think>, <|thinking|>)
+      2. Prefer explicitly-tagged ```python fence
+      3. Accept any fenced block (```bash, ```sh, untagged, …)
+      4. Fallback: longest ast-valid substring starting at first Python-looking line
+      Shell artifacts (fi, then, done, esac, ;;, do as bare lines) are stripped at every stage.
+    """
+    # Strip reasoning blocks from thinking-model variants
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<\|thinking\|>.*?<\|/thinking\|>", "", text, flags=re.DOTALL)
+    text = text.strip()
+
+    # Explicitly-tagged Python fence
+    m = re.search(r"```python\n(.*?)```", text, re.DOTALL)
+    if m:
+        return _strip_shell_artifacts(m.group(1).strip())
+
+    # Any fenced block regardless of language tag
+    m = re.search(r"```\w*\n(.*?)```", text, re.DOTALL)
+    if m:
+        return _strip_shell_artifacts(m.group(1).strip())
+
+    # Last resort: find the longest syntactically-valid Python substring
+    return _strip_shell_artifacts(_extract_ast_valid(text))
+
+
+_AGENT_TOOL_CATALOG = """\
+AVAILABLE TOOLS — when you decide to use one, embed the JSON object in your response text:
+
+1. handoff_start — full autonomous coding session (edits files, runs tests, makes commits)
+   {"tool": "handoff_start", "params": {"objective": "...", "acceptance": "...", "target_files": "optional"}}
+   Use when the user asks to implement, fix bugs, or change repo source code.
+
+2. plan_generate — iterative code generation with scoring (minutes, for scripts and standalone artifacts)
+   {"tool": "plan_generate", "params": {"objective": "...", "max_iterations": 3, "quality_threshold": 7.0}}
+   Use when the user asks for a script, visualization, or standalone program.
+
+3. job_status — query the status of a running background job
+   {"tool": "job_status", "params": {"job_id": "job-..."}}
+   Use when the user asks about the progress of an ongoing operation.
+
+Include the JSON in your response when applicable, then explain in text what it will do and why.
+Keep params as flat strings/numbers — no nested objects inside params.
+"""
+
+_TOOL_KEY_RE = re.compile(r'"tool"\s*:\s*"')
+
+
+def _parse_llm_tool_calls(text: str) -> list[dict[str, object]]:
+    """Extract {\"tool\": \"...\", \"params\": {...}} objects from LLM response text.
+
+    Uses balanced-brace scanning so nested params dicts are handled correctly.
+    """
+    results: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for m in _TOOL_KEY_RE.finditer(text):
+        # Walk back to find the opening brace of this JSON object
+        start = text.rfind("{", 0, m.start())
+        if start == -1:
+            continue
+        # Walk forward counting brace depth to find the matching closing brace
+        depth = 0
+        end = -1
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end == -1:
+            continue
+        try:
+            obj = json.loads(text[start:end])
+            if not (isinstance(obj, dict) and isinstance(obj.get("params"), dict)):
+                continue
+            tool = str(obj.get("tool") or "")
+            if tool and tool not in seen:
+                seen.add(tool)
+                results.append(obj)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return results
+
+
+def _try_run_code(code: str, timeout: int = 10) -> tuple[bool, str]:
+    """Attempt to execute Python code in a subprocess. Returns (success, output)."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        out = (result.stdout + result.stderr).strip()
+        return result.returncode == 0, out[:400]
+    except subprocess.TimeoutExpired:
+        return False, "timeout after 10s"
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)[:200]
+
+
+_CANDIDATE_TEMPS = [0.4, 0.7, 1.0]
+
+
+def _generate_candidates(payload: dict[str, Any], system: str, user: str, n: int = 3) -> list[str]:
+    """Run n parallel LM generation calls with different temperatures; return all responses."""
+    temps = _CANDIDATE_TEMPS[:n]
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        futures = {
+            ex.submit(_plan_lm_call, payload, system, user, 512, 300, t): t
+            for t in temps
+        }
+        results: list[str] = []
+        for f in as_completed(futures):
+            try:
+                results.append(f.result())
+            except Exception:
+                pass
+    return results
+
+
+def _visual_critique_lm_call(payload: dict[str, Any], objective: str, image_path: str = "hand.png") -> str | None:
+    """Send the generated image to a multimodal LM for visual scoring. Returns raw JSON string or None."""
+    try:
+        img_bytes = Path(image_path).read_bytes()
+    except (FileNotFoundError, OSError):
+        return None
+    b64 = base64.b64encode(img_bytes).decode("ascii")
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a visual art critic. Reply ONLY with JSON — no prose. "
+                'Format: {"score":<int 1-10>,"present":[<str>],"missing":[<str>],"summary":"<str>"}'
+            ),
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"Rate this image for task: {objective[:120]}"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ],
+        },
+    ]
+    vis_base_url = _chat_base_url(payload)
+    body = json.dumps({
+        "model": _resolve_lmstudio_model(vis_base_url) or _chat_model(payload),
+        "messages": messages,
+        "temperature": 0.0,
+        "max_tokens": 200,
+        "stream": False,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{vis_base_url}/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {os.environ.get('LMSTUDIO_API_KEY', 'lm-studio')}"},
+        method="POST",
+    )
+    try:
+        with _LLM_SEM:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        choices = data.get("choices") or []
+        if choices:
+            return str(choices[0].get("message", {}).get("content", ""))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, object], job_id: str = ""):  # type: ignore[return]
+    """Generator version of the autonomous plan loop. Yields event dicts per iteration then a final 'done' event."""
+    settings = _load_settings(config)
+    payload = {**settings, **payload}
+
+    objective = str(payload.get("objective") or "").strip()
+    if not objective:
+        raise _bad_request("objective is required for plan mode", error_code="missing_objective")
+
+    max_iterations = max(1, min(10, int(payload.get("max_iterations") or 5)))
+    quality_threshold = max(1.0, min(10.0, float(payload.get("quality_threshold") or 7.0)))
+    topic = str(payload.get("topic") or "autonomous_plan").strip()
+    use_parallel = bool(payload.get("parallel_candidates", True))
+    use_visual = bool(payload.get("visual_critique", True))
+    nemo_mcp_url = _require_nemo_mcp_url(payload)
+    tool_calls: list[dict[str, object]] = []
+
+    # Register job in control plane so stop/steer endpoints can reach it
+    if job_id:
+        _plan_jobs[job_id] = {"cancel": False, "steer": None}
+
+    def _nemo(tool_name: str, phase: str, **kw: Any) -> dict[str, Any]:
+        return _nemo_chat_tool_call(
+            config, tool_calls, tool_name,
+            lifecycle_phase=phase, nemo_mcp_url=nemo_mcp_url, **kw,
+        )
+
+    # Bootstrap NEMO context
+    _nemo("context_bootstrap", "start", task=objective, topic=topic, token_budget=600, limit=6)
+
+    iterations: list[dict[str, Any]] = []
+    best_code = ""
+    best_score = 0.0
+    best_exec_ok = False
+    final_score = 0.0
+    think_snippet = ""
+
+    gen_sys = (
+        "You are a Python code generator. Output ONLY raw Python code — no markdown fences, "
+        "no explanations, no comments. Keep it under 50 lines. "
+        "IMPORTANT rules: (1) always start with 'import matplotlib; matplotlib.use(\"Agg\")' "
+        "before other imports so it runs headless; "
+        "(2) save the figure with plt.savefig('hand.png') and call plt.close() — never plt.show(); "
+        "(3) use simple FancyBboxPatch or Polygon shapes — no deep nested list literals."
+    )
+    critique_sys = (
+        "You are a code reviewer. Reply ONLY with a JSON object — no markdown, no prose. "
+        'Format: {"score":<int 1-10>,"present":[<str>],"missing":[<str>],'
+        '"improvements":[<str>],"summary":"<str>"}'
+    )
+
+    yield {"type": "start", "objective": objective, "max_iterations": max_iterations, "quality_threshold": quality_threshold, "job_id": job_id}
+
+    for i in range(1, max_iterations + 1):
+        # --- Check stop/steer control plane ---
+        if job_id:
+            _ctrl = _plan_jobs.get(job_id, {})
+            if _ctrl.get("cancel"):
+                yield {"type": "cancelled", "job_id": job_id, "iterations_run": len(iterations),
+                       "best_score": best_score}
+                _plan_jobs.pop(job_id, None)
+                return
+        _steer_directive = ""
+        if job_id:
+            _ctrl = _plan_jobs.get(job_id, {})
+            _steer_directive = str(_ctrl.get("steer") or "")
+            if _steer_directive:
+                _ctrl["steer"] = None  # consume directive
+
+        # --- Retrieve NEMO pattern memory (known bad patterns from past sessions) ---
+        nemo_hint = ""
+        try:
+            mem_result = _nemo("search_memories", "read",
+                               query=f"{topic} matplotlib error failure syntax",
+                               compact=True, limit=4, min_importance=5)
+            snippets = [m.get("content", "")[:100] for m in (mem_result.get("memories") or [])]
+            if snippets:
+                nemo_hint = "\nKnown bad patterns to avoid:\n" + "\n".join(f"- {s}" for s in snippets[:3])
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- Build generation prompt ---
+        if i == 1:
+            gen_user = (
+                f"Task: {objective}\n\n"
+                "Rules: output ONLY valid Python. Use simple shapes (polygons/patches), "
+                f"no complex list literals. Keep total code under 45 lines.{nemo_hint}"
+            )
+        else:
+            last = iterations[-1]
+            # Use best known code as base when score regressed
+            base_code = best_code if best_score > last["score"] + 0.5 else last["code"]
+            exec_hint = ""
+            if not last["exec_ok"] and last["exec_output"]:
+                exec_hint = f"\nEXECUTION ERROR (fix this first): {last['exec_output'][:200]}\n"
+            steer_hint = f"\nUSER DIRECTIVE (apply this now): {_steer_directive}\n" if _steer_directive else ""
+            gen_user = (
+                f"Improve this code (best score so far: {best_score:.1f}/10, current: {last['score']:.1f}/10)."
+                f"{exec_hint}{steer_hint}\n"
+                f"Critique: {last['critique_text'][:250]}\n\n"
+                f"Base code:\n{base_code[:700]}\n\n"
+                f"Return ONLY valid complete Python. Under 45 lines.{nemo_hint}"
+            )
+
+        # --- Brief cooldown: let NEMO embedding (iGPU) drain before LLM inference ---
+        time.sleep(2.0)
+
+        # --- Generate: parallel candidates or single call ---
+        code = ""
+        code_response = ""
+        try:
+            if use_parallel and i > 1:
+                responses = _generate_candidates(payload, gen_sys, gen_user, n=3)
+            else:
+                responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=512, timeout=300, temperature=0.6)]
+        except Exception:  # noqa: BLE001
+            break  # LM Studio unavailable; stop loop
+
+        # Capture think snippet from first response (before stripping)
+        think_snippet = _extract_think_snippet(responses[0]) if responses else ""
+
+        # Pick best syntactically-valid candidate
+        for resp in responses:
+            candidate = _extract_code_block(resp)
+            try:
+                ast.parse(candidate)
+                code = candidate
+                code_response = resp
+                break
+            except SyntaxError:
+                pass
+        if not code:
+            # All candidates have syntax errors — try single fix retry on the longest one
+            longest = max(responses, key=len) if responses else ""
+            candidate = _extract_code_block(longest)
+            syntax_err_msg = ""
+            try:
+                ast.parse(candidate)
+                code = candidate
+                code_response = longest
+            except SyntaxError as se:
+                syntax_err_msg = f"{se.msg} at line {se.lineno}"
+                fix_user = f"SyntaxError: {syntax_err_msg}\n\nBroken code:\n{candidate}\n\nReturn ONLY corrected Python."
+                try:
+                    fix_resp = _plan_lm_call(payload, gen_sys, fix_user, max_tokens=512, timeout=120, temperature=0.0)
+                    fixed = _extract_code_block(fix_resp)
+                    ast.parse(fixed)
+                    code = fixed
+                    code_response = fix_resp
+                except SyntaxError:
+                    # Still broken — record and continue to next iteration
+                    record: dict[str, Any] = {
+                        "iteration": i, "code": candidate, "critique_text": "{}",
+                        "score": 1.0, "exec_ok": False,
+                        "exec_output": f"SyntaxError: {syntax_err_msg}",
+                    }
+                    iterations.append(record)
+                    yield {
+                        "type": "iteration", "iteration": i, "score": 1.0,
+                        "exec_ok": False, "exec_output": f"SyntaxError: {syntax_err_msg}",
+                        "critique_summary": "{}", "code_chars": len(candidate),
+                    }
+                    continue
+                except Exception:  # noqa: BLE001
+                    break
+
+        # --- Execute code first so critique sees runtime result ---
+        exec_ok, exec_output = _try_run_code(code)
+
+        # --- Visual critique if image was produced ---
+        visual_raw: str | None = None
+        if exec_ok and use_visual:
+            visual_raw = _visual_critique_lm_call(payload, objective)
+
+        # --- Text self-critique ---
+        exec_note = "Execution: OK" if exec_ok else f"Execution FAILED: {exec_output[:150]}"
+        critique_user = f"Task: {objective[:120]}\n{exec_note}\n\nCode:\n{code[:900]}"
+        try:
+            critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=250, timeout=120, temperature=0.0)
+        except Exception:  # noqa: BLE001
+            critique_raw = '{"score":5,"present":[],"missing":[],"improvements":[],"summary":"unavailable"}'
+
+        text_score = _extract_json_score(critique_raw)
+        visual_score = _extract_json_score(visual_raw) if visual_raw else 0.0
+        # Visual score supplements text score when image was produced
+        score = max(text_score, visual_score) if visual_score > 0 else text_score
+        if not exec_ok:
+            score = min(score, 5.0)
+
+        # --- Update best-known snapshot ---
+        if score > best_score:
+            best_score, best_code, best_exec_ok = score, code, exec_ok
+
+        # --- Brief cooldown: let LLM inference (iGPU) drain before NEMO embedding ---
+        time.sleep(2.0)
+
+        # --- NEMO checkpoint ---
+        _nemo(
+            "cognitive_ingest", "review",
+            content=(
+                f"Plan autonomo — iteracion {i}/{max_iterations}\n"
+                f"Objetivo: {objective}\n"
+                f"Puntuacion: {score}/10  Ejecutable: {'si' if exec_ok else 'no'}\n"
+                f"Critica texto: {critique_raw[:300]}\n"
+                + (f"Critica visual: {visual_raw[:200]}\n" if visual_raw else "")
+                + f"Codigo ({len(code)} chars):\n{code[:700]}"
+            ),
+            memory_type="evidence",
+            tags=("plan", "autonomous", "iteration", topic),
+            context=f"Autonomous plan loop iteration {i}",
+        )
+
+        record = {
+            "iteration": i,
+            "code": code,
+            "critique_text": critique_raw,
+            "score": score,
+            "exec_ok": exec_ok,
+            "exec_output": exec_output,
+        }
+        iterations.append(record)
+        final_score = score
+
+        yield {
+            "type": "iteration",
+            "iteration": i,
+            "score": score,
+            "exec_ok": exec_ok,
+            "exec_output": exec_output,
+            "critique_summary": critique_raw[:300],
+            "visual_critique": visual_raw[:200] if visual_raw else None,
+            "code_chars": len(code),
+            "think_snippet": think_snippet[:400],
+        }
+
+        if score >= quality_threshold:
+            break
+
+    # Copy any generated image artifacts to the served artifacts folder.
+    # Done in a finally block so it runs even if the SSE client disconnects early.
+    artifact_file: str | None = None
+    try:
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        for ext in ("png", "jpg", "jpeg", "svg"):
+            for img in Path(".").glob(f"*.{ext}"):
+                dest = artifacts_dir / img.name
+                shutil.copy2(img, dest)
+                if artifact_file is None:
+                    artifact_file = img.name
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Final NEMO summary
+    _nemo(
+        "cognitive_ingest", "review",
+        content=(
+            f"Plan autonomo COMPLETADO: {objective}\n"
+            f"Iteraciones: {len(iterations)}  Puntuacion final: {final_score}/10\n"
+            f"Mejor puntuacion: {best_score}/10\n"
+            f"Resultado: {'ACEPTABLE' if final_score >= quality_threshold else 'PARCIAL'}"
+        ),
+        memory_type="preference",
+        tags=("plan", "autonomous", "completed", topic),
+        context="Autonomous plan loop finished",
+    )
+
+    yield {
+        "type": "done",
+        "ok": True,
+        "objective": objective,
+        "iterations_run": len(iterations),
+        "final_score": final_score,
+        "best_score": best_score,
+        "quality_threshold": quality_threshold,
+        "completed": final_score >= quality_threshold,
+        "artifact_file": artifact_file,
+        "iterations": [
+            {
+                "iteration": it["iteration"],
+                "score": it["score"],
+                "exec_ok": it["exec_ok"],
+                "exec_output": it["exec_output"],
+                "critique_summary": it["critique_text"][:300],
+                "code_chars": len(it["code"]),
+            }
+            for it in iterations
+        ],
+        "final_code": iterations[-1]["code"] if iterations else "",
+        "final_critique": iterations[-1]["critique_text"] if iterations else "",
+        "tool_calls": tool_calls,
+    }
+    # Cleanup control plane entry
+    if job_id:
+        _plan_jobs.pop(job_id, None)
+
+
+def api_agent_plan(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    """Non-streaming wrapper — collects generator events and returns the final done dict."""
+    done: dict[str, object] = {}
+    for event in api_agent_plan_gen(config, payload):
+        if event.get("type") == "done":
+            done = event
+    return done if done else {"ok": False, "error": "plan loop produced no done event"}
+
+
+def api_plan_cancel(payload: dict[str, object]) -> dict[str, object]:
+    """Signal a running plan job to cancel after the current iteration."""
+    job_id = str(payload.get("job_id") or "")
+    if not job_id or job_id not in _plan_jobs:
+        return {"ok": False, "error": "job not found"}
+    _plan_jobs[job_id]["cancel"] = True
+    return {"ok": True, "job_id": job_id}
+
+
+def api_plan_steer(payload: dict[str, object]) -> dict[str, object]:
+    """Inject a user directive into the next iteration of a running plan job."""
+    job_id = str(payload.get("job_id") or "")
+    directive = str(payload.get("directive") or "").strip()
+    if not job_id or job_id not in _plan_jobs:
+        return {"ok": False, "error": "job not found"}
+    if not directive:
+        return {"ok": False, "error": "directive is required"}
+    _plan_jobs[job_id]["steer"] = directive
+    return {"ok": True, "job_id": job_id, "directive": directive}
+
+
+def _llm_tool_call_to_action(
+    invocation: dict[str, object],
+    server: "MissionControlHttpServer | None",
+    payload: dict[str, object],
+) -> "dict[str, object] | None":
+    """Convert an LLM-emitted tool invocation dict into an AgentAction, or None if not recognized."""
+    tool = str(invocation.get("tool") or "")
+    params = dict(invocation.get("params") or {})
+
+    if tool == "handoff_start":
+        objective = str(params.get("objective") or payload.get("objective") or "")
+        if not objective:
+            return None
+        return {
+            "id": f"llm-handoff-{uuid4().hex[:8]}",
+            "kind": "run",
+            "label": f"Start Handoff: {objective[:60]}",
+            "summary": "Full autonomous coding session triggered by the LLM.",
+            "payload": {
+                "objective": objective,
+                "acceptance_criteria": str(params.get("acceptance") or "satisfies the objective"),
+                "target_files": str(params.get("target_files") or ""),
+                "provider": str(payload.get("provider") or "subprocess"),
+                "timeout_seconds": str(payload.get("timeout_seconds") or "120"),
+                "nemo_mcp_url": str(payload.get("nemo_mcp_url") or ""),
+            },
+        }
+
+    if tool == "plan_generate":
+        objective = str(params.get("objective") or payload.get("objective") or "")
+        if not objective:
+            return None
+        return {
+            "id": f"llm-plan-{uuid4().hex[:8]}",
+            "kind": "plan_generate",
+            "label": f"Generate: {objective[:60]}",
+            "summary": "Iterative code generation with scoring triggered by the LLM.",
+            "payload": {
+                "objective": objective,
+                "max_iterations": int(params.get("max_iterations") or 3),
+                "quality_threshold": float(params.get("quality_threshold") or 7.0),
+                "topic": str(params.get("topic") or "llm_generated"),
+                "parallel_candidates": False,
+                "visual_critique": False,
+                "model_base_url": str(payload.get("model_base_url") or "http://localhost:1234/v1"),
+                "nemo_mcp_url": str(payload.get("nemo_mcp_url") or "http://127.0.0.1:8765/mcp/sse"),
+            },
+        }
+
+    if tool == "job_status":
+        job_id = str(params.get("job_id") or "")
+        if server is not None and job_id:
+            try:
+                job = server.jobs.get(job_id)
+                if job:
+                    return {
+                        "id": f"llm-jobstatus-{uuid4().hex[:8]}",
+                        "kind": "layout",
+                        "label": f"Job {job_id[:12]}: {job.status}",
+                        "summary": f"status={job.status} | returncode={job.returncode}",
+                        "payload": {"job_id": job_id},
+                    }
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
+    return None
+
+
+def api_agent_message(
+    config: MissionControlServerConfig,
+    payload: dict[str, object],
+    server: "MissionControlHttpServer | None" = None,
+) -> dict[str, object]:
     request_started = time.perf_counter()
     settings = _load_settings(config)
     payload = {**settings, **payload}
@@ -4762,13 +5667,13 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
             memory_lookup_payloads.append((lookup_query, lookup_payload))
             tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     if _is_identity_query(message):
-        for identity_query in ("mi nombre es", "me llamo", "my name is", "user_name", "identity"):
+        for identity_query in ("nombre del usuario", "user identity name", "mi nombre es", "user_name", "identity preference"):
             identity_payload = _call_nemo(
                 "search_memories",
                 "review",
                 query=identity_query,
                 limit=min(5, max(3, mode_profile["search_limit"])),
-                compact=True,
+                compact=False,
                 database_filter="all",
             )
             memory_lookup_payloads.append((identity_query, identity_payload))
@@ -4945,8 +5850,9 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
     _call_nemo(
         "store_conversation",
         "review",
-        summary=f"Space Code chat user request: {message}",
-        topic="Space Code conversation",
+        content=f"Space Code chat user request: {message}",
+        role="user",
+        topic="Mission Control conversation",
         tags=("spacecode", "agent-chat"),
         atom_type=MemoryAtomType.SESSION_SUMMARY.value,
         source_scope="spacecode_chat",
@@ -5012,10 +5918,12 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
                     known_user_name = raw_name.strip()
         if not known_user_name:
             known_user_name = _extract_user_name_from_memories(memories)
+        if not known_user_name and isinstance(bootstrap_payload, dict):
+            known_user_name = _extract_name_from_bootstrap(bootstrap_payload)
         if known_user_name:
             _cognitive_parts.append(f"Known user name from NEMO: {known_user_name}")
     if isinstance(bootstrap_payload, dict):
-        bootstrap_context = str(bootstrap_payload.get("context") or "").strip()
+        bootstrap_context = _bootstrap_context_text(bootstrap_payload).strip()
         if bootstrap_context:
             _cognitive_parts.append(f"Bootstrapped NEMO context: {bootstrap_context}")
     _cognitive_parts.append(_nemo_bootstrap_packet(tool_calls))
@@ -5026,7 +5934,7 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         risk_flags,
         mergeable,
         cognitive_preload=cognitive_preload,
-        max_context_chars=_agent_context_char_budget(payload, mode_profile["context_chars"]),
+        max_context_chars=_agent_context_char_budget(payload, mode_profile["context_chars"], mode_profile["context_window_tokens"]),
     )
     verified_memory_response = _verified_nemo_memory_response(message, memory_lookup_payloads)
     if verified_memory_response:
@@ -5066,7 +5974,8 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
         )
         trace_step += 1
         try:
-            response = _lmstudio_chat_completion(payload, message, context_summary)
+            history = [h for h in (payload.get("history") or []) if isinstance(h, dict) and h.get("role") in {"user", "assistant"} and isinstance(h.get("content"), str)]
+            response = _lmstudio_chat_completion(payload, message, context_summary, history=history)
             raw_tool_fallback = _raw_tool_name_fallback(response, message)
             if raw_tool_fallback:
                 response = raw_tool_fallback
@@ -5112,6 +6021,11 @@ def api_agent_message(config: MissionControlServerConfig, payload: dict[str, obj
             }
         )
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    # Detect LLM-driven tool calls and convert to AgentActions
+    for inv in _parse_llm_tool_calls(response):
+        action = _llm_tool_call_to_action(inv, server, payload)
+        if action:
+            actions.append(action)
     agent_trace.append(
         _build_agent_trace_event(
             step=trace_step,
@@ -5249,7 +6163,7 @@ def api_health(config: MissionControlServerConfig) -> dict[str, object]:
     Returns diagnostic info without being too intrusive.
     """
     settings = _load_settings(config)
-    lm_studio_url = settings.get("model_base_url", "http://localhost:1234/v1")
+    lm_studio_url = settings.get("model_base_url", "http://127.0.0.1:1234/v1")
     
     lm_studio_reachable = _check_lm_studio_reachable(str(lm_studio_url))
     nemo_db_size = _get_nemo_database_size_mb(config.memory_db)
@@ -5286,7 +6200,7 @@ def api_startup(config: MissionControlServerConfig) -> dict[str, object]:
     Detects issues and suggests fixes.
     """
     settings = _load_settings(config)
-    lm_studio_url = settings.get("model_base_url", "http://localhost:1234/v1")
+    lm_studio_url = settings.get("model_base_url", "http://127.0.0.1:1234/v1")
     
     checks: dict[str, bool] = {
         "lm_studio_reachable": _check_lm_studio_reachable(str(lm_studio_url)),
@@ -5397,6 +6311,66 @@ def api_record_stats(server: "MissionControlHttpServer", payload: dict[str, obje
     }
 
 
+def _job_runtime_id(job: "HandoffJob") -> str:
+    from nemo_coding_platform.core.worktree_runtime import runtime_slug
+    return f"{runtime_slug(job.task_id)}-{runtime_slug(job.run_id)}"
+
+
+def _job_worktree_path(config: "MissionControlServerConfig", job: "HandoffJob") -> Path:
+    return Path(config.repo_path) / ".worktrees" / _job_runtime_id(job)
+
+
+def _job_worktree_branch(job: "HandoffJob") -> str:
+    from nemo_coding_platform.core.worktree_runtime import worktree_branch_name
+    return worktree_branch_name(_job_runtime_id(job))
+
+
+def api_worktree_diff(config: "MissionControlServerConfig", job_id: str, jobs: "HandoffJobManager") -> dict[str, object]:
+    try:
+        job = jobs.get(job_id)
+    except FileNotFoundError:
+        return {"error": f"job not found: {job_id}"}
+    from nemo_coding_platform.core.worktree_runtime import worktree_diff
+    branch = _job_worktree_branch(job)
+    wt_path = _job_worktree_path(config, job)
+    diff = worktree_diff(Path(config.repo_path), branch)
+    return {
+        "diff": diff,
+        "branch": branch,
+        "runtime_id": _job_runtime_id(job),
+        "worktree_exists": wt_path.exists(),
+    }
+
+
+def api_worktree_merge(config: "MissionControlServerConfig", job_id: str, payload: dict[str, object], jobs: "HandoffJobManager") -> dict[str, object]:
+    if not payload.get("approved"):
+        return {"error": "merge requires approved=true in request body"}
+    try:
+        job = jobs.get(job_id)
+    except FileNotFoundError:
+        return {"error": f"job not found: {job_id}"}
+    from nemo_coding_platform.core.worktree_runtime import cleanup_git_worktree, merge_worktree_to_main
+    branch = _job_worktree_branch(job)
+    wt_path = _job_worktree_path(config, job)
+    message = str(payload.get("message") or f"merge worktree {branch}")
+    merged = merge_worktree_to_main(Path(config.repo_path), branch, message)
+    if merged:
+        cleanup_git_worktree(Path(config.repo_path), wt_path, branch)
+    return {"merged": merged, "branch": branch}
+
+
+def api_worktree_cleanup(config: "MissionControlServerConfig", job_id: str, jobs: "HandoffJobManager") -> dict[str, object]:
+    try:
+        job = jobs.get(job_id)
+    except FileNotFoundError:
+        return {"error": f"job not found: {job_id}"}
+    from nemo_coding_platform.core.worktree_runtime import cleanup_git_worktree
+    branch = _job_worktree_branch(job)
+    wt_path = _job_worktree_path(config, job)
+    cleanup_git_worktree(Path(config.repo_path), wt_path, branch)
+    return {"cleaned_up": True, "branch": branch}
+
+
 class MissionControlRequestHandler(BaseHTTPRequestHandler):
     server: "MissionControlHttpServer"
     _RATE_LIMIT_EXEMPT_PATHS = frozenset({
@@ -5462,7 +6436,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             return
         if route.startswith("/api/artifacts/image/"):
             image_name = Path(route[len("/api/artifacts/image/"):]).name
-            image_path = Path(self.server.config.repo_path) / ".nemo-runtimes" / "mission-control" / "artifacts" / "images" / image_name
+            # Check runtimes_path first (plan loop writes here), then legacy nemo-runtimes
+            image_path = self.server.config.runtimes_path / "mission-control" / "artifacts" / "images" / image_name
+            if not image_path.exists():
+                image_path = Path(self.server.config.repo_path) / ".nemo-runtimes" / "mission-control" / "artifacts" / "images" / image_name
             if image_path.exists() and image_path.is_file():
                 try:
                     image_data = image_path.read_bytes()
@@ -5478,13 +6455,77 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             else:
                 _json_response(self, 404, {"error": "image_not_found"})
             return
+        if route.startswith("/api/run/") and route.endswith("/worktree-diff"):
+            job_id = route[len("/api/run/"): -len("/worktree-diff")].strip("/")
+            self._handle(lambda _: api_worktree_diff(self.server.config, job_id, self.server.jobs), {})
+            return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
             return
         self._handle(lambda _: api_state(self.server.config, self.server.jobs), {})
 
+    def _handle_plan_sse(self, payload: dict[str, object]) -> None:
+        """Stream plan loop iterations as Server-Sent Events."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+        def _send_event(data: dict[str, object]) -> bool:
+            try:
+                line = ("data: " + json.dumps(data, sort_keys=True) + "\n\n").encode("utf-8")
+                self.wfile.write(line)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return False
+
+        plan_job_id = f"plan-{uuid4().hex[:12]}"
+        try:
+            for event in api_agent_plan_gen(self.server.config, payload, job_id=plan_job_id):
+                if not _send_event(event):
+                    break
+        except ApiRequestError as error:
+            _send_event({"type": "error", "error": str(error), "error_code": error.error_code})
+        except Exception as error:  # noqa: BLE001
+            _send_event({"type": "error", "error": str(error), "error_code": "internal_error"})
+        finally:
+            _plan_jobs.pop(plan_job_id, None)
+
     def do_POST(self) -> None:
         if not self._check_rate_limit():
+            return
+        # SSE streaming for plan endpoint (when client requests event-stream)
+        if urlparse(self.path).path == "/api/agent/plan" and "text/event-stream" in self.headers.get("Accept", ""):
+            try:
+                payload = _load_body(self)
+            except ApiRequestError as error:
+                _json_response(self, error.status_code, {"error": str(error), "error_code": error.error_code})
+                return
+            except (json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle_plan_sse(payload)
+            return
+        route = urlparse(self.path).path
+        if route.startswith("/api/run/") and route.endswith("/worktree-merge"):
+            job_id = route[len("/api/run/"): -len("/worktree-merge")].strip("/")
+            try:
+                body = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle(lambda payload: api_worktree_merge(self.server.config, job_id, payload, self.server.jobs), body)
+            return
+        if route.startswith("/api/run/") and route.endswith("/worktree-cleanup"):
+            job_id = route[len("/api/run/"): -len("/worktree-cleanup")].strip("/")
+            self._handle(lambda _: api_worktree_cleanup(self.server.config, job_id, self.server.jobs), {})
             return
         handlers = {
             "/api/refresh": lambda payload: api_state(self.server.config, self.server.jobs),
@@ -5514,7 +6555,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/job/signal": lambda payload: api_job_signal(self.server, payload),
             "/api/jobs/orphans": lambda payload: api_orphan_jobs(self.server, payload),
             "/api/self-modify/start": lambda payload: api_self_modify_start(self.server, payload),
-            "/api/agent/message": lambda payload: api_agent_message(self.server.config, payload),
+            "/api/agent/message": lambda payload: api_agent_message(self.server.config, payload, server=self.server),
+            "/api/agent/plan": lambda payload: api_agent_plan(self.server.config, payload),
+            "/api/agent/plan/cancel": lambda payload: api_plan_cancel(payload),
+            "/api/agent/plan/steer": lambda payload: api_plan_steer(payload),
             "/api/agent/generate-image": lambda payload: api_generate_image(self.server.config, payload),
             "/api/nemo": lambda payload: api_nemo(self.server.config, payload),
             "/api/nemo/tool": lambda payload: api_nemo_tool(self.server.config, payload),
