@@ -6589,12 +6589,19 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
                 return False
 
-        _TERMINAL = {"completed", "failed", "permission_denied", "cancelled", "orphaned"}
+        _TERMINAL = {
+            HandoffJobStatus.COMPLETED,
+            HandoffJobStatus.FAILED,
+            HandoffJobStatus.PERMISSION_DENIED,
+            HandoffJobStatus.CANCELLED,
+            HandoffJobStatus.ORPHANED,
+            "paused",  # run thread exits on pause; stream must not hang
+        }
         _POLL = 0.5  # seconds
         offset = 0
+        jobs = self.server.jobs
 
         while True:
-            jobs: HandoffJobManager = self.server.jobs
             with jobs._lock:
                 job = jobs._jobs.get(job_id)
                 if job is None:
