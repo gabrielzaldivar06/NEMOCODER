@@ -19,6 +19,7 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from enum import StrEnum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,19 @@ from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, default_nemo_mcp_url, discover_vscode_mcp_server
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
 
+
+class HandoffJobStatus(StrEnum):
+    STARTING            = "starting"
+    AWAITING_PERMISSION = "awaiting_permission"
+    RUNNING             = "running"
+    COMPLETED           = "completed"
+    FAILED              = "failed"
+    PERMISSION_DENIED   = "permission_denied"
+    ORPHANED            = "orphaned"
+    CANCELLED           = "cancelled"
+
+
+NEMO_EVENT_PREFIX = "NEMO_EVENT:"
 
 DEFAULT_APPLY_RESULTS = ".nemo-runtimes/mission-control/apply-results"
 DEFAULT_RUN_RESULTS = ".nemo-runtimes/mission-control/runs"
@@ -98,6 +112,7 @@ class HandoffJob:
     permission_request: dict[str, object] | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timeline: list[dict[str, object]] = field(default_factory=list)
 
     @classmethod
     def from_snapshot(cls, payload: dict[str, Any]) -> "HandoffJob":
@@ -117,6 +132,7 @@ class HandoffJob:
             permission_request=payload.get("permission_request") if isinstance(payload.get("permission_request"), dict) else None,
             created_at=str(payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
             updated_at=str(payload.get("updated_at") or datetime.now(timezone.utc).isoformat()),
+            timeline=list(payload.get("timeline") or []),
         )
 
     def to_dict(self, *, include_logs: bool = True) -> dict[str, object]:
@@ -136,6 +152,7 @@ class HandoffJob:
             "last_runtime_signature": self.last_runtime_signature,
             "stagnant_heartbeats": self.stagnant_heartbeats,
             "permission_request": self.permission_request,
+            "timeline": list(self.timeline),
         }
         if include_logs:
             payload["logs"] = list(self.logs)

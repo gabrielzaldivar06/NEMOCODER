@@ -38,3 +38,35 @@ def test_reset_sequence(capsys):
     lines = capsys.readouterr().out.strip().splitlines()
     seq_b = json.loads(lines[1][len("NEMO_EVENT:"):])["sequence"]
     assert seq_b == 1
+
+
+def test_handoff_job_status_is_str_enum():
+    from nemo_coding_platform.mission_control_server import HandoffJobStatus
+    assert HandoffJobStatus.RUNNING == "running"
+    assert HandoffJobStatus.AWAITING_PERMISSION == "awaiting_permission"
+    assert HandoffJobStatus.COMPLETED == "completed"
+    assert HandoffJobStatus.FAILED == "failed"
+    assert HandoffJobStatus.PERMISSION_DENIED == "permission_denied"
+
+
+def test_handoff_job_timeline_in_to_dict():
+    from nemo_coding_platform.mission_control_server import HandoffJob
+    job = HandoffJob(
+        job_id="j1", task_id="t1", run_id="r1", run_json="/tmp/x.json",
+        status="running", command=(), payload={}, logs=[],
+    )
+    job.timeline.append({"kind": "plan_created", "summary": "ok", "sequence": 1})
+    d = job.to_dict()
+    assert d["timeline"] == [{"kind": "plan_created", "summary": "ok", "sequence": 1}]
+
+
+def test_handoff_job_from_snapshot_loads_timeline():
+    from nemo_coding_platform.mission_control_server import HandoffJob
+    snap = {
+        "job_id": "j1", "task_id": "t1", "run_id": "r1", "run_json": "/tmp/x.json",
+        "status": "completed", "command": [], "payload": {}, "logs": [],
+        "timeline": [{"kind": "heartbeat", "sequence": 1}],
+    }
+    job = HandoffJob.from_snapshot(snap)
+    assert len(job.timeline) == 1
+    assert job.timeline[0]["kind"] == "heartbeat"
