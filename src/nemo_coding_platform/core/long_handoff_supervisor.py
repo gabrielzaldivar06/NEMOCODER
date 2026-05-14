@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -400,6 +401,12 @@ def execute_long_handoff_continuation(
     resume_task_id = f"{plan.task_id or 'task'}-resume"
     resume_run_id = f"{plan.run_id or 'run'}-resume-{plan.resume_minute}"
     continuation_kwargs.setdefault("provider_mode", plan.provider_mode or "fake")
+    emit_event(
+        "resumed",
+        f"Resumed from pause — continuing {source_objective[:60]}",
+        "execute",
+        {"elapsed_minutes": 0.0},
+    )
     result = execute_long_handoff_supervisor(
         HandoffRequest(
             resume_objective,
@@ -474,9 +481,21 @@ def execute_long_handoff_supervisor(
     active_budget.validate()
     active_handoff_kwargs: dict[str, object] = dict(handoff_kwargs)
     active_handoff_kwargs.setdefault("provider_mode", "fake")
-    emit_event("heartbeat", "Supervisor: starting headless handoff", "execute", {"iteration": 1})
+    _run_start = time.monotonic()
+    emit_event(
+        "heartbeat",
+        "Supervisor: starting handoff — iteration 1",
+        "execute",
+        {"iteration": 1, "elapsed_minutes": 0.0},
+    )
     result = execute_headless_handoff(request, bounded_simulation=True, **active_handoff_kwargs)
-    emit_event("heartbeat", "Supervisor: headless handoff complete", "execute", {"iteration": 1})
+    _elapsed = round((time.monotonic() - _run_start) / 60, 1)
+    emit_event(
+        "heartbeat",
+        f"Supervisor: handoff complete — {_elapsed} min elapsed",
+        "execute",
+        {"iteration": 1, "elapsed_minutes": _elapsed},
+    )
     heartbeats = _planned_heartbeats(active_budget)
     escalation_flags = _escalation_flags(result, active_budget)
     resume_token = (
@@ -492,6 +511,13 @@ def execute_long_handoff_supervisor(
     write_runtime_file(runtime, "continuation-state.json", json.dumps(continuation_state, indent=2, sort_keys=True) + "\n")
     if resume_token:
         write_runtime_file(runtime, "resume-token.txt", resume_token + "\n")
+        _elapsed_at_pause = round((time.monotonic() - _run_start) / 60, 1)
+        emit_event(
+            "paused",
+            f"Paused — resume token persisted at {_elapsed_at_pause} min",
+            "execute",
+            {"pause_minutes": active_budget.pause_after_minutes, "elapsed_minutes": _elapsed_at_pause},
+        )
 
     timeline = result.timeline
     next_sequence = len(timeline.events) + 1
