@@ -10,13 +10,35 @@ from nemo_coding_platform.cli import DEFAULT_MEMORY_DB, main
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 
 
+def _load_cli_payload(output: io.StringIO) -> dict[str, object]:
+    """Parse JSON payload from CLI stdout, skipping any NEMO_EVENT: prefix lines."""
+    payload_text = output.getvalue().strip()
+    if payload_text:
+        try:
+            parsed = json.loads(payload_text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            for line in reversed(payload_text.splitlines()):
+                candidate = line.strip()
+                if not candidate:
+                    continue
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    continue
+    return {}
+
+
 class CliHeadlessTests(unittest.TestCase):
     def test_handoff_plan_json(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = main(["handoff-plan", "Build feature", "--json"])
 
-        payload = json.loads(output.getvalue())
+        payload = _load_cli_payload(output)
         self.assertEqual(code, 0)
         self.assertTrue(payload["unattended"])
         self.assertTrue(payload["review_gate"])
@@ -27,7 +49,7 @@ class CliHeadlessTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             code = main(["headless-run", "Build feature", "--provider", "fake", "--json"])
 
-        payload = json.loads(output.getvalue())
+        payload = _load_cli_payload(output)
         self.assertEqual(code, 0)
         self.assertEqual(payload["score"], 1.0)
         self.assertEqual(payload["provider"], "fake-space-code")
@@ -42,7 +64,7 @@ class CliHeadlessTests(unittest.TestCase):
             path = f"{tmp}/result.json"
             with contextlib.redirect_stdout(output):
                 code = main(["headless-run", "Build feature", "--provider", "fake", "--json", "--save-json", path])
-            payload = json.loads(output.getvalue())
+            payload = _load_cli_payload(output)
             with open(path, encoding="utf-8") as saved:
                 saved_payload = json.load(saved)
 
@@ -59,12 +81,12 @@ class CliHeadlessTests(unittest.TestCase):
             show_output = io.StringIO()
             with contextlib.redirect_stdout(show_output):
                 show_code = main(["show-run-json", path, "--json"])
-            show_payload = json.loads(show_output.getvalue())
+            show_payload = _load_cli_payload(show_output)
 
             eval_output = io.StringIO()
             with contextlib.redirect_stdout(eval_output):
                 eval_code = main(["eval-run-json", path, "--json"])
-            eval_payload = json.loads(eval_output.getvalue())
+            eval_payload = _load_cli_payload(eval_output)
 
         self.assertEqual(show_code, 0)
         self.assertEqual(eval_code, 0)
@@ -81,7 +103,7 @@ class CliHeadlessTests(unittest.TestCase):
             replay_output = io.StringIO()
             with contextlib.redirect_stdout(replay_output):
                 code = main(["replay-run-json", path, "--json"])
-            payload = json.loads(replay_output.getvalue())
+            payload = _load_cli_payload(replay_output)
 
         self.assertEqual(code, 0)
         self.assertTrue(payload["can_replay"])
@@ -104,7 +126,7 @@ class CliHeadlessTests(unittest.TestCase):
                 "--json",
             ])
 
-        payload = json.loads(output.getvalue())
+        payload = _load_cli_payload(output)
 
         self.assertEqual(code, 0)
         self.assertEqual(payload["provider"], "subprocess-space-code")
@@ -115,7 +137,7 @@ class CliHeadlessTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             code = main(["headless-run", "Build feature", "--provider", "fake", "--target-file", "src/demo.py", "--json"])
 
-        payload = json.loads(output.getvalue())
+        payload = _load_cli_payload(output)
 
         self.assertEqual(code, 0)
         self.assertEqual(payload["provider"], "fake-space-code")
@@ -134,7 +156,7 @@ class CliHeadlessTests(unittest.TestCase):
                 "--json",
             ])
 
-        payload = json.loads(output.getvalue())
+        payload = _load_cli_payload(output)
 
         self.assertEqual(code, 0)
         self.assertTrue(payload["validation_passed"])
@@ -144,7 +166,7 @@ class CliHeadlessTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             code = main(["headless-run", "Build feature", "--provider", "fake", "--bounded-simulation", "--json"])
 
-        payload = json.loads(output.getvalue())
+        payload = _load_cli_payload(output)
 
         self.assertEqual(code, 0)
         self.assertGreaterEqual(payload["artifacts"], 9)
@@ -156,7 +178,7 @@ class CliHeadlessTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 code = main(["headless-run", "Build feature", "--provider", "fake", "--bounded-simulation", "--memory-db", str(memory_db), "--json"])
-            payload = json.loads(output.getvalue())
+            payload = _load_cli_payload(output)
             store = PersistentMemoryStore(memory_db)
             atoms = store.search_atoms(limit=20)
             memory_db_exists = memory_db.exists()
@@ -174,7 +196,7 @@ class CliHeadlessTests(unittest.TestCase):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = main(["headless-run", "Build feature", "--provider", "fake", "--json"])
-        payload = json.loads(output.getvalue())
+        payload = _load_cli_payload(output)
         atoms = PersistentMemoryStore(memory_db).search_atoms(limit=20)
 
         self.assertEqual(code, 0)
@@ -188,7 +210,7 @@ class CliHeadlessTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 code = main(["headless-run", "Build feature", "--provider", "fake", "--memory-db", str(memory_db), "--no-memory-db", "--json"])
-            payload = json.loads(output.getvalue())
+            payload = _load_cli_payload(output)
 
         self.assertEqual(code, 0)
         self.assertEqual(payload["score"], 1.0)
@@ -213,7 +235,7 @@ class CliHeadlessTests(unittest.TestCase):
                     str(save_path),
                     "--json",
                 ])
-            payload = json.loads(output.getvalue())
+            payload = _load_cli_payload(output)
 
             self.assertEqual(code, 0)
             self.assertEqual(payload["provider"], "fake")
@@ -274,7 +296,7 @@ class CliHeadlessTests(unittest.TestCase):
                     "--fail-on-regression",
                     "--json",
                 ])
-            payload = json.loads(output.getvalue())
+            payload = _load_cli_payload(output)
 
         self.assertEqual(code, 1)
         self.assertIn("regression_gate", payload)
@@ -318,7 +340,7 @@ class CliHeadlessTests(unittest.TestCase):
                     "1.0",
                     "--json",
                 ])
-            payload = json.loads(output.getvalue())
+            payload = _load_cli_payload(output)
 
         self.assertEqual(code, 0)
         self.assertIn("regression_gate", payload)
