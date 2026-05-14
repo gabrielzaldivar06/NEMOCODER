@@ -898,6 +898,7 @@ export function App() {
   const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("trusted");
   const [activeSection, setActiveSection] = useState<AppSection>("home");
     const [runsWorkbenchTab, setRunsWorkbenchTab] = useState<RunsWorkbenchTab>("file");
+  const [reviewSubTab, setReviewSubTab] = useState<"timeline" | "diff">("diff");
   const [repoBusy, setRepoBusy] = useState<boolean>(false);
   const [repoError, setRepoError] = useState<string>("");
   const [terminalDraft, setTerminalDraft] = useState<string>("git status --short");
@@ -994,6 +995,9 @@ export function App() {
   const selectedJob = useMemo(() => state.jobs.find((j) => j.task_id === selectedRun?.task_id && j.run_id === selectedRun?.run_id), [state.jobs, selectedRun]);
   const jobAwaitingPermission = useMemo(() => state.jobs.find((j) => j.status === "awaiting_permission") ?? null, [state.jobs]);
   const jobRunning = useMemo(() => state.jobs.find((j) => j.status === "running") ?? null, [state.jobs]);
+  useEffect(() => {
+    setReviewSubTab(selectedJob?.status === "running" ? "timeline" : "diff");
+  }, [selectedJob?.job_id]);
   const readyRuns = state.runs.filter((run) => run.review_status === "awaiting_review").length;
   const blockedRuns = state.runs.filter((run) => run.review_status === "blocked").length;
   const activeFile = selectedFile || selectedRun?.changed_files[0] || "";
@@ -2636,11 +2640,49 @@ export function App() {
               onSetFileDecision={setFileDecision}
               onApplySelected={applySelectedDiff}
             />}
-            {runsWorkbenchTab === "review" && <WorktreeDiffPanel
-              jobId={selectedJob?.job_id ?? ""}
-              onMerged={() => { /* state will refresh via polling */ }}
-              onRejected={() => { /* state will refresh via polling */ }}
-            />}
+            {runsWorkbenchTab === "review" && (
+              <div style={{ padding: "12px 16px" }}>
+                <div className="review-seg-tabs">
+                  <button
+                    type="button"
+                    className={`review-seg-tab ${reviewSubTab === "timeline" ? "active" : ""}`}
+                    onClick={() => setReviewSubTab("timeline")}
+                  >
+                    ⚡ Timeline
+                    {selectedJob?.status === "running" && (
+                      <span className="review-live-badge">LIVE</span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className={`review-seg-tab ${reviewSubTab === "diff" ? "active" : ""}`}
+                    onClick={() => setReviewSubTab("diff")}
+                  >
+                    ⎇ Diff / Merge
+                  </button>
+                </div>
+                <div className="review-subtab-content">
+                  {reviewSubTab === "timeline" && selectedJob && (
+                    <TimelinePanel
+                      jobId={selectedJob.job_id}
+                      isLive={selectedJob.status === "running"}
+                    />
+                  )}
+                  {reviewSubTab === "timeline" && !selectedJob && (
+                    <div style={{ color: "#8b949e", fontSize: 12, padding: "16px 0" }}>
+                      Select a run to view its timeline.
+                    </div>
+                  )}
+                  {reviewSubTab === "diff" && (
+                    <WorktreeDiffPanel
+                      jobId={selectedJob?.job_id ?? ""}
+                      onMerged={() => { /* state will refresh via polling */ }}
+                      onRejected={() => { /* state will refresh via polling */ }}
+                    />
+                  )}
+                </div>
+              </div>
+            )}
             {runsWorkbenchTab !== "review" && <AgentPane
               run={selectedRun}
               state={state}
