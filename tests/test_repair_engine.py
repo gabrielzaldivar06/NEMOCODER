@@ -164,6 +164,24 @@ class RepairEngineTests(unittest.TestCase):
         self.assertTrue(seen)
         self.assertEqual(seen[0][0], 1)
 
+    def test_run_repair_loop_accepts_nemo_adapter_without_crash(self) -> None:
+        from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter
+        with tempfile.TemporaryDirectory() as tmp:
+            # simulate_validation with no commands → pre-passed, loop body never runs
+            result = run_repair_loop(
+                simulate_validation((), ()),
+                (),
+                (),
+                RepairBudget(1),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                FakeEngineProvider(),
+                MutationRequest("Build", "spec.md", ("ok",), "context"),
+                nemo_adapter=InMemoryNemoAdapter(),
+                task_id="test-task",
+            )
+        self.assertIsNotNone(result)
+        self.assertEqual(result.stop_reason, "")
+
 
 # --- Phase 4: Loop Detection Tests ---
 
