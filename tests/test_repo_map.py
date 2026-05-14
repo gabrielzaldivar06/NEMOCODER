@@ -143,3 +143,12 @@ def test_max_chars_truncates_output(tmp_path):
         (tmp_path / f"file_{i:03d}.py").write_text(f'"""Module number {i} with a long description that takes space."""\n', encoding="utf-8")
     result = build_repo_map(tmp_path, max_chars=200)
     assert len(result) <= 200 + len("\n[truncated]")
+
+
+def test_empty_string_docstring_does_not_crash(tmp_path):
+    from nemo_coding_platform.core.repo_map import _extract_summary
+    f = tmp_path / "empty_doc.py"
+    f.write_text('"""\n"""\ndef foo(): pass\n', encoding="utf-8")
+    # Should not raise IndexError; returns "" since docstring is whitespace-only
+    result = _extract_summary(f)
+    assert result == ""

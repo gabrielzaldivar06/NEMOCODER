@@ -6,6 +6,12 @@ from pathlib import Path
 
 _COMMENT_PREFIXES = ("#", "//", "/*", '"""', "'''")
 
+_EXCLUDED_DIRS = frozenset({
+    ".git", ".venv", "venv", "node_modules", "__pycache__",
+    ".worktrees", ".claude", "dist", "build", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache",
+})
+
 
 def _is_text_file(file_path: Path) -> bool:
     """Return True if file_path appears to be a text file (no null bytes in first 512 bytes)."""
@@ -36,8 +42,9 @@ def _extract_summary(file_path: Path) -> str:
                 and isinstance(node.value, ast.Constant)
                 and isinstance(node.value.value, str)
             ):
-                first_line = node.value.value.strip().splitlines()[0]
-                return first_line[:120]
+                lines = node.value.value.strip().splitlines()
+                if lines:
+                    return lines[0][:120]
         return ""
 
     for line in source.splitlines()[:4]:
@@ -128,9 +135,22 @@ def build_repo_map(
 
     entries: list[tuple[Path, str]] = []
 
-    for file_path in sorted(root.rglob("*")):
-        if not file_path.is_file():
+    all_files: list[Path] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            children = sorted(current.iterdir())
+        except OSError:
             continue
+        for child in children:
+            if child.is_dir():
+                if child.name not in _EXCLUDED_DIRS:
+                    stack.append(child)
+            elif child.is_file():
+                all_files.append(child)
+
+    for file_path in all_files:
         # Skip the cache file itself to avoid polluting the map
         if _cache_path is not None and file_path.resolve() == _cache_path:
             continue
