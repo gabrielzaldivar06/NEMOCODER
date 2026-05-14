@@ -32,9 +32,11 @@ class TestPermissionAnalyzer:
     def test_network_auto_in_freedom_ask_in_restriction(self):
         req_free = _analyzer.analyze("j4", "fetch data from http endpoint", (), PermissionMode.FREEDOM)
         assert PermissionCategory.NETWORK_CALL in req_free.auto_approved
+        assert PermissionCategory.NETWORK_CALL not in req_free.requires_user_approval
 
         req_restr = _analyzer.analyze("j5", "fetch data from http endpoint", (), PermissionMode.RESTRICTION)
         assert PermissionCategory.NETWORK_CALL in req_restr.requires_user_approval
+        assert PermissionCategory.NETWORK_CALL not in req_restr.auto_approved
 
     def test_no_risky_actions_empty_requires(self):
         req = _analyzer.analyze("j6", "add docstring to calculate_total function", (), PermissionMode.RESTRICTION)
