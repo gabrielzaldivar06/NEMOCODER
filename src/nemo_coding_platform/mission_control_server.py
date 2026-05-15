@@ -6975,7 +6975,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         config = self.server.config
         artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
         base_url = str(payload.get("model_base_url") or "http://localhost:1234/v1")
-        vlm_model = _resolve_vlm_model(base_url) or _resolve_lmstudio_model(base_url) or None
+        vlm_model = _resolve_vlm_model(base_url)  # None → screenshot-only mode; non-vision LLMs can't handle images
         vault_db = _vault_db(config) if credential_alias else None
 
         from nemo_coding_platform.browser_agent import execute_browser_task
