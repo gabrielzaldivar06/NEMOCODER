@@ -1965,7 +1965,7 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
     runtime_read_text = ", ".join(runtime_read_only) if runtime_read_only else "none"
     runtime_write_text = ", ".join(declared_write_or_destructive) if declared_write_or_destructive else "none"
     body = {
-        "model": _resolve_lmstudio_model(_chat_base_url(payload)) or _chat_model(payload),
+        "model": _chat_model(payload),
         "messages": [
             {
                 "role": "system",
@@ -5193,8 +5193,7 @@ _plan_jobs: dict[str, dict[str, object]] = {}
 def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: int = 1024, timeout: int = 120, temperature: float = 0.6) -> str:
     """Minimal LM Studio call for plan loop — no Space Code context, tight budget."""
     base_url = _chat_base_url(payload)
-    # Always auto-detect the currently loaded model (agnostic — ignores settings default_model)
-    model = _resolve_lmstudio_model(base_url) or _chat_model(payload)
+    model = _chat_model(payload)
     body = json.dumps({
         "model": model,
         "messages": [
