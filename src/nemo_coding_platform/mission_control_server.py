@@ -1719,13 +1719,14 @@ def _chat_base_url(payload: dict[str, object]) -> str:
     return value.strip().rstrip("/")
 
 
-def _resolve_lmstudio_model(base_url: str) -> str:
-    """Return the best available chat model from LM Studio.
+def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", default_model: str = "") -> str:
+    """Return the best available chat model.
 
     Strategy (in order of preference):
-    1. Use /api/v0/models (newer LM Studio): prefer state=loaded, type=llm|vlm,
+    1. Use /api/v0/models (LM Studio management API): prefer state=loaded, type=llm|vlm,
        sorted by loaded_context_length descending so the most capable loaded model wins.
-    2. Fall back to /v1/models: first non-embedding entry.
+    2. Fall back to /v1/models with Authorization header (works for remote APIs like NVIDIA NIM).
+    3. Fall back to default_model if provided (for remote endpoints without model discovery).
     Embedding/reranker models are always excluded.
     """
     _SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
@@ -1733,7 +1734,7 @@ def _resolve_lmstudio_model(base_url: str) -> str:
     base = base_url.rstrip("/")
     # Management API lives at the root, not under /v1
     mgmt_base = re.sub(r"/v\d+$", "", base)
-    # Strategy 1: management API with state info
+    # Strategy 1: LM Studio management API with state info
     try:
         req = urllib.request.Request(f"{mgmt_base}/api/v0/models", method="GET")
         req.add_header("Accept", "application/json")
@@ -1746,20 +1747,24 @@ def _resolve_lmstudio_model(base_url: str) -> str:
             and not _SKIP.search(m.get("id", ""))
         ]
         if candidates:
-            # Pick the one with the largest loaded context (proxy for capability/size)
             candidates.sort(key=lambda m: int(m.get("loaded_context_length") or 0), reverse=True)
             return str(candidates[0]["id"])
     except Exception:
         pass
-    # Strategy 2: fallback to /v1/models
+    # Strategy 2: /v1/models with Authorization (works for NVIDIA NIM and other remote APIs)
     try:
         req = urllib.request.Request(f"{base}/models", method="GET")
-        with urllib.request.urlopen(req, timeout=3) as r:
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=5) as r:
             data = json.loads(r.read().decode())
         models = [m["id"] for m in data.get("data", []) if not _SKIP.search(m.get("id", ""))]
-        return models[0] if models else ""
+        if models:
+            return models[0]
     except Exception:
-        return ""
+        pass
+    # Strategy 3: explicit default_model for remote endpoints without discovery
+    return default_model
 
 
 def _resolve_vlm_model(base_url: str) -> str | None:
@@ -1789,7 +1794,8 @@ def _resolve_vlm_model(base_url: str) -> str | None:
 def _chat_model(payload: dict[str, object]) -> str:
     value = str(payload.get("model") or payload.get("default_model") or "").strip()
     if not value:
-        value = _resolve_lmstudio_model(_chat_base_url(payload))
+        api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
+        value = _resolve_lmstudio_model(_chat_base_url(payload), api_key=api_key)
     if not value:
         raise _bad_request("No model configured and LM Studio has no chat models loaded", error_code="invalid_default_model")
     return value
@@ -2016,10 +2022,11 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         "enable_thinking": False,
     }
     data = json.dumps(body).encode("utf-8")
+    _api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
     request = urllib.request.Request(
         f"{_chat_base_url(payload)}/chat/completions",
         data=data,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {os.environ.get('LMSTUDIO_API_KEY', 'lm-studio')}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {_api_key}"},
         method="POST",
     )
     timeout = min(max(_timeout_seconds(payload), 1.0), 300.0)

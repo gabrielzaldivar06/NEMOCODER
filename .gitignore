@@ -3,8 +3,9 @@
 __pycache__/
 *.py[cod]
 
-# Runtime and local memory artifacts
+# Runtime and local memory artifacts (contain credentials and ephemeral state — never commit)
 .nemo-runtimes/
+.spacecode-runtimes/
 .worktrees/
 .nemo-memory.db
 *.sqlite-shm
