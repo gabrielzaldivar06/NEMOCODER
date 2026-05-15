@@ -1950,24 +1950,31 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "When the user asks you to save, store, or remember something, confirm it is already saved (the server did it). "
                     "Do not claim you applied code unless an explicit apply action did it. "
                     "Never invent MCP/NEMO tool names or capabilities outside the verified catalog below. "
-                    "Never answer with only a raw tool name such as get_current_time, search_memories, or context_bootstrap; explain the actual answer or next action in natural language."
+                    "Never answer with only a raw tool name such as get_current_time, search_memories, or context_bootstrap; explain the actual answer or next action in natural language.\n\n"
+                    "ROUTING RULES — FOLLOW EXACTLY:\n"
+                    "- Source file changes (create/edit .py, .ts, .js, .tsx, .go, .rs, etc.): ALWAYS use handoff_start. Never write source code inline.\n"
+                    "- Standalone scripts, data visualizations, standalone programs: use plan_generate.\n"
+                    "- Visual artifacts (HTML page, SVG, Mermaid diagram, React component, image prompt): generate inline using the artifact fences below.\n"
+                    "- Conversation, questions, status queries: respond directly in text.\n"
+                    "BREVITY RULE: Keep responses under 200 words. When triggering a tool, embed the JSON and add one sentence explaining what it will do. Do not write implementation details, pseudocode, or long explanations."
                 ),
             },
             {
                 "role": "system",
                 "content": (
                     "ARTIFACT STUDIO OUTPUT CONTRACT:\n"
-                    "When the user asks for a chart, dashboard, visualization, diagram, interface mockup, visual report, image prompt, or other generated artifact, produce a typed fenced code block so Mission Control can render and version it.\n\n"
-                    "Supported artifact fences:\n"
+                    "When the user asks for a chart, dashboard, visualization, diagram, interface mockup, visual report, image prompt, or other renderable artifact, produce a typed fenced code block so Mission Control can render and version it.\n\n"
+                    "Supported artifact fences (for visual/renderable content ONLY — NOT for source files):\n"
                     "- ```html_artifact for complete self-contained HTML documents with inline CSS/JS.\n"
                     "- ```svg_artifact for SVG with viewBox and xmlns.\n"
                     "- ```mermaid for diagrams.\n"
                     "- ```react_artifact for self-contained React components exposing function App().\n"
                     "- ```image_request for JSON image-generation prompts.\n\n"
-                    "For code, dashboards, UI prototypes, and visual tools, emit full working code rather than summaries. "
+                    "IMPORTANT: These artifact fences are ONLY for renderable artifacts. "
+                    "For source files (.py, .ts, .js, etc.) use handoff_start instead — never write them inline. "
                     "For images, emit image_request JSON with prompt, negative_prompt, size, style, steps, and cfg when useful; Mission Control can send it to a local image backend. "
                     "Optionally put a title marker as the first line, for example <!-- ARTIFACT:Metrics Dashboard:html -->.\n"
-                    "Prefer generating the actual artifact over describing what it would look like. Keep artifact code self-contained and compatible with a sandboxed preview."
+                    "Keep artifact code self-contained and compatible with a sandboxed preview."
                 ),
             },
             {"role": "system", "content": f"[SERVER-SIDE ONLY — YOU CANNOT CALL THESE] NEMO MCP tools already executed by the backend before this response: {verified_tools}. These are informational only. Never embed NEMO tool names in your response."},
@@ -2142,6 +2149,82 @@ def api_generate_image(config: MissionControlServerConfig, payload: dict[str, ob
         f"No image generation backend available. Tried: {', '.join(name for name, _ in backends_to_try)}. Last error: {last_error}",
         error_code="image_gen_unavailable",
     )
+
+
+# ---------------------------------------------------------------------------
+# Credential Vault API
+# ---------------------------------------------------------------------------
+
+def _vault_db(config: MissionControlServerConfig) -> Path:
+    return config.runtimes_path / "mission-control" / "vault.db"
+
+
+def api_vault_list(config: MissionControlServerConfig) -> dict:
+    from nemo_coding_platform.credential_vault import vault_list
+    return {"credentials": vault_list(_vault_db(config))}
+
+
+def api_vault_create(config: MissionControlServerConfig, payload: dict) -> dict:
+    from nemo_coding_platform.credential_vault import vault_create
+    alias = str(payload.get("alias") or "").strip()
+    username = str(payload.get("username") or "")
+    password = str(payload.get("password") or "")
+    if not alias:
+        raise _bad_request("alias is required", error_code="missing_alias")
+    if not username or not password:
+        raise _bad_request("username and password are required", error_code="missing_credentials")
+    try:
+        result = vault_create(
+            _vault_db(config),
+            alias,
+            username,
+            password,
+            str(payload.get("url_pattern") or ""),
+            str(payload.get("notes") or ""),
+        )
+    except Exception as exc:
+        if "UNIQUE" in str(exc).upper():
+            raise _bad_request(f"Alias '{alias}' already exists", error_code="duplicate_alias") from exc
+        raise
+    return result
+
+
+def api_vault_update(config: MissionControlServerConfig, payload: dict) -> dict:
+    from nemo_coding_platform.credential_vault import vault_update
+    cred_id = str(payload.get("id") or "").strip()
+    if not cred_id:
+        raise _bad_request("id is required", error_code="missing_id")
+    fields = {k: payload[k] for k in ("alias", "username", "password", "url_pattern", "notes") if k in payload}
+    try:
+        return vault_update(_vault_db(config), cred_id, **fields)
+    except KeyError:
+        raise _bad_request(f"Credential {cred_id} not found", error_code="not_found", status_code=404)
+
+
+def api_vault_delete(config: MissionControlServerConfig, payload: dict) -> dict:
+    from nemo_coding_platform.credential_vault import vault_delete
+    cred_id = str(payload.get("id") or "").strip()
+    if not cred_id:
+        raise _bad_request("id is required", error_code="missing_id")
+    try:
+        vault_delete(_vault_db(config), cred_id)
+    except KeyError:
+        raise _bad_request(f"Credential {cred_id} not found", error_code="not_found", status_code=404)
+    return {"ok": True}
+
+
+def api_vault_lookup(config: MissionControlServerConfig, payload: dict, client_address: str) -> dict:
+    """Internal-only: decrypts and returns credentials. Only callable from 127.0.0.1."""
+    if not client_address.startswith("127."):
+        raise _bad_request("Forbidden", error_code="forbidden", status_code=403)
+    from nemo_coding_platform.credential_vault import vault_lookup
+    alias = str(payload.get("alias") or "").strip()
+    if not alias:
+        raise _bad_request("alias is required", error_code="missing_alias")
+    try:
+        return vault_lookup(_vault_db(config), alias)
+    except KeyError:
+        raise _bad_request(f"Alias '{alias}' not found", error_code="not_found", status_code=404)
 
 
 def _raw_tool_name_fallback(response: str, message: str) -> str | None:
@@ -6711,6 +6794,9 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             job_id = route[len("/api/run/"): -len("/public-html-files")].strip("/")
             self._handle(lambda _: api_run_public_html_files(self.server.config, job_id, self.server.jobs), {})
             return
+        if route == "/api/vault/credentials":
+            self._handle(lambda _: api_vault_list(self.server.config), {})
+            return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
             return
@@ -6884,6 +6970,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/agent/plan/cancel": lambda payload: api_plan_cancel(payload),
             "/api/agent/plan/steer": lambda payload: api_plan_steer(payload),
             "/api/agent/generate-image": lambda payload: api_generate_image(self.server.config, payload),
+            "/api/vault/credentials": lambda payload: api_vault_create(self.server.config, payload),
+            "/api/vault/credentials/update": lambda payload: api_vault_update(self.server.config, payload),
+            "/api/vault/credentials/delete": lambda payload: api_vault_delete(self.server.config, payload),
+            "/api/vault/credentials/lookup": lambda payload: api_vault_lookup(self.server.config, payload, self.client_address[0]),
             "/api/nemo": lambda payload: api_nemo(self.server.config, payload),
             "/api/nemo/tool": lambda payload: api_nemo_tool(self.server.config, payload),
             "/api/nemo/mcp-status": lambda payload: api_nemo_mcp_status(self.server.config, payload),
