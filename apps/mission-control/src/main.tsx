@@ -185,7 +185,7 @@ type RenderedToolCall = AgentToolCall & {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -617,7 +617,7 @@ const initialState: MissionState = {
     max_heartbeats: 4,
     token_budget: 128000,
     context_window_tokens: 131072,
-    chat_max_tokens: 16384,
+    chat_max_tokens: 768,
     image_gen_backend: "auto",
     image_gen_url: "",
     validation_policy: "smoke",
@@ -1878,6 +1878,192 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_id: jobId, directive: directive.trim() }),
       }).catch(() => null);
+      return;
+    }
+    if (action.kind === "browser_cancel") {
+      const { session_id } = action.payload as { session_id: string };
+      if (session_id) {
+        fetch("/api/agent/browser-cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id }),
+        }).catch(() => null);
+      }
+      return;
+    }
+    if (action.kind === "browser_task") {
+      const btPayload = action.payload as Record<string, unknown>;
+      const btUrl = String(btPayload.url || "");
+      const btTask = String(btPayload.task || action.label || "Browser task");
+      const btCredentialAlias = btPayload.credential_alias ? String(btPayload.credential_alias) : undefined;
+      const btMaxSteps = btPayload.max_steps ? Number(btPayload.max_steps) : undefined;
+      setStatus(`Starting browser task: ${btTask.slice(0, 60)}`);
+
+      const btMsgId = `browser-${Date.now()}`;
+      // Message slot that gets updated with step screenshots
+      const btStepMsgId = `browser-step-${Date.now()}`;
+      setAgentMessages((prev) => [
+        ...prev,
+        {
+          id: btMsgId,
+          role: "assistant" as const,
+          content: `**Browser task:** ${btTask.slice(0, 80)}\nConnecting…`,
+          tool_calls: [],
+          actions: [],
+        },
+      ]);
+
+      fetch("/api/agent/browser-task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({
+          url: btUrl,
+          task: btTask,
+          ...(btCredentialAlias ? { credential_alias: btCredentialAlias } : {}),
+          ...(btMaxSteps != null ? { max_steps: btMaxSteps } : {}),
+        }),
+      })
+        .then(async (resp) => {
+          const reader = resp.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          let btSessionId = "";
+          let stepMsgInjected = false;
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                const evt = JSON.parse(line.slice(6)) as Record<string, unknown>;
+
+                // Capture session_id from any event that includes it
+                if (evt.session_id) {
+                  const newSid = String(evt.session_id);
+                  if (newSid && newSid !== btSessionId) {
+                    btSessionId = newSid;
+                    // Inject Stop button onto the trigger message
+                    setAgentMessages((prev) =>
+                      prev.map((m) =>
+                        m.id === btMsgId
+                          ? {
+                              ...m,
+                              actions: [
+                                {
+                                  id: `browser-cancel-${btSessionId}`,
+                                  kind: "browser_cancel" as const,
+                                  label: "Stop Browser",
+                                  summary: "Cancel the browser task",
+                                  payload: { session_id: btSessionId },
+                                },
+                              ],
+                            }
+                          : m
+                      )
+                    );
+                  }
+                }
+
+                if (evt.type === "step") {
+                  const stepNum = Number(evt.step ?? 0);
+                  const pageTitle = String(evt.page_title || "");
+                  const screenshotUrl = String(evt.screenshot_url || "");
+                  const stepContent = [
+                    `**Step ${stepNum}**${pageTitle ? ` — ${pageTitle}` : ""}`,
+                    screenshotUrl
+                      ? `\`\`\`image\n${JSON.stringify({ src: screenshotUrl, alt: `Step ${stepNum}` })}\n\`\`\``
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join("\n");
+
+                  if (!stepMsgInjected) {
+                    stepMsgInjected = true;
+                    setAgentMessages((prev) => [
+                      ...prev,
+                      {
+                        id: btStepMsgId,
+                        role: "assistant" as const,
+                        content: stepContent,
+                        tool_calls: [],
+                        actions: [],
+                      },
+                    ]);
+                  } else {
+                    setAgentMessages((prev) =>
+                      prev.map((m) => (m.id === btStepMsgId ? { ...m, content: stepContent } : m))
+                    );
+                  }
+                  setAgentMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === btMsgId
+                        ? { ...m, content: `**Browser task:** ${btTask.slice(0, 80)}\nStep ${stepNum}…` }
+                        : m
+                    )
+                  );
+                }
+
+                if (evt.type === "pause_required") {
+                  const reason = String(evt.reason || "Action requires approval");
+                  const sid = String(evt.session_id || btSessionId);
+                  const approved = window.confirm(`${reason}\n\nApprove this action?`);
+                  fetch("/api/agent/browser-confirm", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ session_id: sid, approved }),
+                  }).catch(() => null);
+                }
+
+                if (evt.type === "done") {
+                  const success = evt.success !== false;
+                  const stepsTaken = Number(evt.steps_taken ?? 0);
+                  const finalScreenshot = String(evt.final_screenshot_url || "");
+                  let finalContent = success
+                    ? `**Browser task complete** — ${stepsTaken} step${stepsTaken !== 1 ? "s" : ""}.`
+                    : `**Browser task failed.**`;
+                  if (finalScreenshot) {
+                    finalContent += `\n\`\`\`image\n${JSON.stringify({ src: finalScreenshot, alt: "Final screenshot" })}\n\`\`\``;
+                  }
+                  setAgentMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === btMsgId ? { ...m, content: finalContent, actions: [] } : m
+                    )
+                  );
+                  setStatus(success ? `Browser task done (${stepsTaken} steps)` : "Browser task failed");
+                }
+
+                if (evt.type === "error") {
+                  const errMsg = String(evt.error || "Unknown browser task error");
+                  setAgentMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === btMsgId
+                        ? { ...m, content: `**Browser task error:** ${errMsg}`, actions: [] }
+                        : m
+                    )
+                  );
+                  setStatus(`Browser task error: ${errMsg}`);
+                }
+              } catch {
+                // ignore malformed SSE lines
+              }
+            }
+          }
+        })
+        .catch((err: Error) => {
+          setStatus(`Browser task error: ${err.message}`);
+          setAgentMessages((prev) =>
+            prev.map((m) =>
+              m.id === btMsgId
+                ? { ...m, content: `**Browser task error:** ${err.message}`, actions: [] }
+                : m
+            )
+          );
+        });
       return;
     }
     if (action.kind === "pc_control") {

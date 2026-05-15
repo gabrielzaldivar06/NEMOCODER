@@ -4499,3 +4499,10 @@ textarea:focus-visible,
 @keyframes skeleton-shimmer { 0% { background-position: 200% 0 } 100% { background-position: -200% 0 } }
 
 @keyframes slideInPlan { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+.mission-action-btn.browser_task { border-color: #0891b2; background: #001a20; color: #67e8f9; }
+.mission-action-btn.browser_task:hover { border-color: #06b6d4; background: #00232b; }
+.mission-action-btn.browser_cancel { border-color: #b91c1c; background: #200a0a; color: #fca5a5; }
+.mission-action-btn.browser_cancel:hover { border-color: #ef4444; background: #2d1010; }
+.browser-screenshot-step { margin: 4px 0; }
+.browser-screenshot-step img { max-width: 100%; border: 1px solid #1e293b; border-radius: 4px; }
+.browser-screenshot-step .step-title { font-size: 0.75rem; color: #94a3b8; margin-bottom: 2px; }
