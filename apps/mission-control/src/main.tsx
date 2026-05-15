@@ -3554,207 +3554,263 @@ function InsightSection({
 }
 
 function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true, permissionJob, onGrantPermission, onDenyPermission, runningJob }: AgentPaneProps) {
-  const [compactView, setCompactView] = useState(true);
+  const [tab, setTab] = useState<"chat" | "run" | "insights">("chat");
+  const [chatMenuOpen, setChatMenuOpen] = useState(false);
+  const chatMenuRef = React.useRef<HTMLDivElement>(null);
   const riskCount = run?.risk_flags.length ?? 0;
+
+  useEffect(() => {
+    if (!chatMenuOpen) return;
+    const handle = (e: MouseEvent) => {
+      if (chatMenuRef.current && !chatMenuRef.current.contains(e.target as Node)) {
+        setChatMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [chatMenuOpen]);
 
   return (
     <aside className="agent-pane">
-      {permissionJob && permissionJob.permission_request && onGrantPermission && onDenyPermission && (
-        <PermissionRequestPanel
-          jobId={permissionJob.job_id}
-          objective={String(permissionJob.objective || permissionJob.permission_request.rationale || "")}
-          permissionRequest={permissionJob.permission_request as { job_id: string; categories: string[]; rationale: string; auto_approved: string[]; requires_user_approval: string[] }}
-          onGranted={() => onGrantPermission(permissionJob.job_id, "")}
-          onDenied={() => onDenyPermission(permissionJob.job_id, "")}
-        />
-      )}
-      {runningJob && (
-        <TimelinePanel
-          jobId={runningJob.job_id}
-          isLive={true}
-        />
-      )}
-      <div className="panel-title"><Bot size={16} /> Control del Agente</div>
-      <div className="chat-controls">
-        <button onClick={onClearChat} title="Borrar historial del chat"><span>🗑️</span> Limpiar</button>
-        <button onClick={onStartNewChat} title="Iniciar nueva sesión"><span>💬</span> Nuevo</button>
-        <button onClick={onArchiveOldRuns} title="Limpiar runs antiguos"><span>📦</span> Limpiar runs</button>
-        <button onClick={onClearAllRuns} title="Limpiar todos los runs"><span>🧨</span> Limpiar todo</button>
-      </div>
-      <div className="chat-controls" style={{ marginTop: 8 }}>
-        <button onClick={onOpenObjectiveModal} title="Definir objetivo estructurado"><span>🎯</span> Objetivo</button>
-        <button onClick={onGeneratePlan} title="Generar plan multi-step" disabled={!planObjective}><span>🧭</span> Plan</button>
-      </div>
-      {planObjective && <div className="agent-card" style={{ marginBottom: 10 }}>
-        <span>Objetivo activo</span>
-        <strong>{planObjective.title}</strong>
-        <p>{planObjective.description || "Sin descripcion"}</p>
-      </div>}
-      {currentPlan && <PlanProgress
-        objective={planObjective}
-        currentPlan={currentPlan}
-        activeStepId={activeStepId}
-        planProgress={planProgress}
-        onStepClick={onSelectPlanStep}
-      />}
-      <section className="agent-chat">
-        <AgentLiveStatus busy={busy} queuedPrompt={queuedPrompt} messages={messages} />
-        <div className="chat-thread">
-          {messages.map((message) => <AgentChatMessage message={message} onRunAction={onRunAction} key={message.id} />)}
-        </div>
-        <div className="chat-steering">
-          <button onClick={() => onSendGuidedPrompt("Continua desde el ultimo paso y explicame el avance en 3 bullets.")}>Continuar</button>
-          <button onClick={() => onSendGuidedPrompt("Activa modo plan: genera o refina pasos concretos en formato [STEP N: titulo -> resultado esperado].")}>Plan</button>
-          <button onClick={() => onSendGuidedPrompt("Enfoca la solucion en UX del chat: posicion, stop, steering y render visual de tools.")}>Enfocar UX</button>
-          <button onClick={() => onSendGuidedPrompt("Reformula la respuesta con opciones accionables y pasos concretos.")}>Reformular</button>
-          <button className="stop" onClick={onStop} disabled={!busy}><Square size={13} /> Detener</button>
-        </div>
-        <div className="chat-composer">
-          <textarea
-            value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) onSend();
-            }}
-            placeholder="Pide al agente continuar, corregir o aplicar cambios..."
+
+      {/* ── HEADER (always visible) ── */}
+      <div className="agent-pane-header">
+        {permissionJob && permissionJob.permission_request && onGrantPermission && onDenyPermission && (
+          <PermissionRequestPanel
+            jobId={permissionJob.job_id}
+            objective={String(permissionJob.objective || permissionJob.permission_request.rationale || "")}
+            permissionRequest={permissionJob.permission_request as { job_id: string; categories: string[]; rationale: string; auto_approved: string[]; requires_user_approval: string[] }}
+            onGranted={() => onGrantPermission(permissionJob.job_id, "")}
+            onDenied={() => onDenyPermission(permissionJob.job_id, "")}
           />
-          <button onClick={onSend} disabled={!draft.trim()} title={busy ? "Queue message" : "Send agent prompt"}><Send size={15} /></button>
+        )}
+        {runningJob && !permissionJob && (
+          <Tooltip text="Job en ejecución — click para ver el timeline en la tab Run">
+            <div className="agent-live-badge" onClick={() => setTab("run")} role="button" tabIndex={0}>
+              <span className="agent-live-badge-dot" aria-hidden="true" /> LIVE — {runningJob.job_id.slice(-8)}
+            </div>
+          </Tooltip>
+        )}
+        <div className="agent-metrics-strip">
+          <Tooltip text="Total de runs en el workspace actual">
+            <span className="agent-metric"><span>{state.runs.length}</span> Runs</span>
+          </Tooltip>
+          <Tooltip text="Runs listos para aplicar (sin risk flags bloqueantes)">
+            <span className="agent-metric agent-metric-ready"><span>{readyRuns}</span> Ready</span>
+          </Tooltip>
+          <Tooltip text="Runs con risk flags que requieren revisión manual antes de aplicar">
+            <span className="agent-metric agent-metric-blocked"><span>{blockedRuns}</span> Blocked</span>
+          </Tooltip>
+          <Tooltip text="Memoria NEMO: activa cuando nemo_required está habilitado en Settings">
+            <span className="agent-metric"><span>{state.settings.nemo_required ? "on" : "off"}</span> NEMO</span>
+          </Tooltip>
         </div>
-        {(busy || queuedPrompt) && <div className="chat-queue-status">
-          <span>{busy ? "El agente esta respondiendo..." : ""}</span>
-          {queuedPrompt && <strong>Siguiente: {queuedPrompt}</strong>}
-          {queuedPrompts.length > 1 && <span>{queuedPrompts.length - 1} mensaje(s) adicionales en cola</span>}
-          {queuedPrompts.length > 0 && <div className="queued-list">
-            {queuedPrompts.map((item, index) => (
-              <div className="queued-item" key={`${item}-${index}`}>
-                <span>{index + 1}. {item}</span>
-                <div>
-                  <button onClick={() => onPrioritizeQueued(index)} disabled={index === 0}>Priorizar</button>
-                  <button onClick={() => onRemoveQueued(index)}>Quitar</button>
+        <div className="agent-tab-bar" role="tablist">
+          <Tooltip text="Chat con el agente — envía instrucciones y recibe respuestas">
+            <button role="tab" className={`agent-tab ${tab === "chat" ? "active" : ""}`} onClick={() => setTab("chat")}>Chat</button>
+          </Tooltip>
+          <Tooltip text="Controla el run seleccionado: revisa el diff, aplica o deshace cambios">
+            <button role="tab" className={`agent-tab ${tab === "run" ? "active" : ""}`} onClick={() => setTab("run")}>Run</button>
+          </Tooltip>
+          <Tooltip text="Análisis: Self-Improvement, Risk Map, NEMO Memory, Apply Plan">
+            <button role="tab" className={`agent-tab ${tab === "insights" ? "active" : ""}`} onClick={() => setTab("insights")}>Insights</button>
+          </Tooltip>
+        </div>
+      </div>
+
+      {/* ── CHAT TAB ── */}
+      {tab === "chat" && (
+        <>
+          <div className="agent-chat-body">
+            <AgentLiveStatus busy={busy} queuedPrompt={queuedPrompt} messages={messages} />
+            {planObjective && (
+              <div className="agent-card" style={{ marginBottom: 4 }}>
+                <span>Objetivo activo</span>
+                <strong>{planObjective.title}</strong>
+                <p>{planObjective.description || "Sin descripcion"}</p>
+              </div>
+            )}
+            {currentPlan && (
+              <PlanProgress
+                objective={planObjective}
+                currentPlan={currentPlan}
+                activeStepId={activeStepId}
+                planProgress={planProgress}
+                onStepClick={onSelectPlanStep}
+              />
+            )}
+            <div className="chat-thread">
+              {messages.map((message) => (
+                <AgentChatMessage message={message} onRunAction={onRunAction} key={message.id} />
+              ))}
+            </div>
+          </div>
+
+          <div className="agent-chat-footer">
+            <div className="chat-steering">
+              <Tooltip text="Continua desde el ultimo paso y explicame el avance en 3 bullets.">
+                <button onClick={() => onSendGuidedPrompt("Continua desde el ultimo paso y explicame el avance en 3 bullets.")}>Continuar</button>
+              </Tooltip>
+              <Tooltip text="Activa modo plan: genera o refina pasos concretos en formato [STEP N: titulo -> resultado esperado].">
+                <button onClick={() => onSendGuidedPrompt("Activa modo plan: genera o refina pasos concretos en formato [STEP N: titulo -> resultado esperado].")}>Plan</button>
+              </Tooltip>
+              <Tooltip text="Reformula la respuesta con opciones accionables y pasos concretos.">
+                <button onClick={() => onSendGuidedPrompt("Reformula la respuesta con opciones accionables y pasos concretos.")}>Reformular</button>
+              </Tooltip>
+              <Tooltip text="Detener la respuesta del agente en curso">
+                <button className="stop" onClick={onStop} disabled={!busy}><Square size={13} /> Detener</button>
+              </Tooltip>
+            </div>
+            <div className="chat-composer">
+              <textarea
+                value={draft}
+                onChange={(e) => onDraftChange(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) onSend(); }}
+                placeholder="Pide al agente continuar, corregir o aplicar cambios..."
+              />
+              <div style={{ display: "flex", gap: 4 }}>
+                <Tooltip text="Enviar mensaje (también Ctrl+Enter)">
+                  <button onClick={onSend} disabled={!draft.trim()} title="Enviar"><Send size={15} /></button>
+                </Tooltip>
+                <div className="chat-menu-wrap" ref={chatMenuRef}>
+                  <Tooltip text="Más acciones: nuevo chat, limpiar, objetivo, plan">
+                    <button className="chat-menu-toggle" onClick={() => setChatMenuOpen((o) => !o)} aria-label="Más opciones">···</button>
+                  </Tooltip>
+                  {chatMenuOpen && (
+                    <div className="chat-menu-dropdown">
+                      <button onClick={() => { onStartNewChat(); setChatMenuOpen(false); }}>💬 Nuevo chat</button>
+                      <button onClick={() => { onClearChat(); setChatMenuOpen(false); }}>🗑️ Limpiar chat</button>
+                      <hr />
+                      <button onClick={() => { onOpenObjectiveModal(); setChatMenuOpen(false); }}>🎯 Definir objetivo</button>
+                      <button onClick={() => { onGeneratePlan(); setChatMenuOpen(false); }} disabled={!planObjective}>🧭 Generar plan</button>
+                    </div>
+                  )}
                 </div>
               </div>
-            ))}
-          </div>}
-        </div>}
-      </section>
-      <div className="metric-grid">
-        <Metric icon={<TerminalSquare size={16} />} label="Runs" value={state.runs.length} />
-        <Metric icon={<ShieldCheck size={16} />} label="Ready" value={readyRuns} />
-        <Metric icon={<AlertTriangle size={16} />} label="Blocked" value={blockedRuns} />
-        <Metric icon={<Database size={16} />} label="NEMO" value={state.settings.nemo_required ? "on" : "off"} />
-      </div>
+            </div>
+            {(busy || queuedPrompt) && (
+              <div className="chat-queue-status">
+                <span>{busy ? "El agente esta respondiendo..." : ""}</span>
+                {queuedPrompt && <strong>Siguiente: {queuedPrompt}</strong>}
+                {queuedPrompts.length > 1 && <span>{queuedPrompts.length - 1} mensaje(s) adicionales en cola</span>}
+                {queuedPrompts.length > 0 && (
+                  <div className="queued-list">
+                    {queuedPrompts.map((item, index) => (
+                      <div className="queued-item" key={`${item}-${index}`}>
+                        <span>{index + 1}. {item}</span>
+                        <div>
+                          <button onClick={() => onPrioritizeQueued(index)} disabled={index === 0}>Priorizar</button>
+                          <button onClick={() => onRemoveQueued(index)}>Quitar</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
-      <div className="review-actions" style={{ marginBottom: 10 }}>
-        <button className={compactView ? "active" : ""} onClick={() => setCompactView(true)}>Lectura compacta</button>
-        <button className={!compactView ? "active" : ""} onClick={() => setCompactView(false)}>Lectura detallada</button>
-      </div>
-
-      <AutopilotFlowPanel
-        run={run}
-        mode={autonomyMode}
-        onModeChange={onAutonomyModeChange}
-        busy={busy}
-        onReview={onReview}
-        onApply={onApply}
-        onAutoApply={onAutoApply}
-        onSendGuidedPrompt={onSendGuidedPrompt}
-      />
-
-      {run ? <>
-        <div className="agent-card">
-          <span>Selected run</span>
-          <strong>{run.task_id} / {run.run_id}</strong>
-          <p>{run.source_json}</p>
+      {/* ── RUN TAB ── */}
+      {tab === "run" && (
+        <div className="agent-run-body">
+          {runningJob && (
+            <TimelinePanel jobId={runningJob.job_id} isLive={true} />
+          )}
+          {!run && <EmptyState />}
+          {run && (
+            <>
+              <div className="agent-card">
+                <span>Run seleccionado</span>
+                <strong>{run.task_id} / {run.run_id}</strong>
+                <p>{run.source_json}</p>
+              </div>
+              <div className="agent-card">
+                <span>Estado</span>
+                <strong>{statusLabel(run.review_status)}</strong>
+                <p>
+                  {run.mergeable ? "Listo para aplicar" : "Requiere revisión"} · {riskCount} riesgo(s) · {run.changed_files.length} archivo(s)
+                </p>
+                {run.risk_flags.length > 0 && (
+                  <div className="risk-box">{run.risk_flags.map((r) => <span key={r}>{r}</span>)}</div>
+                )}
+              </div>
+              <AutopilotFlowPanel
+                run={run}
+                mode={autonomyMode}
+                onModeChange={onAutonomyModeChange}
+                busy={busy}
+                onReview={onReview}
+                onApply={onApply}
+                onAutoApply={onAutoApply}
+                onSendGuidedPrompt={onSendGuidedPrompt}
+              />
+              <div className="run-action-row">
+                <Tooltip text="Abre el diff completo para revisar los cambios antes de aplicar">
+                  <button onClick={() => onReview(run)}><GitPullRequest size={16} /> Revisar</button>
+                </Tooltip>
+                <Tooltip text="Escribe los cambios al repo. Solo disponible si el run es mergeable">
+                  <button disabled={!run.mergeable} onClick={() => onApply(run)}><CheckCircle2 size={16} /> Aplicar</button>
+                </Tooltip>
+                <Tooltip text="Aplica directamente si pasa controles automáticos, sin revisión manual">
+                  <button disabled={!run.mergeable} onClick={() => onAutoApply(run)}><ShieldCheck size={16} /> Rápido</button>
+                </Tooltip>
+                <Tooltip text="Revierte el último apply. Requiere que el run tenga snapshot previo">
+                  <button onClick={() => onRollback(run)}><RotateCcw size={16} /> Deshacer</button>
+                </Tooltip>
+              </div>
+              {applyJson && <p className="muted">Last apply: {applyJson}</p>}
+              <InsightSection title="Apply History" summary={`${applyHistory.length} evento(s)`} open={false}>
+                <ApplyHistoryPanel applies={applyHistory} />
+              </InsightSection>
+            </>
+          )}
+          <div className="run-destructive-zone">
+            <Tooltip text="Limpia runs completados con más de 24h. No afecta runs activos.">
+              <button onClick={onArchiveOldRuns}>📦 Limpiar antiguos</button>
+            </Tooltip>
+            <Tooltip text="Elimina TODOS los runs del workspace. Acción irreversible.">
+              <button onClick={onClearAllRuns}>🧨 Limpiar todo</button>
+            </Tooltip>
+          </div>
         </div>
+      )}
 
-        <div className="agent-card">
-          <span>Estado rapido</span>
-          <strong>{statusLabel(run.review_status)}</strong>
-          <p>{run.mergeable ? "Listo para aplicar" : "Requiere revision"} · {riskCount} riesgo(s) · {run.changed_files.length} archivo(s)</p>
-          {run.risk_flags.length > 0 && <div className="risk-box">{run.risk_flags.map((risk) => <span key={risk}>{risk}</span>)}</div>}
+      {/* ── INSIGHTS TAB ── */}
+      {tab === "insights" && (
+        <div className="agent-insights-body">
+          <InsightSection
+            title="Self-Improvement"
+            summary={`${selfInsights?.trajectory?.grade ?? "sin run"} / ${selfInsights?.impact?.risk_flags.length ?? 0} riesgo(s)`}
+            open={false}
+          >
+            <SelfImprovementPanel insights={selfInsights} />
+          </InsightSection>
+          <InsightSection
+            title="Risk Map"
+            summary={`${riskMap?.count ?? 0} patron(es)`}
+            open={false}
+          >
+            <RiskMapPanel riskMap={riskMap} onRefresh={onRefreshRiskMap} />
+          </InsightSection>
+          <InsightSection
+            title="NEMO Memory"
+            summary={`${nemoState?.health.atom_count ?? 0} atoms / ${nemoState?.health.evidence_count ?? 0} evidence`}
+            open={false}
+          >
+            <NemoMemoryPanel nemoState={nemoState} mcpWatcher={mcpWatcher} />
+          </InsightSection>
+          <InsightSection
+            title="Apply Plan"
+            summary={reviewPlan ? `${reviewPlan.mergeable ? "mergeable" : "blocked"} / ${reviewPlan.risk_flags.length} riesgo(s)` : "sin plan"}
+            open={false}
+          >
+            <ReviewPlanPanel plan={reviewPlan} />
+          </InsightSection>
         </div>
+      )}
 
-        <InsightSection
-          title="Runtime State"
-          summary={`${run.runtime_state || "unknown"} / ${run.execution_phase || "unknown"}`}
-          open={!compactView}
-        >
-          <OperationalStatePanel run={run} />
-        </InsightSection>
-
-        <div className="review-actions">
-          <button onClick={() => onReview(run)}><GitPullRequest size={16} /> Revisar cambios</button>
-          <button disabled={!run.mergeable} onClick={() => onApply(run)}><CheckCircle2 size={16} /> Aplicar</button>
-          <button disabled={!run.mergeable} onClick={() => onAutoApply(run)} title="Aplica directo si pasa controles automaticos"><ShieldCheck size={16} /> Aplicar rapido</button>
-          <button onClick={() => onRollback(run)}><RotateCcw size={16} /> Deshacer</button>
-        </div>
-        {applyJson && <p className="muted">Last apply JSON: {applyJson}</p>}
-      </> : <EmptyState />}
-
-      <InsightSection
-        title="Self-Improvement"
-        summary={`${selfInsights?.trajectory?.grade ?? "sin run"} / ${selfInsights?.impact?.risk_flags.length ?? 0} riesgo(s)`}
-        open={!compactView}
-      >
-        <SelfImprovementPanel insights={selfInsights} />
-      </InsightSection>
-
-      <InsightSection
-        title="Risk Map"
-        summary={`${riskMap?.count ?? 0} patron(es)`}
-        open={!compactView}
-      >
-        <RiskMapPanel riskMap={riskMap} onRefresh={onRefreshRiskMap} />
-      </InsightSection>
-
-      <InsightSection
-        title="NEMO Memory"
-        summary={`${nemoState?.health.atom_count ?? 0} atoms / ${nemoState?.health.evidence_count ?? 0} evidence`}
-        open={!compactView}
-      >
-        <NemoMemoryPanel nemoState={nemoState} mcpWatcher={mcpWatcher} />
-      </InsightSection>
-
-      <InsightSection
-        title="Apply Plan"
-        summary={reviewPlan ? `${reviewPlan.mergeable ? "mergeable" : "blocked"} / ${reviewPlan.risk_flags.length} riesgo(s)` : "sin plan"}
-        open={!compactView}
-      >
-        <ReviewPlanPanel plan={reviewPlan} />
-      </InsightSection>
-
-      <InsightSection
-        title="Apply History"
-        summary={`${applyHistory.length} evento(s)`}
-        open={!compactView}
-      >
-        <ApplyHistoryPanel applies={applyHistory} />
-      </InsightSection>
-
-      {showSettingsPanel && <InsightSection
-        title="Ajustes"
-        summary="repo, validacion, mcp, limpieza"
-        open={!compactView}
-      >
-        <RepoSettingsPanel
-        state={state}
-        settings={settingsDraft}
-        onSettingsChange={onSettingsChange}
-        onSaveSettings={onSaveSettings}
-        repoDraft={repoDraft}
-        onRepoDraftChange={onRepoDraftChange}
-        onOpenRepo={onOpenRepo}
-        cloneDraft={cloneDraft}
-        onCloneDraftChange={onCloneDraftChange}
-        onCloneRepo={onCloneRepo}
-        cleanupResult={cleanupResult}
-        onCleanup={onCleanup}
-        orphanCleanupResult={orphanCleanupResult}
-        onCleanupOrphans={onCleanupOrphans}
-        mcpWatcher={mcpWatcher}
-        onRefreshMcpWatcher={onRefreshMcpWatcher}
-        />
-      </InsightSection>}
     </aside>
   );
 }
@@ -4900,6 +4956,15 @@ function RunsSkeleton() {
         <div key={n} className="runs-skeleton-row" />
       ))}
     </div>
+  );
+}
+
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <span className="tooltip-wrap">
+      {children}
+      <span className="tooltip-bubble">{text}</span>
+    </span>
   );
 }
 
