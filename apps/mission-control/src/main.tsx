@@ -16,6 +16,7 @@ import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
 import { usePlanState } from "./hooks/usePlanState";
 import { usePlanNemoSync } from "./hooks/usePlanNemoSync";
 import { ExecutionPlan, ObjectiveState, PlanStep } from "./services/planNemoClient";
+import { archiveChatSession } from "./services/persistenceStore";
 
 type TimelineEvent = {
   sequence: number | null;
@@ -2096,26 +2097,14 @@ export function App() {
       setStatus("No hay mensajes para archivar");
       return;
     }
-    const firstUserMessage = agentMessages.find((message) => message.role === "user")?.content.trim();
-    const entry: ChatArchiveEntry = {
-      id: `chat-${Date.now()}`,
-      created_at: new Date().toISOString(),
-      title: firstUserMessage ? firstUserMessage.slice(0, 80) : "Chat archivado",
-      messages: agentMessages,
-    };
-    try {
-      const raw = window.localStorage.getItem(CHAT_ARCHIVE_STORAGE_KEY);
-      const existing = raw ? JSON.parse(raw) as ChatArchiveEntry[] : [];
-      const nextArchives = [entry, ...(Array.isArray(existing) ? existing : [])].slice(0, 20);
-      window.localStorage.setItem(CHAT_ARCHIVE_STORAGE_KEY, JSON.stringify(nextArchives));
-      setAgentMessages([]);
-      setAgentDraft("");
-      setHomeAgentDraft("");
-      setQueuedAgentPrompts([]);
-      setStatus("Chat archivado ✓");
-    } catch {
-      setStatus("No se pudo archivar el chat localmente");
-    }
+    const firstUserMessage = agentMessages.find((m) => m.role === "user")?.content.trim();
+    const title = firstUserMessage ? firstUserMessage.slice(0, 80) : "Chat archivado";
+    archiveChatSession(agentMessages, title);  // writes archive + clears session key
+    setAgentMessages([]);
+    setAgentDraft("");
+    setHomeAgentDraft("");
+    setQueuedAgentPrompts([]);
+    setStatus("Chat archivado ✓");
   };
 
   const startNewChat = () => {
