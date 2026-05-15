@@ -23,7 +23,7 @@ const statePayload: any = {
   approval_queue: [],
   settings: {
     model_base_url: "http://localhost:1234/v1",
-    default_model: "nvidia.agentic.coder-4b",
+    default_model: "",
     provider: "subprocess",
     memory_db: ".nemo-runtimes/nemo-memory.sqlite",
     runtime_path: ".nemo-runtimes",

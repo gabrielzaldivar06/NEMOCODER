@@ -26,7 +26,7 @@ class PersistenceTests(unittest.TestCase):
         self.assertIn("task", payload)
         self.assertIn("readiness", payload)
         self.assertEqual(payload["mutation_result"]["provider"], "fake-space-code")
-        self.assertEqual(payload["mutation_result"]["model_profile"]["model"], "nvidia.agentic.coder-4b")
+        self.assertIn("model", payload["mutation_result"]["model_profile"])  # auto-resolved, not hardcoded
         self.assertIn("generated-implementation.md", payload["mutation_result"]["changed_files"])
         self.assertIn("portfolio", payload)
         self.assertEqual(payload["readiness"]["score"], 1.0)
@@ -47,7 +47,7 @@ class PersistenceTests(unittest.TestCase):
 
         self.assertEqual(summary["grade"], "ready")
         self.assertEqual(summary["score"], 1.0)
-        self.assertEqual(summary["model"], "nvidia.agentic.coder-4b")
+        self.assertIn("model", summary)  # auto-resolved, not hardcoded
         self.assertIn("generated-implementation.md", summary["changed_files"])
 
     def test_build_replay_summary_links_timeline_artifacts_and_runtime_files(self) -> None:

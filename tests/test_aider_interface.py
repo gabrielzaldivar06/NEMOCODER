@@ -12,12 +12,12 @@ from nemo_coding_platform.core.workspace import Workspace
 
 class AiderInterfaceTests(unittest.TestCase):
     def test_default_engine_command_targets_lmstudio_model(self) -> None:
-        profile = ModelProfile(model="nvidia.agentic.coder-4b", base_url="http://localhost:1234/v1")
+        profile = ModelProfile(model="test-model", base_url="http://localhost:1234/v1")
         command = build_default_engine_command(profile, ".nemo-engine-message.md")
 
         self.assertIn("-m", command)
         self.assertIn("nemo_code_runtime", command)
-        self.assertIn("openai/nvidia.agentic.coder-4b", command)
+        self.assertIn("openai/test-model", command)
         self.assertIn("http://localhost:1234/v1", command)
         self.assertIn("--message-file", command)
         self.assertIn("--no-show-model-warnings", command)

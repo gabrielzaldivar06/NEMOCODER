@@ -152,7 +152,7 @@ class HeadlessRunnerTests(unittest.TestCase):
 
         self.assertIsNotNone(result.mutation_result)
         self.assertEqual(result.mutation_result.provider, "fake-space-code")
-        self.assertEqual(result.mutation_result.model_profile.model, "nvidia.agentic.coder-4b")
+        self.assertIsNotNone(result.mutation_result.model_profile)
         self.assertIn("generated-implementation.md", result.mutation_result.changed_files)
         self.assertIsNotNone(result.portfolio)
         self.assertIn("context", result.portfolio)

@@ -2316,7 +2316,7 @@ class MissionControlServerTests(unittest.TestCase):
                         "provider": "subprocess",
                         "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse",
                         "model_base_url": "http://localhost:1234/v1",
-                        "default_model": "nvidia.agentic.coder-4b",
+                        "default_model": "",
                     },
                 )
 

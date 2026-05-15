@@ -1932,7 +1932,7 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
     runtime_read_text = ", ".join(runtime_read_only) if runtime_read_only else "none"
     runtime_write_text = ", ".join(declared_write_or_destructive) if declared_write_or_destructive else "none"
     body = {
-        "model": _chat_model(payload),
+        "model": _resolve_lmstudio_model(_chat_base_url(payload)) or _chat_model(payload),
         "messages": [
             {
                 "role": "system",

@@ -20,7 +20,7 @@ class NonFunctionalRequirementsContractTests(unittest.TestCase):
     def test_lmstudio_errors_never_leak_api_key(self) -> None:
         api_key = "sk-local-super-secret"
         payload = {
-            "model": "nvidia.agentic.coder-4b",
+            "model": "test-model",
             "model_base_url": "http://localhost:1234/v1",
             "provider": "subprocess",
             "timeout_seconds": 30,

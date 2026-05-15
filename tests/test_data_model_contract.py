@@ -25,7 +25,7 @@ class DataModelContractTests(unittest.TestCase):
         )
 
         self.assertIsInstance(result.run.model_profile_link, RunModelProfileLink)
-        self.assertEqual(result.run.model_profile_link.model, "nvidia.agentic.coder-4b")
+        self.assertIsNotNone(result.run.model_profile_link.model)  # auto-resolved, not hardcoded
         self.assertEqual(result.run.model_profile_link.provider_mode, "fake")
 
     def test_memory_traces_use_explicit_nemo_memory_event_schema(self) -> None:

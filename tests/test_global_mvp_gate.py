@@ -33,12 +33,12 @@ class GlobalMvpGateTests(unittest.TestCase):
                     {
                         "provider": "subprocess",
                         "model_base_url": "http://localhost:1234/v1",
-                        "default_model": "nvidia.agentic.coder-4b",
+                        "default_model": "",
                         "model_roles": {
-                            "planner": "nvidia.agentic.coder-4b",
-                            "editor": "nvidia.agentic.coder-4b",
-                            "reviewer": "nvidia.agentic.coder-4b",
-                            "summarizer": "nvidia.agentic.coder-4b",
+                            "planner": "",
+                            "editor": "",
+                            "reviewer": "",
+                            "summarizer": "",
                         },
                     },
                 )
