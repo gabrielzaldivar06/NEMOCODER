@@ -2783,24 +2783,10 @@ export function App() {
               nemoState={nemoState}
               mcpWatcher={nemoMcpStatus}
               selfInsights={selfInsights}
-              settingsDraft={settingsDraft}
-              onSettingsChange={setSettingsDraft}
-              onSaveSettings={saveSettings}
-              repoDraft={repoDraft}
-              onRepoDraftChange={setRepoDraft}
-              onOpenRepo={openRepo}
-              cloneDraft={cloneDraft}
-              onCloneDraftChange={setCloneDraft}
-              onCloneRepo={cloneRepo}
               reviewPlan={reviewPlan}
               applyHistory={applyHistory}
               riskMap={riskMap}
               onRefreshRiskMap={loadRiskMap}
-              cleanupResult={cleanupResult}
-              onCleanup={cleanupArtifacts}
-              orphanCleanupResult={orphanCleanupResult}
-              onCleanupOrphans={cleanupOrphanJobs}
-              onRefreshMcpWatcher={loadNemoMcpStatus}
               onSendGuidedPrompt={sendGuidedAgentPrompt}
               onClearChat={clearAgentChat}
               onStartNewChat={startNewChat}
@@ -2813,7 +2799,6 @@ export function App() {
               onOpenObjectiveModal={openObjectiveModal}
               onGeneratePlan={generatePlanPrompt}
               onSelectPlanStep={handlePlanStepSelect}
-              showSettingsPanel={false}
               permissionJob={jobAwaitingPermission}
               onGrantPermission={grantPermission}
               onDenyPermission={denyPermission}
@@ -3348,24 +3333,10 @@ type AgentPaneProps = {
   nemoState: NemoState | null;
   mcpWatcher: NemoMcpWatcherState | null;
   selfInsights: SelfModInsights | null;
-  settingsDraft: MissionState["settings"];
-  onSettingsChange: (settings: MissionState["settings"]) => void;
-  onSaveSettings: () => void;
-  repoDraft: string;
-  onRepoDraftChange: (value: string) => void;
-  onOpenRepo: (repoPath?: string) => void;
-  cloneDraft: { url: string; destination: string };
-  onCloneDraftChange: (draft: { url: string; destination: string }) => void;
-  onCloneRepo: () => void;
   reviewPlan: ReviewPlan | null;
   applyHistory: ApplyHistoryItem[];
   riskMap: RiskMapState | null;
   onRefreshRiskMap: () => void;
-  cleanupResult: CleanupResult | null;
-  onCleanup: (dryRun: boolean) => void;
-  orphanCleanupResult: OrphanCleanupResult | null;
-  onCleanupOrphans: (dryRun: boolean) => void;
-  onRefreshMcpWatcher: () => void;
   onSendGuidedPrompt: (prompt: string) => void;
   onClearChat: () => void;
   onStartNewChat: () => void;
@@ -3378,7 +3349,6 @@ type AgentPaneProps = {
   onOpenObjectiveModal: () => void;
   onGeneratePlan: () => void;
   onSelectPlanStep: (stepId: string) => void;
-  showSettingsPanel?: boolean;
   permissionJob?: HandoffJob | null;
   onGrantPermission?: (jobId: string, note: string) => void;
   onDenyPermission?: (jobId: string, note: string) => void;
@@ -3553,7 +3523,7 @@ function InsightSection({
   );
 }
 
-function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, settingsDraft, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, onRefreshMcpWatcher, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, showSettingsPanel = true, permissionJob, onGrantPermission, onDenyPermission, runningJob }: AgentPaneProps) {
+function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, permissionJob, onGrantPermission, onDenyPermission, runningJob }: AgentPaneProps) {
   const [tab, setTab] = useState<"chat" | "run" | "insights">("chat");
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
   const chatMenuRef = React.useRef<HTMLDivElement>(null);
