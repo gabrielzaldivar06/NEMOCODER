@@ -118,6 +118,79 @@ def get_sessions_info() -> list[dict]:
         ]
 
 
+def take_browser_frame(session_id: str) -> bytes | None:
+    """Return a PNG screenshot of the current browser frame, or None if session gone."""
+    with _session_lock:
+        sess = _browser_sessions.get(session_id)
+    if sess is None:
+        return None
+    try:
+        mask = sess.page.locator("input[type=password]")
+        return sess.page.screenshot(mask=[mask], full_page=False, timeout=5000)
+    except Exception:
+        return None
+
+
+def get_browser_info(session_id: str) -> dict | None:
+    """Return current URL, title, and step count for a session."""
+    with _session_lock:
+        sess = _browser_sessions.get(session_id)
+    if sess is None:
+        return None
+    try:
+        url = sess.page.url
+    except Exception:
+        url = sess.url
+    try:
+        title = sess.page.title()
+    except Exception:
+        title = ""
+    return {
+        "session_id": session_id,
+        "url": url,
+        "title": title,
+        "step_count": sess.step_count,
+        "active": True,
+    }
+
+
+def browser_interact(session_id: str, action: str, **kwargs) -> dict:
+    """
+    Send an interaction to a live browser session.
+
+    action values: "click", "scroll", "type", "key", "navigate"
+    """
+    with _session_lock:
+        sess = _browser_sessions.get(session_id)
+    if sess is None:
+        return {"ok": False, "error": "session not found"}
+    try:
+        if action == "click":
+            x = float(kwargs.get("x", 0))
+            y = float(kwargs.get("y", 0))
+            sess.page.mouse.click(x, y)
+        elif action == "scroll":
+            delta_x = float(kwargs.get("delta_x", 0))
+            delta_y = float(kwargs.get("delta_y", 0))
+            sess.page.mouse.wheel(delta_x, delta_y)
+        elif action == "type":
+            text = str(kwargs.get("text", ""))
+            sess.page.keyboard.type(text)
+        elif action == "key":
+            key = str(kwargs.get("key", ""))
+            sess.page.keyboard.press(key)
+        elif action == "navigate":
+            url = str(kwargs.get("url", ""))
+            sess.page.goto(url, timeout=30000)
+            sess.url = url
+        else:
+            return {"ok": False, "error": f"unknown action: {action}"}
+        sess.last_used = time.time()
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def confirm_action(session_id: str, approved: bool) -> bool:
     with _session_lock:
         sess = _browser_sessions.get(session_id)

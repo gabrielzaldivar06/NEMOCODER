@@ -6978,6 +6978,19 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/agent/browser-sessions":
             self._handle(lambda _: api_browser_sessions(self.server.config), {})
             return
+        if route.startswith("/api/browser/") and route.endswith("/frame"):
+            session_id = route[len("/api/browser/"): -len("/frame")].strip("/")
+            self._handle_browser_frame(session_id)
+            return
+        if route.startswith("/api/browser/") and route.endswith("/info"):
+            session_id = route[len("/api/browser/"): -len("/info")].strip("/")
+            from nemo_coding_platform.browser_agent import get_browser_info
+            info = get_browser_info(session_id)
+            if info is None:
+                _json_response(self, 404, {"error": "session_not_found"})
+            else:
+                _json_response(self, 200, info)
+            return
         if route == "/api/vault/credentials":
             self._handle(lambda _: api_vault_list(self.server.config), {})
             return
@@ -7088,6 +7101,23 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         finally:
             gen.close()
 
+    def _handle_browser_frame(self, session_id: str) -> None:
+        """Serve a single PNG screenshot of the live browser session."""
+        from nemo_coding_platform.browser_agent import take_browser_frame
+        frame = take_browser_frame(session_id)
+        if frame is None:
+            _json_response(self, 404, {"error": "session_not_found"})
+            return
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(frame)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(frame)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+
     def _handle_timeline_sse(self, job_id: str) -> None:
         """Stream HandoffJob.timeline events as Server-Sent Events."""
         try:
@@ -7169,6 +7199,19 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             self._handle_browser_task_sse(payload)
             return
         route = urlparse(self.path).path
+        if route.startswith("/api/browser/") and route.endswith("/interact"):
+            session_id = route[len("/api/browser/"): -len("/interact")].strip("/")
+            try:
+                body = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            from nemo_coding_platform.browser_agent import browser_interact
+            action = str(body.get("action") or "")
+            kwargs = {k: v for k, v in body.items() if k != "action"}
+            result = browser_interact(session_id, action, **kwargs)
+            _json_response(self, 200 if result.get("ok") else 404, result)
+            return
         if route.startswith("/api/run/") and route.endswith("/worktree-merge"):
             job_id = route[len("/api/run/"): -len("/worktree-merge")].strip("/")
             try:
