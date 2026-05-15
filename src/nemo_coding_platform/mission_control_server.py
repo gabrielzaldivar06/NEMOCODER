@@ -656,6 +656,9 @@ class HandoffJobManager:
             command.extend(("--memory-db", str(config.memory_db)))
             mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
             if mcp_url:
+                # stdio://vscode/nemo only works inside VS Code — child subprocesses need HTTP SSE
+                if mcp_url.lower() == VSCODE_STDIO_NEMO_URL:
+                    mcp_url = LEGACY_NEMO_SSE_URL
                 command.extend(("--mcp-url", mcp_url))
                 command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
         base_url_run = str(payload.get("base_url") or "http://127.0.0.1:1234/v1")
