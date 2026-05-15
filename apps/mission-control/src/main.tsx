@@ -1702,6 +1702,7 @@ export function App() {
       })
         .then((payload) => {
           setActiveJob(payload.job);
+          setActiveSection("runs");
           setStatus(`${action.kind} started: ${payload.job.job_id}`);
         })
         .catch((error: Error) => setStatus(error.message));
@@ -1971,6 +1972,7 @@ export function App() {
     })
       .then((payload) => {
         setActiveJob(payload.job);
+        setActiveSection("runs");
         setStatus(`Job started: ${payload.job.job_id}`);
       })
       .catch((error: Error) => setStatus(error.message));

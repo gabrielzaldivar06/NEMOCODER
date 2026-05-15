@@ -125,9 +125,18 @@ def run_repair_loop(
 
         # Classify the failure to frame the repair objective clearly.
         noop_attempt = not mutations[-1].changed_files if mutations else False
+
+        # Build a precise NEMO query: include the actual error text so semantic
+        # search retrieves memories for this specific error, not just the objective.
+        first_failed_output = next(
+            (r.output for r in validation.results if not r.passed and r.output),
+            "",
+        )
+        error_snippet = first_failed_output.strip()[:200] if first_failed_output else ""
+        nemo_query = f"repair: {failed} — {error_snippet}" if error_snippet else f"repair failure: {failed}"
         nemo_snippet = nemo_before_attempt(
             nemo_adapter,
-            query=f"repair failure: {failed}",
+            query=nemo_query,
             tags=("repair_failure",),
         )
 
@@ -209,9 +218,10 @@ def run_repair_loop(
     if not validation.passed and not stop_reason and not plan.can_record_attempt():
         stop_reason = "repair_budget_exhausted"
     if validation.passed and mutations:
+        last_failed_cmd = ", ".join(result.command.command for result in initial_validation.results if not result.passed) or "validation"
         nemo_after_success(
             nemo_adapter,
-            f"fixed: {base_request.objective}. diff: {mutations[-1].diff_artifact[:500]}",
+            f"fixed: {base_request.objective}. error_was: {last_failed_cmd}. diff: {mutations[-1].diff_artifact[:500]}",
             task_id,
         )
     return RepairRunResult(plan, tuple(mutations), validation, stop_reason, tokens_consumed=_tokens_consumed)
