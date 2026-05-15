@@ -61,7 +61,11 @@ export function saveArtifactRegistry(artifacts: PersistedGeneratedArtifact[]) {
   }
 }
 
-export function mergeArtifactsIntoRegistry(generatedArtifacts: GeneratedArtifact[], currentRegistry = loadArtifactRegistry()): PersistedGeneratedArtifact[] {
+export function mergeArtifactsIntoRegistry(
+  generatedArtifacts: GeneratedArtifact[],
+  currentRegistry = loadArtifactRegistry(),
+  options?: { isTombstoned?: (registryId: string) => boolean }
+): PersistedGeneratedArtifact[] {
   const registryById = new Map(currentRegistry.map((artifact) => [artifact.registryId, artifact]));
   const now = new Date().toISOString();
 
@@ -69,6 +73,7 @@ export function mergeArtifactsIntoRegistry(generatedArtifacts: GeneratedArtifact
     const contentHash = hashText(`${artifact.kind}\n${artifact.language}\n${artifact.content}`);
     const versionGroup = artifactVersionGroup(artifact);
     const registryId = artifactRegistryId(artifact, versionGroup, contentHash);
+    if (options?.isTombstoned?.(registryId)) continue;
     const existing = registryById.get(registryId);
 
     if (existing) {

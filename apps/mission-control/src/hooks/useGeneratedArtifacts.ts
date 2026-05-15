@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { collectGeneratedArtifacts, type GeneratedArtifact } from "../services/artifactUtils";
 import { loadArtifactRegistry, mergeArtifactsIntoRegistry, removeArtifactFromRegistry, toggleArtifactFavorite, type PersistedGeneratedArtifact } from "../services/artifactRegistry";
+import { isArtifactTombstoned, addArtifactTombstone } from "../services/persistenceStore";
 
 type ArtifactMessage = {
   id: string;
@@ -64,7 +65,9 @@ export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGen
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
 
   useEffect(() => {
-    setArtifacts(mergeArtifactsIntoRegistry(generatedArtifacts));
+    setArtifacts(mergeArtifactsIntoRegistry(generatedArtifacts, undefined, {
+      isTombstoned: isArtifactTombstoned,
+    }));
   }, [generatedArtifacts]);
 
   useEffect(() => {
@@ -81,6 +84,7 @@ export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGen
   };
 
   const removeArtifact = (artifactId: string) => {
+    addArtifactTombstone(artifactId);
     setArtifacts((current) => removeArtifactFromRegistry(artifactId, current));
   };
 
