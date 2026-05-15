@@ -4434,6 +4434,43 @@ function ApplyHistoryPanel({ applies }: { applies: ApplyHistoryItem[] }) {
   );
 }
 
+function ModelSelector({ value, baseUrl, onChange }: { value: string; baseUrl: string; onChange: (v: string) => void }) {
+  const [models, setModels] = useState<{ id: string; type: string }[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    setStatus("loading");
+    fetch("/api/models")
+      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
+      .then((d) => { setModels(d.models ?? []); setStatus("ready"); })
+      .catch(() => setStatus("error"));
+  }, [baseUrl]);
+
+  if (status === "loading") return <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="Cargando modelos…" disabled />;
+  if (status === "error" || models.length === 0) return <input value={value} onChange={(e) => onChange(e.target.value)} />;
+
+  // Group by provider prefix (e.g. "meta", "minimaxai", "nvidia", etc.)
+  const groups: Record<string, string[]> = {};
+  for (const m of models) {
+    const slash = m.id.indexOf("/");
+    const prefix = slash >= 0 ? m.id.slice(0, slash) : "other";
+    (groups[prefix] ??= []).push(m.id);
+  }
+  const prefixes = Object.keys(groups).sort();
+  const currentInList = models.some((m) => m.id === value);
+
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      {!currentInList && value && <option value={value}>{value} (manual)</option>}
+      {prefixes.map((prefix) => (
+        <optgroup key={prefix} label={prefix}>
+          {groups[prefix].map((id) => <option key={id} value={id}>{id.slice(id.indexOf("/") + 1)}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  );
+}
+
 function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, mcpWatcher, onRefreshMcpWatcher, selectedNemoTools = DEFAULT_SESSION_NEMO_TOOLS, onToggleNemoTool }: { state: MissionState; settings: MissionState["settings"]; onSettingsChange: (settings: MissionState["settings"]) => void; onSaveSettings: () => void; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; cloneDraft: { url: string; destination: string }; onCloneDraftChange: (draft: { url: string; destination: string }) => void; onCloneRepo: () => void; cleanupResult: CleanupResult | null; onCleanup: (dryRun: boolean) => void; orphanCleanupResult: OrphanCleanupResult | null; onCleanupOrphans: (dryRun: boolean) => void; mcpWatcher: NemoMcpWatcherState | null; onRefreshMcpWatcher: () => void; selectedNemoTools?: string[]; onToggleNemoTool?: (toolName: string) => void }) {
   const update = (key: keyof MissionState["settings"], value: string | number | boolean | string[]) => onSettingsChange({ ...settings, [key]: value });
   const watcherTone = mcpWatcher?.active ? "ready" : "blocked";
@@ -4469,8 +4506,8 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
   return (
     <section className="ops-panel settings-editor" aria-labelledby="settings-panel-title">
       <div className="panel-title"><Settings size={16} /> <span id="settings-panel-title">Ajustes</span></div>
-      <label htmlFor={fieldIds.modelBaseUrl}>URL de LM Studio<input id={fieldIds.modelBaseUrl} value={settings.model_base_url} onChange={(event) => update("model_base_url", event.target.value)} /></label>
-      <label htmlFor={fieldIds.defaultModel}>Modelo<input id={fieldIds.defaultModel} value={settings.default_model} onChange={(event) => update("default_model", event.target.value)} /></label>
+      <label htmlFor={fieldIds.modelBaseUrl}>URL del endpoint<input id={fieldIds.modelBaseUrl} value={settings.model_base_url} onChange={(event) => update("model_base_url", event.target.value)} /></label>
+      <label>Modelo<ModelSelector value={settings.default_model} baseUrl={settings.model_base_url} onChange={(v) => update("default_model", v)} /></label>
       <label htmlFor={fieldIds.provider}>Modo del agente<select id={fieldIds.provider} value={settings.provider} onChange={(event) => update("provider", event.target.value)}><option value="subprocess">Real con LM Studio</option></select></label>
       <label htmlFor={fieldIds.memoryDb}>Base de memoria NEMO<input id={fieldIds.memoryDb} value={settings.memory_db} onChange={(event) => update("memory_db", event.target.value)} /></label>
       <label htmlFor={fieldIds.nemoMcpUrl}>Transporte MCP NEMO<input id={fieldIds.nemoMcpUrl} value={settings.nemo_mcp_url || ""} onChange={(event) => update("nemo_mcp_url", event.target.value)} placeholder="stdio://vscode/nemo" /></label>

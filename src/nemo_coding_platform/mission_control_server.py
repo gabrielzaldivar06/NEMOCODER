@@ -2303,6 +2303,55 @@ def api_browser_sessions(config: MissionControlServerConfig) -> dict:
     return {"sessions": get_sessions_info()}
 
 
+def api_models(config: MissionControlServerConfig) -> dict[str, object]:
+    """Return available chat/vlm models from the configured provider, filtered and deduplicated."""
+    settings = _load_settings(config)
+    base_url = str(settings.get("model_base_url") or "http://127.0.0.1:1234/v1").rstrip("/")
+    api_key = str(settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
+    current = str(settings.get("default_model") or "")
+    _SKIP = re.compile(r"embed|rerank|bge|nomic|guard|safety|nemoretriever|nv-embedqa|content.safety|topic.control", re.I)
+    models: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    # Strategy 1: LM Studio management API — returns richer metadata (type, state)
+    try:
+        mgmt_base = re.sub(r"/v\d+$", "", base_url)
+        req = urllib.request.Request(f"{mgmt_base}/api/v0/models", method="GET")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read().decode())
+        for m in data.get("data", []):
+            mid = str(m.get("id") or "").strip()
+            if not mid or mid in seen or _SKIP.search(mid):
+                continue
+            if m.get("type") not in {"llm", "vlm"}:
+                continue
+            seen.add(mid)
+            models.append({"id": mid, "type": str(m.get("type") or "llm"), "state": str(m.get("state") or "")})
+    except Exception:
+        pass
+
+    # Strategy 2: OpenAI-compatible /v1/models — works for NVIDIA NIM, OpenAI, etc.
+    if not models:
+        try:
+            req = urllib.request.Request(f"{base_url}/models", method="GET")
+            req.add_header("Authorization", f"Bearer {api_key}")
+            req.add_header("Accept", "application/json")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read().decode())
+            for m in data.get("data", []):
+                mid = str(m.get("id") or "").strip()
+                if not mid or mid in seen or _SKIP.search(mid):
+                    continue
+                seen.add(mid)
+                models.append({"id": mid, "type": "llm", "state": "available"})
+        except Exception:
+            pass
+
+    models.sort(key=lambda m: m["id"])
+    return {"models": models, "current": current}
+
+
 def _raw_tool_name_fallback(response: str, message: str) -> str | None:
     raw = response.strip().strip("` ")
     if not raw:
@@ -6903,6 +6952,9 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             return
         if route == "/api/vault/credentials":
             self._handle(lambda _: api_vault_list(self.server.config), {})
+            return
+        if route == "/api/models":
+            self._handle(lambda _: api_models(self.server.config), {})
             return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
