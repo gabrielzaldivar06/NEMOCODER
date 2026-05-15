@@ -2519,12 +2519,6 @@ export function App() {
     loadCognitiveStats(selectedRun);
   }, [selectedRunSource]);
 
-  useEffect(() => {
-    // Avoid landing on an empty runs canvas when the workspace has no runs yet.
-    if (activeSection === "runs" && state.statusLoaded && state.runs.length === 0) {
-      setActiveSection("home");
-    }
-  }, [activeSection, state.statusLoaded, state.runs.length]);
 
   useEffect(() => {
     if (!activeJob || !["starting", "running"].includes(activeJob.status)) return;
