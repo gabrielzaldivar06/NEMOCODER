@@ -5397,15 +5397,10 @@ DO NOT call any NEMO MCP tools (search_memories, context_bootstrap, etc.) here �
    Use when the user asks about the progress of an ongoing operation.
 
 4. browser_task — autonomous web navigation with visual AI
-   {"tool": "browser_task", "params": {
-     "url": "https://...",
-     "task": "full description of what to accomplish",
-     "credential_alias": "github",
-     "max_steps": 8
-   }}
-   Use when the user asks to navigate, log in, fill forms, or interact with websites.
-   Credentials are resolved from the vault by alias — never put passwords in params.
-   credential_alias is optional. max_steps defaults to 8 (max 20).
+   {"tool": "browser_task", "params": {"url": "https://...", "task": "full description", "max_steps": 8}}
+   Use when the user asks to navigate, search, scrape, or interact with websites.
+   Only add "credential_alias": "alias_name" when the user explicitly mentions needing to log in.
+   max_steps defaults to 8 (max 20). Never invent a credential_alias.
 
 CRITICAL: These 4 are the ONLY tools you can embed in your response. Do NOT embed NEMO tool names
 (search_memories, context_bootstrap, refresh_context_portfolio, cognitive_ingest, etc.) — those
