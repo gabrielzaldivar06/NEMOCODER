@@ -71,14 +71,17 @@ _session_lock = threading.Lock()
 def _cleanup_expired() -> None:
     while True:
         time.sleep(300)
-        now = time.time()
-        with _session_lock:
-            expired = [
-                sid for sid, s in _browser_sessions.items()
-                if now - s.last_used > _SESSION_TTL
-            ]
-        for sid in expired:
-            _close_session(sid)
+        try:
+            now = time.time()
+            with _session_lock:
+                expired = [
+                    sid for sid, s in _browser_sessions.items()
+                    if now - s.last_used > _SESSION_TTL
+                ]
+            for sid in expired:
+                _close_session(sid)
+        except Exception:
+            pass  # Never let cleanup daemon die
 
 
 threading.Thread(
@@ -118,9 +121,9 @@ def get_sessions_info() -> list[dict]:
 def confirm_action(session_id: str, approved: bool) -> bool:
     with _session_lock:
         sess = _browser_sessions.get(session_id)
-    if sess is None:
-        return False
-    sess.confirm_approved = approved
+        if sess is None:
+            return False
+        sess.confirm_approved = approved
     sess.confirm_event.set()
     return True
 
@@ -200,7 +203,10 @@ def _vlm_action(
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read())
-    text = data["choices"][0]["message"]["content"]
+    choices = data.get("choices") or []
+    if not choices:
+        return {"action": "done", "target": "", "value": "", "reason": "VLM returned empty choices"}
+    text = choices[0].get("message", {}).get("content", "")
     # Strip thinking tags from reasoning models
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     text = re.sub(r"<\|thinking\|>.*?<\|/thinking\|>", "", text, flags=re.DOTALL).strip()
@@ -247,22 +253,28 @@ def execute_browser_task(
         }
         return
 
-    # Resolve credentials — kept in local variable, never yielded or logged
-    task_context = task
+    # Resolve credentials — held in local variables ONLY, never placed in prompts
+    task_cred_username: str | None = None
+    task_cred_password: str | None = None
     if credential_alias and vault_db_path:
         try:
             from nemo_coding_platform.credential_vault import vault_lookup
             creds = vault_lookup(vault_db_path, credential_alias)
-            task_context = (
-                f"{task}\n"
-                f"[CREDENTIALS for '{credential_alias}': "
-                f"username='{creds['username']}', password='{creds['password']}' — "
-                "fill these when login fields appear; never include them in reason fields]"
-            )
+            task_cred_username = creds["username"]
+            task_cred_password = creds["password"]
             del creds
         except KeyError:
             yield {"type": "error", "message": f"Credential alias '{credential_alias}' not found in vault"}
             return
+
+    task_context = task
+    if task_cred_username is not None:
+        task_context = (
+            f"{task}\n"
+            "[When you encounter a username/email field, return action=fill with value=__VAULT_USERNAME__. "
+            "When you encounter a password field, return action=fill with value=__VAULT_PASSWORD__. "
+            "The backend substitutes the real values — never guess or invent credentials.]"
+        )
 
     history: list[dict] = []
 
@@ -291,6 +303,7 @@ def execute_browser_task(
             context=ctx,
             url=url,
         )
+        # Register session BEFORE page.goto so cancel can interrupt navigation
         with _session_lock:
             _browser_sessions[session_id] = sess
 
@@ -314,10 +327,9 @@ def execute_browser_task(
                 sess.last_used = time.time()
                 sess.step_count = step
 
-                _, screenshot_url = _take_screenshot(page, artifacts_dir, step)
-                screenshot_path = artifacts_dir / screenshot_url.split("/")[-1]
+                screenshot_path, screenshot_url = _take_screenshot(page, artifacts_dir, step)
                 try:
-                    screenshot_b64 = base64.b64encode(screenshot_path.read_bytes()).decode()
+                    screenshot_b64 = base64.b64encode(Path(screenshot_path).read_bytes()).decode()
                 except OSError:
                     screenshot_b64 = ""
 
@@ -331,9 +343,9 @@ def execute_browser_task(
                 else:
                     action = {"action": "wait", "target": "", "value": "", "reason": "no VLM — screenshot-only mode"}
 
-                # Strip password values from emitted events
+                # Strip fill values from emitted events — never expose what was typed
                 safe_action = dict(action)
-                if action.get("action") == "fill" and "password" in str(action.get("target", "")).lower():
+                if action.get("action") == "fill":
                     safe_action["value"] = "••••••"
 
                 yield {
@@ -387,11 +399,18 @@ def execute_browser_task(
                 act = str(action.get("action") or "")
                 target = str(action.get("target") or "")
                 value = str(action.get("value") or "")
+                # Substitute vault placeholders at execution time — credentials never enter VLM prompts
+                exec_value = value
+                if act == "fill":
+                    if exec_value == "__VAULT_USERNAME__" and task_cred_username is not None:
+                        exec_value = task_cred_username
+                    elif exec_value == "__VAULT_PASSWORD__" and task_cred_password is not None:
+                        exec_value = task_cred_password
                 try:
                     if act == "click":
                         page.click(target, timeout=30000)
                     elif act == "fill":
-                        page.fill(target, value, timeout=30000)
+                        page.fill(target, exec_value, timeout=30000)
                     elif act == "navigate":
                         page.goto(target, timeout=30000)
                     elif act == "scroll":
