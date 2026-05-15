@@ -367,12 +367,11 @@ describe("mission-control app", () => {
   });
 
   it("exposes command dock controls with accessible labels", () => {
-    render(<CommandDock draft="Ship the next sprint" provider="subprocess" providerLabel="Local runtime" running={false} queuedPrompt={null} queuedPrompts={[]} onDraftChange={vi.fn()} onSubmit={vi.fn()} onStop={vi.fn()} onProviderChange={vi.fn()} onOpenComposer={vi.fn()} onOpenMemory={vi.fn()} />);
+    render(<CommandDock draft="Ship the next sprint" provider="subprocess" endpointLabel="NVIDIA NIM" currentModel="meta/llama-3.1-8b-instruct" running={false} queuedPrompt={null} queuedPrompts={[]} onDraftChange={vi.fn()} onSubmit={vi.fn()} onStop={vi.fn()} onProviderChange={vi.fn()} onModelChange={vi.fn()} onOpenComposer={vi.fn()} onOpenMemory={vi.fn()} />);
 
     expect(screen.getByLabelText(/Describe the next objective/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Command dock status/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Attach files/i)).toHaveAttribute("type", "file");
-    expect(screen.getByLabelText(/Agent runtime mode/i)).toBeInTheDocument();
     expect(screen.getByText("PLAN")).toBeInTheDocument();
     expect(screen.getByText("STEER")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Enviar objetivo/i })).toBeInTheDocument();

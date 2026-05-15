@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Bot, Clock3, Database, Files, Hand, Plus, Square, Target, Wrench } from "lucide-react";
 
 export type CommandDockMode = "send" | "queue" | "steer" | "plan";
@@ -6,7 +6,8 @@ export type CommandDockMode = "send" | "queue" | "steer" | "plan";
 type CommandDockProps = {
   draft: string;
   provider: string;
-  providerLabel: string;
+  endpointLabel: string;
+  currentModel: string;
   running: boolean;
   queuedPrompt: string | null;
   queuedPrompts: string[];
@@ -14,18 +15,46 @@ type CommandDockProps = {
   onSubmit: (mode?: CommandDockMode) => void;
   onStop: () => void;
   onProviderChange: (provider: string) => void;
+  onModelChange: (model: string) => void;
   onOpenComposer: () => void;
   onOpenMemory: () => void;
 };
 
-export function CommandDock({ draft, provider, providerLabel, running, queuedPrompt, queuedPrompts, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory }: CommandDockProps) {
+type ModelEntry = { id: string; type: string };
+
+function shortName(id: string): string {
+  const slash = id.indexOf("/");
+  return slash >= 0 ? id.slice(slash + 1) : id;
+}
+
+export function CommandDock({ draft, provider, endpointLabel, currentModel, running, queuedPrompt, queuedPrompts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onOpenComposer, onOpenMemory }: CommandDockProps) {
   const [sendHaloOpen, setSendHaloOpen] = useState<boolean>(false);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
+  const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const canSendDraft = draft.trim().length > 0;
   const draftFieldId = "space-code-command-draft";
   const attachmentFieldId = "space-code-command-attachments";
-  const providerFieldId = "space-code-provider-mode";
+  const modelFieldId = "space-code-model-select";
+
+  useEffect(() => {
+    fetch("/api/models")
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d: { models?: ModelEntry[] }) => { setAvailableModels(d.models ?? []); })
+      .catch(() => {})
+      .finally(() => setModelsLoaded(true));
+  }, []);
+
+  // Group by provider prefix
+  const groups: Record<string, string[]> = {};
+  for (const m of availableModels) {
+    const slash = m.id.indexOf("/");
+    const prefix = slash >= 0 ? m.id.slice(0, slash) : "other";
+    (groups[prefix] ??= []).push(m.id);
+  }
+  const prefixes = Object.keys(groups).sort();
+  const currentInList = availableModels.some((m) => m.id === currentModel);
 
   const openAttachmentPicker = () => {
     attachmentInputRef.current?.click();
@@ -63,12 +92,14 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
     setSendHaloOpen(false);
   };
 
+  const statusLabel = queuedPrompts.length > 0 ? `${queuedPrompts.length} queued` : endpointLabel;
+
   return (
     <div className="command-dock">
       <div className="command-dock-head" aria-label="Command dock status">
         <span><i /> Command dock</span>
         <strong>{running ? "Streaming" : canSendDraft ? "Ready" : "Awaiting objective"}</strong>
-        <small>{queuedPrompts.length > 0 ? `${queuedPrompts.length} queued` : providerLabel}</small>
+        <small>{statusLabel}</small>
       </div>
       <label className="sr-only" htmlFor={attachmentFieldId}>Attach files for the next Space Code prompt</label>
       <input
@@ -102,7 +133,24 @@ export function CommandDock({ draft, provider, providerLabel, running, queuedPro
         <button onClick={openAttachmentPicker} title="Adjuntar multimedia"><Plus size={15} /> File</button>
         <button onClick={onOpenComposer} title="Configurar handoff"><Hand size={15} /> Handoff</button>
         <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
-        <label className="provider-switch real" htmlFor={providerFieldId} title="Modo del agente"><Bot size={15} /><span className="sr-only">Agent runtime mode</span><select id={providerFieldId} value={provider} onChange={(event) => onProviderChange(event.target.value)}><option value="subprocess">{providerLabel}</option></select></label>
+        <label className="provider-switch real" htmlFor={modelFieldId} title={`Modelo: ${currentModel || "—"} via ${endpointLabel}`}>
+          <Bot size={15} />
+          <select
+            id={modelFieldId}
+            value={currentModel}
+            onChange={(e) => onModelChange(e.target.value)}
+            disabled={!modelsLoaded || availableModels.length === 0}
+            title={currentModel}
+          >
+            {!currentInList && currentModel && <option value={currentModel}>{shortName(currentModel)}</option>}
+            {modelsLoaded && availableModels.length === 0 && <option value={currentModel}>{shortName(currentModel) || "—"}</option>}
+            {prefixes.map((prefix) => (
+              <optgroup key={prefix} label={prefix}>
+                {groups[prefix].map((id) => <option key={id} value={id}>{shortName(id)}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </label>
         <div className={`send-halo ${sendHaloOpen ? "open" : ""}`} onMouseLeave={() => setSendHaloOpen(false)}>
           <span className="send-halo-label plan">PLAN</span>
           <span className="send-halo-label queue">QUEUE</span>

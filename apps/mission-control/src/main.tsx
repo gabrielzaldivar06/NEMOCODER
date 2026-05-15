@@ -2739,6 +2739,13 @@ export function App() {
 
   const shellActiveRun = selectedRun ?? state.approval_queue[0] ?? state.runs[0];
   const shellMemoryLabel = nemoState?.context_portfolio?.estimated_tokens ? `${nemoState.context_portfolio.estimated_tokens}t` : (nemoState?.health.status ?? "ready");
+  const _epUrl = settingsDraft.model_base_url ?? "";
+  const endpointLabel = _epUrl.includes("nvidia") ? "NVIDIA NIM"
+    : _epUrl.includes("openai.com") ? "OpenAI"
+    : _epUrl.includes("anthropic") ? "Anthropic"
+    : (_epUrl.includes("localhost") || _epUrl.includes("127.0.0.1")) ? "LM Studio"
+    : _epUrl ? (() => { try { return new URL(_epUrl).hostname; } catch { return "API"; } })()
+    : "LM Studio";
   const shellRuntimeLabel = shellActiveRun?.run_id ? `Run ${shellActiveRun.run_id.slice(0, 8)}` : "Standing by";
   const shellPhaseLabel = shellActiveRun?.execution_phase || shellActiveRun?.runtime_state || status;
   const shellNavItems: Array<{ section: AppSection; label: string; title: string; icon: React.ReactNode }> = [
@@ -2865,12 +2872,18 @@ export function App() {
           status={status}
           draft={homeAgentDraft}
           provider={settingsDraft.provider}
-          modelName={lmStudioOnline === false ? "sin conexión" : (lmStudioModel ?? settingsDraft.default_model)}
+          endpointLabel={endpointLabel}
+          currentModel={settingsDraft.default_model}
           messages={agentMessages}
           onDraftChange={setHomeAgentDraft}
           onSubmit={sendHomeAgentMessage}
           onStop={stopAgentMessage}
           onProviderChange={setProviderMode}
+          onModelChange={(model: string) => {
+            const next = { ...settingsDraft, default_model: model };
+            setSettingsDraft(next);
+            postJson("/api/settings", { default_model: model }).catch(() => {});
+          }}
           onOpenComposer={() => setComposerOpen(true)}
           onOpenMemory={openMemorySection}
           running={agentBusy}
@@ -3158,7 +3171,7 @@ function latestHomeLayoutCommand(messages: AgentMessage[]): { command: HomeLayou
   return null;
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, modelName, messages, onDraftChange, onSubmit, onStop, onProviderChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; modelName: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
   const [layoutMode, setLayoutMode] = useState<HomeLayoutMode>("full-cockpit");
   const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: false, telemetry: false });
   const [layoutSource, setLayoutSource] = useState<string>("manual");
@@ -3183,7 +3196,6 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const sourceStats = missionStats?.sources;
   const sourceReads = sourceStats?.total_reads ?? 0;
   const sourceCacheHitRate = sourceStats && sourceStats.total_reads > 0 ? Math.round((sourceStats.cache_hit_rate ?? 0) * 100) : 0;
-  const providerLabel = modelName.trim() ? `LM Studio: ${modelName}` : "LM Studio real";
   const canSendDraft = draft.trim().length > 0;
   const activeRun = blockedReviewRuns[0] ?? state.approval_queue[0] ?? state.runs[0];
   const orbitNodes = buildNemoOrbitNodes(nemoState, memoryKpis?.atom_count ?? atomCount, evidenceCount, feedbackCount, contextLabel);
@@ -3246,7 +3258,8 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const commandDockElement = <CommandDock
     draft={draft}
     provider={provider}
-    providerLabel={providerLabel}
+    endpointLabel={endpointLabel}
+    currentModel={currentModel}
     running={running}
     queuedPrompt={queuedPrompt}
     queuedPrompts={queuedPrompts}
@@ -3254,6 +3267,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
     onSubmit={onSubmit}
     onStop={onStop}
     onProviderChange={onProviderChange}
+    onModelChange={onModelChange}
     onOpenComposer={onOpenComposer}
     onOpenMemory={onOpenMemory}
   />;
