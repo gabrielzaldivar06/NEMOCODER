@@ -1,4 +1,4 @@
-export type GeneratedArtifactKind = "html" | "svg" | "markdown" | "json" | "mermaid" | "react" | "image" | "video" | "audio" | "image_request" | "code";
+export type GeneratedArtifactKind = "html" | "svg" | "markdown" | "json" | "mermaid" | "react" | "image" | "video" | "audio" | "image_request" | "code" | "browser";
 
 export type GeneratedArtifact = {
   id: string;

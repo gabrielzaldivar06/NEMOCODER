@@ -13,6 +13,7 @@ import { WorktreeDiffPanel } from "./components/WorktreeDiffPanel";
 import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
+import type { PersistedGeneratedArtifact } from "./services/artifactRegistry";
 import { usePlanState } from "./hooks/usePlanState";
 import { usePlanNemoSync } from "./hooks/usePlanNemoSync";
 import { ExecutionPlan, ObjectiveState, PlanStep } from "./services/planNemoClient";
@@ -896,6 +897,7 @@ export function App() {
   ]);
   const [agentDraft, setAgentDraft] = useState<string>("");
   const [homeAgentDraft, setHomeAgentDraft] = useState<string>("");
+  const [browserArtifacts, setBrowserArtifacts] = useState<PersistedGeneratedArtifact[]>([]);
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [queuedAgentPrompts, setQueuedAgentPrompts] = useState<string[]>([]);
   const [runTreeCollapsed, setRunTreeCollapsed] = useState<boolean>(false);
@@ -1978,6 +1980,25 @@ export function App() {
                           : m
                       )
                     );
+                    // Inject live browser artifact into Artifact Studio
+                    const now = new Date().toISOString();
+                    const bArt: PersistedGeneratedArtifact = {
+                      id: `browser-${btSessionId}`,
+                      messageId: btMsgId,
+                      title: btTask.slice(0, 60),
+                      kind: "browser",
+                      language: "browser",
+                      content: JSON.stringify({ session_id: btSessionId, url: btUrl, task: btTask }),
+                      tokenEstimate: 1,
+                      registryId: `browser-${btSessionId}`,
+                      contentHash: `browser-${btSessionId}`,
+                      version: 1,
+                      versionGroup: `browser-${btSessionId}`,
+                      createdAt: now,
+                      updatedAt: now,
+                      persisted: true,
+                    };
+                    setBrowserArtifacts((prev) => [bArt, ...prev.filter((a) => a.id !== bArt.id)]);
                   }
                 }
 
@@ -2875,6 +2896,7 @@ export function App() {
           endpointLabel={endpointLabel}
           currentModel={settingsDraft.default_model}
           messages={agentMessages}
+          browserArtifacts={browserArtifacts}
           onDraftChange={setHomeAgentDraft}
           onSubmit={sendHomeAgentMessage}
           onStop={stopAgentMessage}
@@ -3171,13 +3193,14 @@ function latestHomeLayoutCommand(messages: AgentMessage[]): { command: HomeLayou
   return null;
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
   const [layoutMode, setLayoutMode] = useState<HomeLayoutMode>("full-cockpit");
   const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: false, telemetry: false });
   const [layoutSource, setLayoutSource] = useState<string>("manual");
   const appliedLayoutCommandRef = useRef<string>("");
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
-  const { artifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite } = useGeneratedArtifacts({ messages, draft, onDraftChange });
+  const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite } = useGeneratedArtifacts({ messages, draft, onDraftChange });
+  const artifacts = useMemo(() => [...browserArtifacts, ...generatedArtifacts], [browserArtifacts, generatedArtifacts]);
   const prevArtifactsLenRef = useRef(artifacts.length);
   useEffect(() => {
     if (artifacts.length > prevArtifactsLenRef.current) {

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Braces, Code2, Copy, Download, Eye, FileText, Film, Headphones, History, Image, Info, Layers3, Maximize2, Minimize2, Paperclip, Pin, Puzzle, Search, Trash2, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, ArrowRight, Braces, Code2, Copy, Download, Eye, FileText, Film, Globe, Headphones, History, Image, Info, Layers3, Maximize2, Minimize2, Paperclip, Pin, Puzzle, RefreshCw, Search, Trash2, Zap } from "lucide-react";
 import { buildArtifactLineDiff, type GeneratedArtifact, type GeneratedArtifactKind } from "../services/artifactUtils";
 
 type ArtifactViewMode = "preview" | "source" | "inspect" | "compare";
@@ -28,7 +28,7 @@ function artifactSrcDoc(artifact: GeneratedArtifact): string {
 }
 
 function isRenderableArtifact(artifact: GeneratedArtifact | undefined): boolean {
-  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "image", "video", "audio", "image_request"].includes(artifact.kind));
+  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "image", "video", "audio", "image_request", "browser"].includes(artifact.kind));
 }
 
 function artifactFileExtension(artifact: GeneratedArtifact): string {
@@ -72,7 +72,177 @@ function artifactKindIcon(kind: GeneratedArtifactKind): ReactNode {
   if (kind === "json") return <Braces size={15} />;
   if (kind === "markdown") return <FileText size={15} />;
   if (kind === "html" || kind === "svg" || kind === "react") return <Layers3 size={15} />;
+  if (kind === "browser") return <Globe size={15} />;
   return <Code2 size={15} />;
+}
+
+// ---------------------------------------------------------------------------
+// BrowserLiveView — interactive embedded browser via screenshot polling
+// ---------------------------------------------------------------------------
+
+type BrowserInfo = { session_id: string; url: string; title: string; step_count: number; active: boolean };
+
+function parseBrowserArtifact(content: string): { session_id: string; url: string; task: string } | null {
+  try {
+    const parsed = JSON.parse(content) as { session_id?: string; url?: string; task?: string };
+    if (parsed && parsed.session_id) return { session_id: parsed.session_id, url: parsed.url ?? "", task: parsed.task ?? "" };
+  } catch { /* ignore */ }
+  return null;
+}
+
+function BrowserLiveView({ content }: { content: string }) {
+  const parsed = parseBrowserArtifact(content);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [urlBar, setUrlBar] = useState(parsed?.url ?? "");
+  const [info, setInfo] = useState<BrowserInfo | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [frameTs, setFrameTs] = useState(0);
+  const sessionId = parsed?.session_id ?? "";
+
+  // Poll frames at ~5 fps while session is alive
+  useEffect(() => {
+    if (!sessionId) return;
+    let active = true;
+    const tick = async () => {
+      if (!active) return;
+      try {
+        const res = await fetch(`/api/browser/${sessionId}/frame?t=${Date.now()}`);
+        if (res.ok && imgRef.current) {
+          const blob = await res.blob();
+          const objUrl = URL.createObjectURL(blob);
+          const prev = imgRef.current.src;
+          imgRef.current.src = objUrl;
+          if (prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+          setConnected(true);
+          setFrameTs(Date.now());
+        } else if (res.status === 404) {
+          setConnected(false);
+        }
+      } catch { /* network error */ }
+      if (active) window.setTimeout(tick, 200);
+    };
+    void tick();
+    return () => { active = false; };
+  }, [sessionId]);
+
+  // Poll info (URL / title) every 1 s
+  useEffect(() => {
+    if (!sessionId) return;
+    let active = true;
+    const poll = async () => {
+      if (!active) return;
+      try {
+        const res = await fetch(`/api/browser/${sessionId}/info`);
+        if (res.ok) {
+          const data = await res.json() as BrowserInfo;
+          setInfo(data);
+          setUrlBar(data.url || urlBar);
+        }
+      } catch { /* ignore */ }
+      if (active) window.setTimeout(poll, 1000);
+    };
+    void poll();
+    return () => { active = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
+  const sendInteract = useCallback((body: Record<string, unknown>) => {
+    if (!sessionId || !connected) return;
+    fetch(`/api/browser/${sessionId}/interact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => null);
+  }, [sessionId, connected]);
+
+  // Map click position from displayed img size → browser viewport (1280×720)
+  const handleImgClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 1280;
+    const y = ((e.clientY - rect.top) / rect.height) * 720;
+    sendInteract({ action: "click", x, y });
+  };
+
+  const handleImgWheel = (e: React.WheelEvent<HTMLImageElement>) => {
+    e.preventDefault();
+    sendInteract({ action: "scroll", delta_x: 0, delta_y: e.deltaY });
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target instanceof HTMLInputElement) return; // let URL bar have focus
+    e.preventDefault();
+    if (e.key.length === 1) {
+      sendInteract({ action: "type", text: e.key });
+    } else {
+      sendInteract({ action: "key", key: e.key });
+    }
+  };
+
+  const navigate = (url: string) => {
+    const target = url.startsWith("http") ? url : `https://${url}`;
+    setUrlBar(target);
+    sendInteract({ action: "navigate", url: target });
+  };
+
+  if (!parsed) {
+    return <div className="browser-live-error">Invalid browser artifact</div>;
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="browser-live-view"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      aria-label="Embedded browser"
+    >
+      {/* Toolbar */}
+      <div className="browser-toolbar">
+        <button title="Back" onClick={() => sendInteract({ action: "key", key: "Alt+ArrowLeft" })}><ArrowLeft size={13} /></button>
+        <button title="Forward" onClick={() => sendInteract({ action: "key", key: "Alt+ArrowRight" })}><ArrowRight size={13} /></button>
+        <button title="Refresh" onClick={() => sendInteract({ action: "key", key: "F5" })}><RefreshCw size={13} /></button>
+        <input
+          className="browser-url-bar"
+          value={urlBar}
+          onChange={(e) => setUrlBar(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") navigate(urlBar); e.stopPropagation(); }}
+          spellCheck={false}
+          aria-label="URL"
+        />
+        <span className="browser-status-dot" title={connected ? `Live · step ${info?.step_count ?? 0}` : "Disconnected"}>
+          {connected ? "●" : "○"}
+        </span>
+      </div>
+      {/* Frame */}
+      <div className="browser-frame-wrap">
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+        <img
+          ref={imgRef}
+          alt={info?.title || parsed.task || "Browser"}
+          className="browser-frame-img"
+          onClick={handleImgClick}
+          onWheel={handleImgWheel}
+          draggable={false}
+          style={{ cursor: connected ? "crosshair" : "default" }}
+          data-ts={frameTs}
+        />
+        {!connected && (
+          <div className="browser-offline-overlay">
+            <Globe size={28} />
+            <span>Browser session ended or not yet started</span>
+          </div>
+        )}
+      </div>
+      {/* Status footer */}
+      {info && (
+        <div className="browser-footer">
+          <span>{info.title}</span>
+          <span>Step {info.step_count}</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function shortArtifactHash(artifact: GeneratedArtifact): string {
@@ -395,7 +565,9 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
             </div>
           </div>
           <div ref={stageRef} className={`artifact-stage ${viewMode}`}>
-            {viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
+            {viewMode === "preview" && activeArtifact.kind === "browser" ? (
+              <BrowserLiveView content={activeArtifact.content} />
+            ) : viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
               <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={artifactSrcDoc(activeArtifact)} />
             ) : viewMode === "preview" && (activeArtifact.kind === "image" || activeArtifact.kind === "video" || activeArtifact.kind === "audio") ? (
               <MediaPreview artifact={activeArtifact} />
