@@ -5846,7 +5846,6 @@ def _llm_tool_call_to_action(
         return None
 
     if tool == "browser_task":
-        params = invocation.get("params") or {}
         url = str(params.get("url") or "").strip()
         task = str(params.get("task") or "").strip()
         if not url or not task:
@@ -6964,7 +6963,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         task = str(payload.get("task") or "").strip()
         credential_alias = str(payload.get("credential_alias") or "").strip() or None
         try:
-            max_steps = max(1, min(100, int(payload.get("max_steps") or 10)))
+            max_steps = max(1, min(20, int(payload.get("max_steps") or 10)))
         except (ValueError, TypeError):
             max_steps = 10
         session_id = str(payload.get("session_id") or f"browser-{uuid4().hex[:12]}")

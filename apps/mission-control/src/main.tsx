@@ -1924,6 +1924,18 @@ export function App() {
         }),
       })
         .then(async (resp) => {
+          if (!resp.ok) {
+            const errText = await resp.text();
+            setAgentMessages((prev) =>
+              prev.map((m) =>
+                m.id === btMsgId
+                  ? { ...m, content: `**Browser task error:** ${errText || resp.statusText}`, actions: [] }
+                  : m
+              )
+            );
+            setStatus(`Browser task error: ${resp.status} ${resp.statusText}`);
+            return;
+          }
           const reader = resp.body!.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
@@ -5271,7 +5283,7 @@ function VaultPanel() {
           </label>
           <label>
             Username *
-            <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required={editingId === null} />
+            <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required={editingId === null} placeholder={editingId !== null ? "leave blank to keep current" : ""} />
           </label>
           <label>
             Password {editingId ? "" : "*"}
