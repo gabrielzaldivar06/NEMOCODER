@@ -3084,6 +3084,7 @@ export function App() {
               });
             }}
           />
+          <VaultPanel />
         </div>}
 
         <ObjectiveDefinition
@@ -5117,6 +5118,180 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
       {children}
       <span className="tooltip-bubble">{text}</span>
     </span>
+  );
+}
+
+interface VaultCredential {
+  id: string;
+  alias: string;
+  url_pattern: string;
+  has_notes: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+interface VaultFormData {
+  alias: string;
+  username: string;
+  password: string;
+  url_pattern: string;
+  notes: string;
+}
+
+const VAULT_FORM_EMPTY: VaultFormData = { alias: "", username: "", password: "", url_pattern: "", notes: "" };
+
+function VaultPanel() {
+  const [credentials, setCredentials] = useState<VaultCredential[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<VaultFormData>(VAULT_FORM_EMPTY);
+
+  const loadCredentials = () => {
+    setLoading(true);
+    fetch("/api/vault/credentials")
+      .then((res) => res.json())
+      .then((data: { credentials?: VaultCredential[] }) => {
+        setCredentials(data.credentials ?? []);
+        setLoading(false);
+      })
+      .catch(() => {
+        setError("Failed to load credentials.");
+        setLoading(false);
+      });
+  };
+
+  useEffect(() => { loadCredentials(); }, []);
+
+  const openAdd = () => {
+    setForm(VAULT_FORM_EMPTY);
+    setEditingId(null);
+    setError(null);
+    setShowForm(true);
+  };
+
+  const openEdit = (cred: VaultCredential) => {
+    setForm({ alias: cred.alias, username: "", password: "", url_pattern: cred.url_pattern ?? "", notes: "" });
+    setEditingId(cred.id);
+    setError(null);
+    setShowForm(true);
+  };
+
+  const cancelForm = () => {
+    setShowForm(false);
+    setEditingId(null);
+    setForm(VAULT_FORM_EMPTY);
+    setError(null);
+  };
+
+  const handleDelete = (cred: VaultCredential) => {
+    if (!window.confirm(`Delete credential '${cred.alias}'?`)) return;
+    fetch("/api/vault/credentials/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: cred.id }),
+    })
+      .then((res) => res.json())
+      .then(() => loadCredentials())
+      .catch(() => setError("Failed to delete credential."));
+  };
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    if (editingId === null) {
+      fetch("/api/vault/credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alias: form.alias, username: form.username, password: form.password, url_pattern: form.url_pattern || undefined, notes: form.notes || undefined }),
+      })
+        .then((res) => res.json())
+        .then((data: { id?: string; error_code?: string; error?: string }) => {
+          if (data.error_code === "duplicate_alias") { setError("Alias already exists."); return; }
+          if (data.error) { setError(data.error); return; }
+          cancelForm();
+          loadCredentials();
+        })
+        .catch(() => setError("Failed to save credential."));
+    } else {
+      const body: Record<string, string> = { id: editingId };
+      if (form.alias) body.alias = form.alias;
+      if (form.username) body.username = form.username;
+      if (form.password) body.password = form.password;
+      if (form.url_pattern !== undefined) body.url_pattern = form.url_pattern;
+      if (form.notes) body.notes = form.notes;
+      fetch("/api/vault/credentials/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then((res) => res.json())
+        .then((data: { id?: string; error?: string }) => {
+          if (data.error) { setError(data.error); return; }
+          cancelForm();
+          loadCredentials();
+        })
+        .catch(() => setError("Failed to update credential."));
+    }
+  };
+
+  return (
+    <div className="vault-panel">
+      {!showForm ? (
+        <>
+          <div className="vault-panel-header">
+            <span className="vault-panel-title">Credential Vault</span>
+            <button className="vault-btn" onClick={openAdd}>Add</button>
+          </div>
+          {error && <div className="vault-error">{error}</div>}
+          {loading && <div className="vault-empty">Loading…</div>}
+          {!loading && credentials.length === 0 && <div className="vault-empty">No credentials stored.</div>}
+          {credentials.map((cred) => (
+            <div className="vault-credential-row" key={cred.id}>
+              <span className="vault-credential-alias">{cred.alias}</span>
+              <span className="vault-credential-url">{cred.url_pattern || "—"}</span>
+              <span className="vault-credential-mask">••••••</span>
+              <div className="vault-credential-actions">
+                <button className="vault-btn" onClick={() => openEdit(cred)}>Edit</button>
+                <button className="vault-btn danger" onClick={() => handleDelete(cred)}>Delete</button>
+              </div>
+            </div>
+          ))}
+        </>
+      ) : (
+        <form className="vault-form" onSubmit={handleSubmit}>
+          <div className="vault-panel-header">
+            <span className="vault-panel-title">{editingId ? "Edit Credential" : "Add Credential"}</span>
+          </div>
+          {error && <div className="vault-error">{error}</div>}
+          <label>
+            Alias *
+            <input value={form.alias} onChange={(e) => setForm({ ...form, alias: e.target.value })} required />
+          </label>
+          <label>
+            Username *
+            <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required={editingId === null} />
+          </label>
+          <label>
+            Password {editingId ? "" : "*"}
+            <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required={editingId === null} placeholder={editingId ? "leave blank to keep current" : ""} />
+          </label>
+          <label>
+            URL Pattern
+            <input value={form.url_pattern} onChange={(e) => setForm({ ...form, url_pattern: e.target.value })} placeholder="https://example.com" />
+          </label>
+          <label>
+            Notes
+            <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
+          </label>
+          <div className="vault-form-actions">
+            <button className="vault-btn" type="submit">{editingId ? "Update" : "Save"}</button>
+            <button className="vault-btn" type="button" onClick={cancelForm}>Cancel</button>
+          </div>
+        </form>
+      )}
+    </div>
   );
 }
 

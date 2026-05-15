@@ -4505,4 +4505,22 @@ textarea:focus-visible,
 .mission-action-btn.browser_cancel:hover { border-color: #ef4444; background: #2d1010; }
 .browser-screenshot-step { margin: 4px 0; }
 .browser-screenshot-step img { max-width: 100%; border: 1px solid #1e293b; border-radius: 4px; }
+.vault-panel { padding: 12px; border-top: 1px solid #1e293b; }
+.vault-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.vault-panel-title { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; color: #64748b; text-transform: uppercase; }
+.vault-credential-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid #0f172a; }
+.vault-credential-alias { font-weight: 600; color: #e2e8f0; min-width: 80px; }
+.vault-credential-url { color: #64748b; font-size: 0.75rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vault-credential-mask { color: #334155; font-size: 0.75rem; }
+.vault-credential-actions { display: flex; gap: 4px; }
+.vault-btn { padding: 2px 8px; border-radius: 3px; border: 1px solid #1e293b; background: transparent; color: #94a3b8; cursor: pointer; font-size: 0.7rem; }
+.vault-btn:hover { border-color: #334155; color: #e2e8f0; }
+.vault-btn.danger:hover { border-color: #b91c1c; color: #fca5a5; }
+.vault-form { display: flex; flex-direction: column; gap: 8px; }
+.vault-form label { font-size: 0.7rem; color: #64748b; display: flex; flex-direction: column; gap: 2px; }
+.vault-form input, .vault-form textarea { background: #0f172a; border: 1px solid #1e293b; color: #e2e8f0; padding: 4px 8px; border-radius: 3px; font-size: 0.8rem; font-family: inherit; }
+.vault-form textarea { resize: vertical; min-height: 60px; }
+.vault-form-actions { display: flex; gap: 8px; margin-top: 4px; }
+.vault-error { color: #fca5a5; font-size: 0.75rem; margin-top: 4px; }
+.vault-empty { color: #475569; font-size: 0.75rem; padding: 8px 0; }
 .browser-screenshot-step .step-title { font-size: 0.75rem; color: #94a3b8; margin-bottom: 2px; }
