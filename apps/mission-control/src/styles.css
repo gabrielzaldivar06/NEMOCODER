@@ -2228,7 +2228,7 @@ button { font: inherit; }
   letter-spacing: .04em;
 }
 
-.agent-live-dot {
+.agent-live-badge-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
