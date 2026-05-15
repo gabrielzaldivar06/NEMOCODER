@@ -1762,6 +1762,30 @@ def _resolve_lmstudio_model(base_url: str) -> str:
         return ""
 
 
+def _resolve_vlm_model(base_url: str) -> str | None:
+    """Return the best loaded VLM from LM Studio (type=vlm), or None if none available."""
+    _SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
+    base = base_url.rstrip("/")
+    mgmt_base = re.sub(r"/v\d+$", "", base)
+    try:
+        req = urllib.request.Request(f"{mgmt_base}/api/v0/models", method="GET")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            data = json.loads(r.read().decode())
+        candidates = [
+            m for m in data.get("data", [])
+            if m.get("type") == "vlm"
+            and m.get("state") == "loaded"
+            and not _SKIP.search(m.get("id", ""))
+        ]
+        if candidates:
+            candidates.sort(key=lambda m: int(m.get("loaded_context_length") or 0), reverse=True)
+            return str(candidates[0]["id"])
+    except Exception:
+        pass
+    return None
+
+
 def _chat_model(payload: dict[str, object]) -> str:
     value = str(payload.get("model") or payload.get("default_model") or "").strip()
     if not value:
@@ -2240,6 +2264,36 @@ def api_vault_lookup(config: MissionControlServerConfig, payload: dict, client_a
         return vault_lookup(_vault_db(config), alias)
     except KeyError:
         raise _bad_request(f"Alias '{alias}' not found", error_code="not_found", status_code=404)
+
+
+# ---------------------------------------------------------------------------
+# Browser Agent API
+# ---------------------------------------------------------------------------
+
+def api_browser_confirm(payload: dict) -> dict:
+    from nemo_coding_platform.browser_agent import confirm_action
+    session_id = str(payload.get("session_id") or "")
+    approved = bool(payload.get("approved", False))
+    if not session_id:
+        raise _bad_request("session_id is required", error_code="missing_session_id")
+    found = confirm_action(session_id, approved)
+    if not found:
+        raise _bad_request(f"Session {session_id} not found", error_code="not_found", status_code=404)
+    return {"ok": True}
+
+
+def api_browser_cancel(payload: dict) -> dict:
+    from nemo_coding_platform.browser_agent import cancel_session
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        raise _bad_request("session_id is required", error_code="missing_session_id")
+    cancel_session(session_id)
+    return {"ok": True}
+
+
+def api_browser_sessions(config: MissionControlServerConfig) -> dict:
+    from nemo_coding_platform.browser_agent import get_sessions_info
+    return {"sessions": get_sessions_info()}
 
 
 def _raw_tool_name_fallback(response: str, message: str) -> str | None:
@@ -6809,6 +6863,9 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             job_id = route[len("/api/run/"): -len("/public-html-files")].strip("/")
             self._handle(lambda _: api_run_public_html_files(self.server.config, job_id, self.server.jobs), {})
             return
+        if route == "/api/agent/browser-sessions":
+            self._handle(lambda _: api_browser_sessions(self.server.config), {})
+            return
         if route == "/api/vault/credentials":
             self._handle(lambda _: api_vault_list(self.server.config), {})
             return
@@ -6850,6 +6907,62 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             _send_event({"type": "error", "error": str(error), "error_code": "internal_error"})
         finally:
             _plan_jobs.pop(plan_job_id, None)
+
+    def _handle_browser_task_sse(self, payload: dict[str, object]) -> None:
+        """Stream browser agent steps as Server-Sent Events."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+        def _send(data: dict[str, object]) -> bool:
+            try:
+                line = ("data: " + json.dumps(data, sort_keys=True) + "\n\n").encode("utf-8")
+                self.wfile.write(line)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return False
+
+        url = str(payload.get("url") or "").strip()
+        task = str(payload.get("task") or "").strip()
+        credential_alias = str(payload.get("credential_alias") or "").strip() or None
+        max_steps = int(payload.get("max_steps") or 10)
+        session_id = str(payload.get("session_id") or f"browser-{uuid4().hex[:12]}")
+
+        if not url or not task:
+            _send({"type": "error", "message": "url and task are required"})
+            return
+
+        config = self.server.config
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
+        base_url = str(payload.get("model_base_url") or "http://localhost:1234/v1")
+        vlm_model = _resolve_vlm_model(base_url) or _resolve_lmstudio_model(base_url) or None
+        vault_db = _vault_db(config) if credential_alias else None
+
+        from nemo_coding_platform.browser_agent import execute_browser_task
+        try:
+            for event in execute_browser_task(
+                session_id=session_id,
+                url=url,
+                task=task,
+                credential_alias=credential_alias,
+                max_steps=max_steps,
+                artifacts_dir=artifacts_dir,
+                base_url=base_url,
+                vlm_model=vlm_model,
+                vault_db_path=vault_db,
+            ):
+                if not _send(event):
+                    break
+        except Exception as exc:
+            _send({"type": "error", "message": str(exc)})
 
     def _handle_timeline_sse(self, job_id: str) -> None:
         """Stream HandoffJob.timeline events as Server-Sent Events."""
@@ -6920,6 +7033,13 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
                 return
             self._handle_plan_sse(payload)
             return
+        if urlparse(self.path).path == "/api/agent/browser-task" and "text/event-stream" in self.headers.get("Accept", ""):
+            try:
+                payload = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError):
+                payload = {}
+            self._handle_browser_task_sse(payload)
+            return
         route = urlparse(self.path).path
         if route.startswith("/api/run/") and route.endswith("/worktree-merge"):
             job_id = route[len("/api/run/"): -len("/worktree-merge")].strip("/")
@@ -6989,6 +7109,8 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/vault/credentials/update": lambda payload: api_vault_update(self.server.config, payload),
             "/api/vault/credentials/delete": lambda payload: api_vault_delete(self.server.config, payload),
             "/api/vault/credentials/lookup": lambda payload: api_vault_lookup(self.server.config, payload, self.client_address[0]),
+            "/api/agent/browser-confirm": lambda payload: api_browser_confirm(payload),
+            "/api/agent/browser-cancel": lambda payload: api_browser_cancel(payload),
             "/api/nemo": lambda payload: api_nemo(self.server.config, payload),
             "/api/nemo/tool": lambda payload: api_nemo_tool(self.server.config, payload),
             "/api/nemo/mcp-status": lambda payload: api_nemo_mcp_status(self.server.config, payload),
