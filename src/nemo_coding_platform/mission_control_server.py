@@ -6933,7 +6933,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         url = str(payload.get("url") or "").strip()
         task = str(payload.get("task") or "").strip()
         credential_alias = str(payload.get("credential_alias") or "").strip() or None
-        max_steps = int(payload.get("max_steps") or 10)
+        try:
+            max_steps = max(1, min(100, int(payload.get("max_steps") or 10)))
+        except (ValueError, TypeError):
+            max_steps = 10
         session_id = str(payload.get("session_id") or f"browser-{uuid4().hex[:12]}")
 
         if not url or not task:
@@ -6947,22 +6950,25 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         vault_db = _vault_db(config) if credential_alias else None
 
         from nemo_coding_platform.browser_agent import execute_browser_task
+        gen = execute_browser_task(
+            session_id=session_id,
+            url=url,
+            task=task,
+            credential_alias=credential_alias,
+            max_steps=max_steps,
+            artifacts_dir=artifacts_dir,
+            base_url=base_url,
+            vlm_model=vlm_model,
+            vault_db_path=vault_db,
+        )
         try:
-            for event in execute_browser_task(
-                session_id=session_id,
-                url=url,
-                task=task,
-                credential_alias=credential_alias,
-                max_steps=max_steps,
-                artifacts_dir=artifacts_dir,
-                base_url=base_url,
-                vlm_model=vlm_model,
-                vault_db_path=vault_db,
-            ):
+            for event in gen:
                 if not _send(event):
                     break
         except Exception as exc:
             _send({"type": "error", "message": str(exc)})
+        finally:
+            gen.close()
 
     def _handle_timeline_sse(self, job_id: str) -> None:
         """Stream HandoffJob.timeline events as Server-Sent Events."""
@@ -7036,8 +7042,12 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if urlparse(self.path).path == "/api/agent/browser-task" and "text/event-stream" in self.headers.get("Accept", ""):
             try:
                 payload = _load_body(self)
-            except (ApiRequestError, json.JSONDecodeError, ValueError):
-                payload = {}
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            if not str(payload.get("url") or "").strip() or not str(payload.get("task") or "").strip():
+                _json_response(self, 400, {"error": "url and task are required", "error_code": "invalid_request"})
+                return
             self._handle_browser_task_sse(payload)
             return
         route = urlparse(self.path).path
