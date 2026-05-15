@@ -1,3 +1,4 @@
+import sqlite3
 import pytest
 from pathlib import Path
 from nemo_coding_platform.credential_vault import (
@@ -90,7 +91,7 @@ def test_delete_missing_raises(tmp_path):
 def test_alias_uniqueness_enforced(tmp_path):
     db = tmp_path / "vault.db"
     vault_create(db, "github", "u1", "p1")
-    with pytest.raises(Exception):  # sqlite3.IntegrityError
+    with pytest.raises(sqlite3.IntegrityError):
         vault_create(db, "github", "u2", "p2")
 
 
@@ -101,3 +102,9 @@ def test_list_ordered_by_alias(tmp_path):
     vault_create(db, "github", "u", "p")
     aliases = [r["alias"] for r in vault_list(db)]
     assert aliases == ["aws", "github", "zoom"]
+
+
+def test_update_no_fields_missing_id_raises(tmp_path):
+    db = tmp_path / "vault.db"
+    with pytest.raises(KeyError):
+        vault_update(db, "nonexistent-id")

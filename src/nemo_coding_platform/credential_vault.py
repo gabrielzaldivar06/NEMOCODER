@@ -1,5 +1,6 @@
 import sqlite3
 import uuid
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,7 +65,7 @@ def _conn(db_path: Path) -> sqlite3.Connection:
 
 def vault_list(db_path: Path) -> list[dict]:
     """Return all credentials without decrypting sensitive fields."""
-    with _conn(db_path) as conn:
+    with closing(_conn(db_path)) as conn:
         rows = conn.execute(
             "SELECT id, alias, url_pattern, "
             "(notes_enc IS NOT NULL) AS has_notes, created_at, updated_at "
@@ -83,7 +84,7 @@ def vault_create(
 ) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     cred_id = uuid.uuid4().hex
-    with _conn(db_path) as conn:
+    with closing(_conn(db_path)) as conn:
         conn.execute(
             "INSERT INTO credentials "
             "(id, alias, username_enc, password_enc, url_pattern, notes_enc, created_at, updated_at) "
@@ -125,11 +126,15 @@ def vault_update(db_path: Path, cred_id: str, **fields: object) -> dict:
         updates.append("notes_enc = ?")
         params.append(vault_encrypt(val) if val else None)
     if not updates:
+        with closing(_conn(db_path)) as conn:
+            row = conn.execute("SELECT id FROM credentials WHERE id = ?", (cred_id,)).fetchone()
+        if row is None:
+            raise KeyError(cred_id)
         return {"id": cred_id, "updated_at": now}
     updates.append("updated_at = ?")
     params.append(now)
     params.append(cred_id)
-    with _conn(db_path) as conn:
+    with closing(_conn(db_path)) as conn:
         cur = conn.execute(
             f"UPDATE credentials SET {', '.join(updates)} WHERE id = ?", params
         )
@@ -140,7 +145,7 @@ def vault_update(db_path: Path, cred_id: str, **fields: object) -> dict:
 
 
 def vault_delete(db_path: Path, cred_id: str) -> None:
-    with _conn(db_path) as conn:
+    with closing(_conn(db_path)) as conn:
         cur = conn.execute("DELETE FROM credentials WHERE id = ?", (cred_id,))
         conn.commit()
         if cur.rowcount == 0:
@@ -149,7 +154,7 @@ def vault_delete(db_path: Path, cred_id: str) -> None:
 
 def vault_lookup(db_path: Path, alias: str) -> dict:
     """Return decrypted {username, password} for an alias. Internal use only."""
-    with _conn(db_path) as conn:
+    with closing(_conn(db_path)) as conn:
         row = conn.execute(
             "SELECT username_enc, password_enc FROM credentials WHERE alias = ?",
             (alias,),
