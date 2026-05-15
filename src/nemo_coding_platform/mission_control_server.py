@@ -1767,11 +1767,19 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
     return default_model
 
 
-def _resolve_vlm_model(base_url: str) -> str | None:
-    """Return the best loaded VLM from LM Studio (type=vlm), or None if none available."""
-    _SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
+_VLM_KEYWORDS = re.compile(r"vision|multimodal|vl\b|vlm\b|-vl-|-vlm-|fuyu|llava|intern.?vl|qwen.*vl|phi.*visual|phi.*multi", re.I)
+
+def _resolve_vlm_model(base_url: str, *, api_key: str = "lm-studio") -> str | None:
+    """Return the best available VLM.
+
+    Strategy 1: LM Studio management API (type=vlm, state=loaded).
+    Strategy 2: OpenAI-compatible /v1/models filtered by vision keyword (for remote APIs).
+    Returns None if no vision model is found.
+    """
+    _SKIP = re.compile(r"embed|rerank|bge|nomic|guard|safety|nemoretriever|nv-embedqa", re.I)
     base = base_url.rstrip("/")
     mgmt_base = re.sub(r"/v\d+$", "", base)
+    # Strategy 1: LM Studio management API
     try:
         req = urllib.request.Request(f"{mgmt_base}/api/v0/models", method="GET")
         req.add_header("Accept", "application/json")
@@ -1786,6 +1794,29 @@ def _resolve_vlm_model(base_url: str) -> str | None:
         if candidates:
             candidates.sort(key=lambda m: int(m.get("loaded_context_length") or 0), reverse=True)
             return str(candidates[0]["id"])
+    except Exception:
+        pass
+    # Strategy 2: OpenAI-compatible /v1/models — filter by vision keywords (NVIDIA NIM, etc.)
+    try:
+        req = urllib.request.Request(f"{base}/models", method="GET")
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read().decode())
+        candidates = [
+            m["id"] for m in data.get("data", [])
+            if _VLM_KEYWORDS.search(m.get("id", ""))
+            and not _SKIP.search(m.get("id", ""))
+        ]
+        # Prefer smaller/faster vision models (they tend to have lower parameter counts in name)
+        def _vlm_priority(mid: str) -> int:
+            for tok in ("11b", "8b", "4b", "2b", "7b", "12b"):
+                if tok in mid.lower():
+                    return int(tok[:-1])
+            return 999
+        candidates.sort(key=_vlm_priority)
+        if candidates:
+            return candidates[0]
     except Exception:
         pass
     return None
@@ -1982,11 +2013,13 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "Never invent MCP/NEMO tool names or capabilities outside the verified catalog below. "
                     "Never answer with only a raw tool name such as get_current_time, search_memories, or context_bootstrap; explain the actual answer or next action in natural language.\n\n"
                     "ROUTING RULES — FOLLOW EXACTLY:\n"
+                    "- Web search, URL navigation, web scraping, login, form filling, any website interaction: ALWAYS use browser_task with the real target URL. Never write a Python/requests script for this.\n"
                     "- Source file changes (create/edit .py, .ts, .js, .tsx, .go, .rs, etc.): ALWAYS use handoff_start. Never write source code inline.\n"
                     "- Standalone scripts, data visualizations, standalone programs: use plan_generate.\n"
                     "- Visual artifacts (HTML page, SVG, Mermaid diagram, React component, image prompt): generate inline using the artifact fences below.\n"
                     "- Conversation, questions, status queries: respond directly in text.\n"
-                    "BREVITY RULE: Keep responses under 200 words. When triggering a tool, embed the JSON and add one sentence explaining what it will do. Do not write implementation details, pseudocode, or long explanations."
+                    "CRITICAL: NEVER ask '¿Quieres ejecutar...?' or 'Do you want me to...?' — trigger the tool IMMEDIATELY. The user asked for the action, not a proposal.\n"
+                    "BREVITY RULE: Keep responses under 80 words. When triggering a tool, embed the JSON and add ONE short sentence. No pseudocode, no lists."
                 ),
             },
             {
@@ -7031,9 +7064,11 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             return
 
         config = self.server.config
+        settings = _load_settings(config)
         artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
-        base_url = str(payload.get("model_base_url") or "http://localhost:1234/v1")
-        vlm_model = _resolve_vlm_model(base_url)  # None → screenshot-only mode; non-vision LLMs can't handle images
+        base_url = str(payload.get("model_base_url") or settings.get("model_base_url") or "http://localhost:1234/v1")
+        api_key = str(payload.get("api_key") or settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
+        vlm_model = _resolve_vlm_model(base_url, api_key=api_key)  # None → screenshot-only; non-vision LLMs can't handle images
         vault_db = _vault_db(config) if credential_alias else None
 
         from nemo_coding_platform.browser_agent import execute_browser_task
@@ -7047,6 +7082,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             base_url=base_url,
             vlm_model=vlm_model,
             vault_db_path=vault_db,
+            api_key=api_key,
         )
         try:
             for event in gen:

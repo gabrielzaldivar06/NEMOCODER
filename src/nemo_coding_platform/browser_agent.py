@@ -174,6 +174,7 @@ def _vlm_action(
     history: list[dict],
     base_url: str,
     model: str,
+    api_key: str = "lm-studio",
 ) -> dict:
     prompt = (
         f"You are a web navigation agent. Your task: {task}\n"
@@ -198,7 +199,7 @@ def _vlm_action(
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
         data=body,
-        headers={"Content-Type": "application/json", "Authorization": "Bearer lm-studio"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -233,6 +234,7 @@ def execute_browser_task(
     base_url: str,
     vlm_model: str | None,
     vault_db_path: Path | None,
+    api_key: str = "lm-studio",
 ) -> Iterator[dict]:
     """
     Generator that drives a browser through a task using a VLM for decisions.
@@ -337,7 +339,7 @@ def execute_browser_task(
 
                 if vlm_model and screenshot_b64:
                     try:
-                        action = _vlm_action(screenshot_b64, task_context, history, base_url, vlm_model)
+                        action = _vlm_action(screenshot_b64, task_context, history, base_url, vlm_model, api_key)
                     except Exception as exc:
                         action = {"action": "done", "target": "", "value": "", "reason": f"VLM error: {exc}"}
                 else:

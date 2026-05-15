@@ -2050,7 +2050,7 @@ export function App() {
                 }
 
                 if (evt.type === "error") {
-                  const errMsg = String(evt.error || "Unknown browser task error");
+                  const errMsg = String(evt.message || evt.error || "Unknown browser task error");
                   setAgentMessages((prev) =>
                     prev.map((m) =>
                       m.id === btMsgId
