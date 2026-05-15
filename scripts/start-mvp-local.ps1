@@ -193,6 +193,21 @@ function Start-LocalProcess {
 
 Set-Location $RepoRoot
 
+# Auto-read nemo_mcp_url from settings.json when not supplied as a parameter
+if (-not $NemoMcpUrl) {
+    $settingsPath = Join-Path $RuntimeRoot "mission-control\settings.json"
+    if (Test-Path $settingsPath) {
+        try {
+            $settings = Get-Content $settingsPath -Raw | ConvertFrom-Json
+            if ($settings.nemo_mcp_url) {
+                $NemoMcpUrl = $settings.nemo_mcp_url
+            }
+        } catch {
+            Write-Warning "Could not read nemo_mcp_url from settings.json: $($_.Exception.Message)"
+        }
+    }
+}
+
 if (-not $SkipNemoCheck -and $NemoMcpUrl -notlike "stdio://*") {
     $nemo = Test-NemoMcpSse -Url $NemoMcpUrl
     if (-not $nemo.Ok) {
