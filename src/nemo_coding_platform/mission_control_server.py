@@ -1967,10 +1967,10 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "Prefer generating the actual artifact over describing what it would look like. Keep artifact code self-contained and compatible with a sandboxed preview."
                 ),
             },
-            {"role": "system", "content": f"Verified NEMO tool names (all already executed server-side, not by you): {verified_tools}"},
+            {"role": "system", "content": f"[SERVER-SIDE ONLY — YOU CANNOT CALL THESE] NEMO MCP tools already executed by the backend before this response: {verified_tools}. These are informational only. Never embed NEMO tool names in your response."},
             {"role": "system", "content": f"NEMO MCP native mode: {native_mode}. URL: {native_mcp_url or 'not configured'}"},
-            {"role": "system", "content": f"Runtime-verified local NEMO MCP READ tools: {runtime_read_text}"},
-            {"role": "system", "content": f"Declared local NEMO MCP WRITE/DESTRUCTIVE tools: {runtime_write_text}"},
+            {"role": "system", "content": f"[SERVER-SIDE ONLY] Runtime-verified NEMO READ tools (executed by backend, not you): {runtime_read_text}"},
+            {"role": "system", "content": f"[SERVER-SIDE ONLY] NEMO WRITE tools (executed by backend, not you): {runtime_write_text}"},
             {"role": "system", "content": _AGENT_TOOL_CATALOG},
             {"role": "system", "content": context_summary},
             *[{"role": turn["role"], "content": turn["content"]} for turn in (history or [])[-10:]],
@@ -2164,6 +2164,104 @@ def _raw_tool_name_fallback(response: str, message: str) -> str | None:
     )
 
 
+def _galaxy_canvas_html() -> str:
+        return """\
+<!-- ARTIFACT:Galaxy Spiral — Space Code:html -->
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000814;overflow:hidden;width:100vw;height:100vh}
+canvas{display:block}
+.hud{position:absolute;top:16px;left:50%;transform:translateX(-50%);text-align:center;pointer-events:none}
+h1{font:700 14px/1 monospace;letter-spacing:.22em;color:rgba(155,190,255,.82);text-transform:uppercase;margin-bottom:5px}
+p{font:9px/1 monospace;letter-spacing:.28em;color:rgba(100,145,215,.48)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud"><h1>SPACE CODE</h1><p>INTELLIGENT AGENT CONSTELLATION</p></div>
+<script>
+const cv=document.getElementById('c'),X=cv.getContext('2d');
+let W,H,cx,cy,R;
+function resize(){W=cv.width=innerWidth;H=cv.height=innerHeight;cx=W/2;cy=H/2;R=Math.min(W,H)*.45}
+addEventListener('resize',resize);resize();
+
+const BGS=Array.from({length:500},()=>({
+  x:(Math.random()-.5)*W*2.2,y:(Math.random()-.5)*H*2.2,
+  r:Math.random()*.7+.08,a:Math.random()*.28+.04,ph:Math.random()*6.28
+}));
+
+const SS=[];
+for(let arm=0;arm<2;arm++){
+  for(let i=0;i<800;i++){
+    const th=Math.pow(Math.random(),.5)*5+.4;
+    const r=.16*Math.exp(.27*th)*R;
+    const base=th+arm*Math.PI;
+    const sp=Math.sqrt(r)*.55;
+    const da=(Math.random()-.5)*sp/r;
+    const dr=(Math.random()-.5)*sp*1.8;
+    const t=th/5.4;
+    const h=220+arm*38+t*55,s=Math.round(28+t*58),l=Math.round(48+t*42);
+    SS.push({
+      x:Math.cos(base+da)*(r+dr),
+      y:Math.sin(base+da)*(r+dr)*.38,
+      sz:.12+Math.random()*1.2+t*.5,
+      al:(0.2+Math.random()*.8)*(0.28+t*.72),
+      col:'hsl('+h+','+s+'%,'+l+'%)',
+      ph:Math.random()*6.28,ps:Math.random()*.038+.004
+    });
+  }
+}
+
+const COR=Array.from({length:320},()=>{
+  const a=Math.random()*6.28,d=Math.pow(Math.random(),1.7)*65;
+  return{x:Math.cos(a)*d,y:Math.sin(a)*d*.38,r:Math.random()*2.2+.1,a:Math.random()*.88+.1};
+});
+
+let rot=0,frame=0;
+function draw(){
+  frame++;rot+=.00065;
+  X.fillStyle='rgba(0,6,22,.2)';X.fillRect(0,0,W,H);
+  X.save();X.translate(cx,cy);X.rotate(rot);
+
+  for(const s of BGS){
+    const a=s.a*(0.55+0.45*Math.sin(frame*.016+s.ph));
+    X.beginPath();X.arc(s.x,s.y,s.r,0,6.28);
+    X.fillStyle='rgba(185,205,255,'+a.toFixed(3)+')';X.fill();
+  }
+
+  let g=X.createRadialGradient(0,0,0,0,0,R*.22);
+  g.addColorStop(0,'rgba(165,135,255,.22)');g.addColorStop(.5,'rgba(65,45,175,.08)');g.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=g;X.beginPath();X.arc(0,0,R*.22,0,6.28);X.fill();
+  g=X.createRadialGradient(-R*.04,-R*.02,0,-R*.04,-R*.02,R*.17);
+  g.addColorStop(0,'rgba(55,115,255,.11)');g.addColorStop(1,'rgba(0,0,0,0)');
+  X.fillStyle=g;X.beginPath();X.arc(-R*.04,-R*.02,R*.17,0,6.28);X.fill();
+
+  for(const s of COR){
+    const a=s.a*(0.5+0.5*Math.sin(frame*.025+s.x*.07));
+    X.beginPath();X.arc(s.x,s.y,s.r,0,6.28);
+    X.fillStyle='rgba(218,212,255,'+a.toFixed(3)+')';X.fill();
+  }
+
+  for(const s of SS){
+    s.ph+=s.ps;
+    const a=s.al*(0.58+0.42*Math.sin(s.ph));
+    X.beginPath();X.arc(s.x,s.y,s.sz,0,6.28);
+    X.fillStyle=s.col.replace('hsl(','hsla(').replace(')',','+a.toFixed(3)+')');
+    X.fill();
+  }
+
+  X.restore();requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>"""
+
+
 def _is_artifact_request(message: str) -> bool:
         lowered = message.casefold()
         markers = (
@@ -2180,6 +2278,25 @@ def _is_artifact_request(message: str) -> bool:
                 "visualización",
                 "mockup",
                 "renderizable",
+                # visual / impression intent
+                "visual",
+                "sorprendeme",
+                "impress",
+                "chart",
+                "grafica",
+                "gráfica",
+                "animacion",
+                "animación",
+                "animation",
+                "graph",
+                "plot",
+                "galaxia",
+                "galaxy",
+                "espiral",
+                "spiral",
+                "beautiful",
+                "bonito",
+                "bello",
         )
         return any(marker in lowered for marker in markers)
 
@@ -2188,7 +2305,22 @@ def _has_typed_artifact_fence(response: str) -> bool:
         return bool(re.search(r"```(?:html_artifact|svg_artifact|react_artifact|image_request|mermaid)\b", response or "", flags=re.IGNORECASE))
 
 
+_VISUAL_KEYWORDS = (
+        "galaxy", "galaxia", "spiral", "espiral", "sorprendeme", "impress",
+        "beautiful", "bonito", "bello", "animacion", "animación", "animation",
+        "chart", "graph", "plot", "grafica", "gráfica", "stars", "estrellas",
+        "space", "cosmos", "visual",
+)
+
+
 def _artifact_fallback_response(message: str, tool_calls: list[dict[str, object]]) -> str:
+        lowered = message.casefold()
+        if any(k in lowered for k in _VISUAL_KEYWORDS):
+                return (
+                        "Aquí tienes una visualización animada generada en el Artifact Studio de Space Code.\n\n"
+                        "```html_artifact\n" + _galaxy_canvas_html() + "\n```"
+                )
+
         completed_nemo = [
                 str(item.get("name") or item.get("tool_name") or "")
                 for item in tool_calls
@@ -5003,7 +5135,11 @@ def _extract_code_block(text: str) -> str:
 
 
 _AGENT_TOOL_CATALOG = """\
-AVAILABLE TOOLS — when you decide to use one, embed the JSON object in your response text:
+═══════════════════════════════════════════════════════════
+AGENT ACTION TOOLS — THE ONLY 3 TOOLS YOU CAN TRIGGER
+Embed the JSON in your response text to create an action button.
+DO NOT call any NEMO MCP tools (search_memories, context_bootstrap, etc.) here — those are server-only.
+═══════════════════════════════════════════════════════════
 
 1. handoff_start — full autonomous coding session (edits files, runs tests, makes commits)
    {"tool": "handoff_start", "params": {"objective": "...", "acceptance": "...", "target_files": "optional"}}
@@ -5016,6 +5152,10 @@ AVAILABLE TOOLS — when you decide to use one, embed the JSON object in your re
 3. job_status — query the status of a running background job
    {"tool": "job_status", "params": {"job_id": "job-..."}}
    Use when the user asks about the progress of an ongoing operation.
+
+CRITICAL: These 3 are the ONLY tools you can embed in your response. Do NOT embed NEMO tool names
+(search_memories, context_bootstrap, refresh_context_portfolio, cognitive_ingest, etc.) — those
+are executed automatically by the backend and cannot be invoked by you.
 
 Include the JSON in your response when applicable, then explain in text what it will do and why.
 Keep params as flat strings/numbers — no nested objects inside params.
@@ -6419,6 +6559,39 @@ def api_run_timeline(
         }
 
 
+def api_run_public_html_files(
+    config: "MissionControlServerConfig",
+    job_id: str,
+    jobs: "HandoffJobManager",
+) -> dict[str, object]:
+    """Return public HTML files created by a job, with their content, for artifact injection."""
+    with jobs._lock:
+        job = jobs._jobs.get(job_id)
+        if not job:
+            return {"error": f"job not found: {job_id}", "files": []}
+        run_json_path = Path(job.run_json) if job.run_json else None
+    if not run_json_path or not run_json_path.exists():
+        return {"files": [], "job_id": job_id}
+    try:
+        run_data = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"files": [], "job_id": job_id}
+    changed = run_data.get("mutation_result", {}).get("changed_files", [])
+    PUBLIC_PREFIX = "apps/mission-control/public/"
+    result = []
+    for rel_path in changed:
+        if rel_path.startswith(PUBLIC_PREFIX) and rel_path.endswith(".html"):
+            abs_path = Path(config.repo_path) / rel_path
+            if abs_path.exists():
+                try:
+                    content = abs_path.read_text(encoding="utf-8")
+                    url_path = "/" + rel_path[len(PUBLIC_PREFIX):]
+                    result.append({"path": rel_path, "url": url_path, "content": content})
+                except Exception:
+                    pass
+    return {"files": result, "job_id": job_id}
+
+
 def api_permission_grant(
     config: "MissionControlServerConfig", job_id: str, payload: dict[str, object], jobs: "HandoffJobManager"
 ) -> dict[str, object]:
@@ -6530,6 +6703,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route.startswith("/api/run/") and route.endswith("/timeline"):
             job_id = route[len("/api/run/"): -len("/timeline")].strip("/")
             self._handle(lambda _: api_run_timeline(self.server.config, job_id, self.server.jobs), {})
+            return
+        if route.startswith("/api/run/") and route.endswith("/public-html-files"):
+            job_id = route[len("/api/run/"): -len("/public-html-files")].strip("/")
+            self._handle(lambda _: api_run_public_html_files(self.server.config, job_id, self.server.jobs), {})
             return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})

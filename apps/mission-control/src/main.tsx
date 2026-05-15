@@ -853,6 +853,10 @@ function parsePlanStepsFromMessage(content: string): { steps: PlanStep[]; reason
 // ===== MULTI-STEP PERSISTENT PLANNING SYSTEM (NEMO-BACKED) =====
 // Types are imported from planNemoClient.ts
 
+// Persists across Vite HMR module reloads (window survives, module scope does not)
+declare global { interface Window { _injectedPublicPaths?: Set<string> } }
+if (!window._injectedPublicPaths) window._injectedPublicPaths = new Set<string>();
+
 export function App() {
   const [state, setState] = useState<MissionState>(initialState);
   const [selectedRunSource, setSelectedRunSource] = useState<string>("");
@@ -954,6 +958,36 @@ export function App() {
   // Load plan from localStorage on mount
   useEffect(() => {
     planState.loadFromLocalStorage();
+  }, []);
+
+  // On mount, inject public HTML artifacts created by handoffs (runs once per module lifetime)
+  useEffect(() => {
+    const PUBLIC_HTML_PATHS = ["/game.html"];
+    for (const path of PUBLIC_HTML_PATHS) {
+      if (_injectedPublicPaths.has(path)) continue;
+      _injectedPublicPaths.add(path);
+      fetch(path)
+        .then((r) => r.ok ? r.text() : Promise.reject())
+        .then((html) => {
+          if (!html.trim().startsWith("<!")) return;
+          const name = path.split("/").pop()?.replace(".html", "") ?? "app";
+          setAgentMessages((prev) => {
+            if (prev.some((m) => m.id === `public-artifact-${name}`)) return prev;
+            return [
+              ...prev,
+              {
+                id: `public-artifact-${name}`,
+                role: "assistant" as const,
+                content: `**${name}** listo en el Artifact Studio:\n\n\`\`\`html_artifact\n${html}\n\`\`\``,
+                actions: [],
+                tool_calls: [],
+              },
+            ];
+          });
+          setActiveSection("home");
+        })
+        .catch(() => { _injectedPublicPaths.delete(path); /* retry allowed on next mount */ });
+    }
   }, []);
 
   // Save plan to localStorage whenever it changes
@@ -1362,6 +1396,31 @@ export function App() {
       .finally(() => setHandoffRunning(false));
   };
 
+  const injectPublicHtmlArtifacts = (changedFiles: string[]) => {
+    const PUBLIC_PREFIX = "apps/mission-control/public/";
+    const htmlFiles = changedFiles.filter((f) => f.startsWith(PUBLIC_PREFIX) && f.endsWith(".html"));
+    for (const filePath of htmlFiles) {
+      const urlPath = "/" + filePath.slice(PUBLIC_PREFIX.length);
+      fetch(urlPath)
+        .then((r) => r.ok ? r.text() : Promise.reject(new Error(`${r.status}`)))
+        .then((html) => {
+          const title = urlPath.split("/").pop()?.replace(".html", "") ?? "app";
+          setAgentMessages((prev) => [
+            ...prev,
+            {
+              id: `handoff-artifact-${Date.now()}`,
+              role: "assistant" as const,
+              content: `Handoff completado. Aquí está el resultado renderizable:\n\n\`\`\`html_artifact\n${html}\n\`\`\``,
+              actions: [],
+              tool_calls: [],
+            },
+          ]);
+          setActiveSection("home");
+        })
+        .catch(() => {/* silently skip if file not available yet */});
+    }
+  };
+
   const pollJob = (job: HandoffJob) => {
     postJson<HandoffJobResult>("/api/job", { job_id: job.job_id })
       .then((payload) => {
@@ -1372,6 +1431,26 @@ export function App() {
           setSelectedRunSource(nextRun?.source_json ?? selectedRunSource);
           setSelectedFile(nextRun?.changed_files[0] ?? selectedFile);
           setStatus(`Job completed: ${payload.job.run_json}`);
+          // Fetch public HTML files from the completed job and inject as artifacts
+          fetch(`/api/run/${job.job_id}/public-html-files`)
+            .then((r) => r.ok ? r.json() : Promise.reject())
+            .then((data: { files: Array<{ url: string; content: string; path: string }> }) => {
+              for (const f of data.files ?? []) {
+                const name = f.url.split("/").pop()?.replace(".html", "") ?? "app";
+                setAgentMessages((prev) => {
+                  if (prev.some((m) => m.id === `handoff-artifact-${name}`)) return prev;
+                  return [...prev, {
+                    id: `handoff-artifact-${name}`,
+                    role: "assistant" as const,
+                    content: `**${name}** listo en el Artifact Studio:\n\n\`\`\`html_artifact\n${f.content}\n\`\`\``,
+                    actions: [],
+                    tool_calls: [],
+                  }];
+                });
+                setActiveSection("home");
+              }
+            })
+            .catch(() => {/* endpoint not yet available — useEffect probe will cover this */});
         } else {
           setStatus(`Job ${payload.job.status}: ${payload.job.job_id}`);
         }
@@ -1615,6 +1694,8 @@ export function App() {
         nemo_mcp_url: normalizeNemoMcpUrl(settingsDraft.nemo_mcp_url),
         nemo_mcp_prefix: "nemo.",
         selected_nemo_tools: selectedNemoTools,
+        require_nemo_mcp_capabilities: true,
+        require_nemo_roundtrip: false,
       })
         .then((payload) => {
           setActiveJob(payload.job);
