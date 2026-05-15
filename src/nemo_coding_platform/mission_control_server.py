@@ -2155,6 +2155,9 @@ def api_generate_image(config: MissionControlServerConfig, payload: dict[str, ob
 # Credential Vault API
 # ---------------------------------------------------------------------------
 
+_LOOPBACK = {"::1", "::ffff:127.0.0.1"}
+
+
 def _vault_db(config: MissionControlServerConfig) -> Path:
     return config.runtimes_path / "mission-control" / "vault.db"
 
@@ -2195,10 +2198,22 @@ def api_vault_update(config: MissionControlServerConfig, payload: dict) -> dict:
     if not cred_id:
         raise _bad_request("id is required", error_code="missing_id")
     fields = {k: payload[k] for k in ("alias", "username", "password", "url_pattern", "notes") if k in payload}
+    if "alias" in fields:
+        fields["alias"] = str(fields["alias"]).strip()
+        if not fields["alias"]:
+            raise _bad_request("alias cannot be empty", error_code="missing_alias")
+    if "username" in fields and not str(fields["username"]).strip():
+        raise _bad_request("username cannot be empty", error_code="missing_credentials")
+    if "password" in fields and not str(fields["password"]).strip():
+        raise _bad_request("password cannot be empty", error_code="missing_credentials")
     try:
         return vault_update(_vault_db(config), cred_id, **fields)
     except KeyError:
         raise _bad_request(f"Credential {cred_id} not found", error_code="not_found", status_code=404)
+    except Exception as exc:
+        if "UNIQUE" in str(exc).upper():
+            raise _bad_request("Alias already exists", error_code="duplicate_alias") from exc
+        raise
 
 
 def api_vault_delete(config: MissionControlServerConfig, payload: dict) -> dict:
@@ -2215,7 +2230,7 @@ def api_vault_delete(config: MissionControlServerConfig, payload: dict) -> dict:
 
 def api_vault_lookup(config: MissionControlServerConfig, payload: dict, client_address: str) -> dict:
     """Internal-only: decrypts and returns credentials. Only callable from 127.0.0.1."""
-    if not client_address.startswith("127."):
+    if not (client_address.startswith("127.") or client_address in _LOOPBACK):
         raise _bad_request("Forbidden", error_code="forbidden", status_code=403)
     from nemo_coding_platform.credential_vault import vault_lookup
     alias = str(payload.get("alias") or "").strip()
