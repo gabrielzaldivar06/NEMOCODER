@@ -63,6 +63,7 @@ type MissionRun = {
 };
 
 type MissionState = {
+  statusLoaded: boolean;
   schema_version: number;
   product: string;
   repo_path: string;
@@ -593,6 +594,7 @@ function extractIterationLines(logs: string[] = []): string[] {
 }
 
 const initialState: MissionState = {
+  statusLoaded: false,
   schema_version: 1,
   product: "Space Code Mission Control",
   repo_path: "c:/dev/dev4",
@@ -1127,7 +1129,7 @@ export function App() {
       })
       .then((payload: MissionState) => {
         const nextState = normalizeState(payload);
-        setState(nextState);
+        setState({ ...nextState, statusLoaded: true });
         setSettingsDraft(nextState.settings);
         setRepoDraft(nextState.repo_path);
         const nextRun = nextState.runs.find((run) => run.source_json === selectedRunSource) ?? nextState.runs[0];
@@ -2528,10 +2530,10 @@ export function App() {
 
   useEffect(() => {
     // Avoid landing on an empty runs canvas when the workspace has no runs yet.
-    if (activeSection === "runs" && state.runs.length === 0) {
+    if (activeSection === "runs" && state.statusLoaded && state.runs.length === 0) {
       setActiveSection("home");
     }
-  }, [activeSection, state.runs.length]);
+  }, [activeSection, state.statusLoaded, state.runs.length]);
 
   useEffect(() => {
     if (!activeJob || !["starting", "running"].includes(activeJob.status)) return;
@@ -2699,6 +2701,8 @@ export function App() {
         />}
 
         {activeSection === "runs" && <>
+          {!state.statusLoaded && <RunsSkeleton />}
+          {state.statusLoaded && <>
           <div className="tab-row">
             <button type="button" className={`tab ${runsWorkbenchTab === "file" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("file")}>
               <FileCode2 size={14} /> {activeFile || "welcome.md"}
@@ -2827,6 +2831,7 @@ export function App() {
               runningJob={jobRunning}
             />}
           </div>
+          </>}
         </>}
 
         {activeSection === "versioning" && <VersioningPanel
@@ -4897,6 +4902,16 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
 
 function Setting({ label, value }: { label: string; value: string }) {
   return <div className="setting"><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function RunsSkeleton() {
+  return (
+    <div className="runs-skeleton">
+      {[1, 2, 3].map((n) => (
+        <div key={n} className="runs-skeleton-row" />
+      ))}
+    </div>
+  );
 }
 
 function EmptyState() {

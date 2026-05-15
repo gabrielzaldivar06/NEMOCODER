@@ -4304,5 +4304,14 @@ textarea:focus-visible,
 .review-live-badge { font-size: 9px; background: #3fb950; color: #000; border-radius: 3px; padding: 1px 4px; margin-left: 5px; font-weight: 700; letter-spacing: 0.5px; }
 .review-subtab-content { transition: opacity 0.2s ease; }
 .timeline-empty { padding: 20px; text-align: center; color: #8b949e; font-size: 12px; }
+.runs-skeleton { padding: 24px 20px; display: flex; flex-direction: column; gap: 10px; }
+.runs-skeleton-row {
+  height: 36px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #161b22 25%, #1f2937 50%, #161b22 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s infinite;
+}
+@keyframes skeleton-shimmer { 0% { background-position: 200% 0 } 100% { background-position: -200% 0 } }
 
 @keyframes slideInPlan { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
