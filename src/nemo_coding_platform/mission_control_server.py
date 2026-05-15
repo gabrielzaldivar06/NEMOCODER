@@ -5291,7 +5291,7 @@ def _extract_code_block(text: str) -> str:
 
 _AGENT_TOOL_CATALOG = """\
 ═══════════════════════════════════════════════════════════
-AGENT ACTION TOOLS — THE ONLY 3 TOOLS YOU CAN TRIGGER
+AGENT ACTION TOOLS — THE ONLY 4 TOOLS YOU CAN TRIGGER
 Embed the JSON in your response text to create an action button.
 DO NOT call any NEMO MCP tools (search_memories, context_bootstrap, etc.) here — those are server-only.
 ═══════════════════════════════════════════════════════════
@@ -5308,7 +5308,18 @@ DO NOT call any NEMO MCP tools (search_memories, context_bootstrap, etc.) here �
    {"tool": "job_status", "params": {"job_id": "job-..."}}
    Use when the user asks about the progress of an ongoing operation.
 
-CRITICAL: These 3 are the ONLY tools you can embed in your response. Do NOT embed NEMO tool names
+4. browser_task — autonomous web navigation with visual AI
+   {"tool": "browser_task", "params": {
+     "url": "https://...",
+     "task": "full description of what to accomplish",
+     "credential_alias": "github",
+     "max_steps": 8
+   }}
+   Use when the user asks to navigate, log in, fill forms, or interact with websites.
+   Credentials are resolved from the vault by alias — never put passwords in params.
+   credential_alias is optional. max_steps defaults to 8 (max 20).
+
+CRITICAL: These 4 are the ONLY tools you can embed in your response. Do NOT embed NEMO tool names
 (search_memories, context_bootstrap, refresh_context_portfolio, cognitive_ingest, etc.) — those
 are executed automatically by the backend and cannot be invoked by you.
 
@@ -5833,6 +5844,25 @@ def _llm_tool_call_to_action(
             except Exception:  # noqa: BLE001
                 pass
         return None
+
+    if tool == "browser_task":
+        params = invocation.get("params") or {}
+        url = str(params.get("url") or "").strip()
+        task = str(params.get("task") or "").strip()
+        if not url or not task:
+            return None
+        return {
+            "id": f"llm-browser-{uuid4().hex[:8]}",
+            "kind": "browser_task",
+            "label": f"Browse: {url[:60]}",
+            "summary": "Autonomous web navigation with visual AI triggered by the LLM.",
+            "payload": {
+                "url": url,
+                "task": task,
+                "credential_alias": params.get("credential_alias") or None,
+                "max_steps": int(params.get("max_steps") or 8),
+            },
+        }
 
     return None
 
