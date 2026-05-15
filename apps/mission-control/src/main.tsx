@@ -2067,6 +2067,17 @@ export function App() {
                       m.id === btMsgId ? { ...m, content: finalContent, actions: [] } : m
                     )
                   );
+                  // Update browser artifact with final screenshot so BrowserLiveView shows it when offline
+                  if (btSessionId && finalScreenshot) {
+                    const now = new Date().toISOString();
+                    setBrowserArtifacts((prev) =>
+                      prev.map((a) =>
+                        a.id === `browser-${btSessionId}`
+                          ? { ...a, content: JSON.stringify({ session_id: btSessionId, url: btUrl, task: btTask, final_screenshot: finalScreenshot }), updatedAt: now }
+                          : a
+                      )
+                    );
+                  }
                   setStatus(success ? `Browser task done (${stepsTaken} steps)` : "Browser task failed");
                 }
 

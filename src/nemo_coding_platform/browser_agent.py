@@ -48,6 +48,7 @@ class BrowserSession:
     page: object
     browser: object
     context: object
+    pw_ctx: object  # sync_playwright context — kept alive so session survives past VLM task
     url: str = ""
     step_count: int = 0
     cancel: bool = False
@@ -101,6 +102,11 @@ def _close_session(session_id: str) -> None:
     for obj in (sess.page, sess.context, sess.browser):
         try:
             obj.close()
+        except Exception:
+            pass
+    if sess.pw_ctx is not None:
+        try:
+            sess.pw_ctx.__exit__(None, None, None)
         except Exception:
             pass
 
@@ -366,7 +372,16 @@ def execute_browser_task(
         }
         return
 
-    with pw_context as pw:
+    # Start Playwright manually (not via `with`) so the session survives past
+    # the VLM task loop — the TTL daemon or cancel call will close it later.
+    try:
+        pw = pw_context.__enter__()
+    except Exception as exc:
+        yield {"type": "error", "message": f"Playwright failed to start: {exc}"}
+        return
+
+    error_during_task: str | None = None
+    try:
         browser = pw.chromium.launch(headless=True)
         ctx = browser.new_context(viewport={"width": 1280, "height": 720})
         page = ctx.new_page()
@@ -376,145 +391,145 @@ def execute_browser_task(
             page=page,
             browser=browser,
             context=ctx,
+            pw_ctx=pw_context,
             url=url,
         )
         # Register session BEFORE page.goto so cancel can interrupt navigation
         with _session_lock:
             _browser_sessions[session_id] = sess
 
-        try:
-            page.goto(url, timeout=30000)
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
+        page.goto(url, timeout=30000)
+        page.wait_for_load_state("domcontentloaded", timeout=15000)
 
-            for step in range(1, max_steps + 1):
-                # Check cancel flag before each step
-                with _session_lock:
-                    if _browser_sessions.get(session_id, sess).cancel:
-                        yield {
-                            "type": "done",
-                            "steps_taken": step - 1,
-                            "success": False,
-                            "reason": "cancelled",
-                            "session_id": session_id,
-                        }
-                        return
-
-                sess.last_used = time.time()
-                sess.step_count = step
-
-                screenshot_path, screenshot_url = _take_screenshot(page, artifacts_dir, step)
-                try:
-                    screenshot_b64 = base64.b64encode(Path(screenshot_path).read_bytes()).decode()
-                except OSError:
-                    screenshot_b64 = ""
-
-                page_title = page.title()
-
-                if vlm_model and screenshot_b64:
-                    try:
-                        action = _vlm_action(screenshot_b64, task_context, history, base_url, vlm_model, api_key)
-                    except Exception as exc:
-                        action = {"action": "done", "target": "", "value": "", "reason": f"VLM error: {exc}"}
-                else:
-                    action = {"action": "wait", "target": "", "value": "", "reason": "no VLM — screenshot-only mode"}
-
-                # Strip fill values from emitted events — never expose what was typed
-                safe_action = dict(action)
-                if action.get("action") == "fill":
-                    safe_action["value"] = "••••••"
-
-                yield {
-                    "type": "step",
-                    "step": step,
-                    "action_taken": safe_action,
-                    "screenshot_url": screenshot_url,
-                    "page_title": page_title,
-                    "session_id": session_id,
-                }
-
-                if action.get("action") == "done":
-                    _, final_url = _take_screenshot(page, artifacts_dir, step + 1)
+        for step in range(1, max_steps + 1):
+            # Check cancel flag before each step
+            with _session_lock:
+                if _browser_sessions.get(session_id, sess).cancel:
                     yield {
                         "type": "done",
-                        "steps_taken": step,
-                        "success": True,
-                        "final_screenshot_url": final_url,
+                        "steps_taken": step - 1,
+                        "success": False,
+                        "reason": "cancelled",
                         "session_id": session_id,
                     }
                     return
 
-                # Pause for user confirmation on dangerous actions
-                if _is_dangerous(action):
-                    yield {
-                        "type": "pause_required",
-                        "step": step,
-                        "action": safe_action,
-                        "reason": str(action.get("reason") or ""),
-                        "session_id": session_id,
-                    }
-                    with _session_lock:
-                        current = _browser_sessions.get(session_id)
-                    if current:
-                        current.confirm_event.clear()
-                        confirmed = current.confirm_event.wait(timeout=120)
-                        approved = confirmed and current.confirm_approved
-                    else:
-                        approved = False
-                    if not approved:
-                        yield {
-                            "type": "done",
-                            "steps_taken": step,
-                            "success": False,
-                            "reason": "user_rejected_action",
-                            "session_id": session_id,
-                        }
-                        return
+            sess.last_used = time.time()
+            sess.step_count = step
 
-                # Execute the action
-                act = str(action.get("action") or "")
-                target = str(action.get("target") or "")
-                value = str(action.get("value") or "")
-                # Substitute vault placeholders at execution time — credentials never enter VLM prompts
-                exec_value = value
-                if act == "fill":
-                    if exec_value == "__VAULT_USERNAME__" and task_cred_username is not None:
-                        exec_value = task_cred_username
-                    elif exec_value == "__VAULT_PASSWORD__" and task_cred_password is not None:
-                        exec_value = task_cred_password
+            screenshot_path, screenshot_url = _take_screenshot(page, artifacts_dir, step)
+            try:
+                screenshot_b64 = base64.b64encode(Path(screenshot_path).read_bytes()).decode()
+            except OSError:
+                screenshot_b64 = ""
+
+            page_title = page.title()
+
+            if vlm_model and screenshot_b64:
                 try:
-                    if act == "click":
-                        page.click(target, timeout=30000)
-                    elif act == "fill":
-                        page.fill(target, exec_value, timeout=30000)
-                    elif act == "navigate":
-                        page.goto(target, timeout=30000)
-                    elif act == "scroll":
-                        page.evaluate("window.scrollBy(0, 400)")
-                    elif act == "wait":
-                        time.sleep(2)
-                    history.append({
-                        "step": step, "action": act, "target": target,
-                        "reason": str(action.get("reason") or ""),
-                    })
+                    action = _vlm_action(screenshot_b64, task_context, history, base_url, vlm_model, api_key)
                 except Exception as exc:
-                    history.append({"step": step, "action": act, "target": target, "error": str(exc)})
+                    action = {"action": "done", "target": "", "value": "", "reason": f"VLM error: {exc}"}
+            else:
+                action = {"action": "wait", "target": "", "value": "", "reason": "no VLM — screenshot-only mode"}
 
-            # max_steps exhausted
-            _, final_url = _take_screenshot(page, artifacts_dir, max_steps + 1)
+            # Strip fill values from emitted events — never expose what was typed
+            safe_action = dict(action)
+            if action.get("action") == "fill":
+                safe_action["value"] = "••••••"
+
             yield {
-                "type": "done",
-                "steps_taken": max_steps,
-                "success": False,
-                "reason": "max_steps_reached",
-                "final_screenshot_url": final_url,
+                "type": "step",
+                "step": step,
+                "action_taken": safe_action,
+                "screenshot_url": screenshot_url,
+                "page_title": page_title,
                 "session_id": session_id,
             }
 
-        finally:
-            for obj in (page, ctx, browser):
-                try:
-                    obj.close()
-                except Exception:
-                    pass
-            with _session_lock:
-                _browser_sessions.pop(session_id, None)
+            if action.get("action") == "done":
+                _, final_url = _take_screenshot(page, artifacts_dir, step + 1)
+                yield {
+                    "type": "done",
+                    "steps_taken": step,
+                    "success": True,
+                    "final_screenshot_url": final_url,
+                    "session_id": session_id,
+                }
+                return  # Session stays alive in _browser_sessions for user interaction
+
+            # Pause for user confirmation on dangerous actions
+            if _is_dangerous(action):
+                yield {
+                    "type": "pause_required",
+                    "step": step,
+                    "action": safe_action,
+                    "reason": str(action.get("reason") or ""),
+                    "session_id": session_id,
+                }
+                with _session_lock:
+                    current = _browser_sessions.get(session_id)
+                if current:
+                    current.confirm_event.clear()
+                    confirmed = current.confirm_event.wait(timeout=120)
+                    approved = confirmed and current.confirm_approved
+                else:
+                    approved = False
+                if not approved:
+                    yield {
+                        "type": "done",
+                        "steps_taken": step,
+                        "success": False,
+                        "reason": "user_rejected_action",
+                        "session_id": session_id,
+                    }
+                    return  # Session stays alive
+
+            # Execute the action
+            act = str(action.get("action") or "")
+            target = str(action.get("target") or "")
+            value = str(action.get("value") or "")
+            # Substitute vault placeholders at execution time — credentials never enter VLM prompts
+            exec_value = value
+            if act == "fill":
+                if exec_value == "__VAULT_USERNAME__" and task_cred_username is not None:
+                    exec_value = task_cred_username
+                elif exec_value == "__VAULT_PASSWORD__" and task_cred_password is not None:
+                    exec_value = task_cred_password
+            try:
+                if act == "click":
+                    page.click(target, timeout=30000)
+                elif act == "fill":
+                    page.fill(target, exec_value, timeout=30000)
+                elif act == "navigate":
+                    page.goto(target, timeout=30000)
+                elif act == "scroll":
+                    page.evaluate("window.scrollBy(0, 400)")
+                elif act == "wait":
+                    time.sleep(2)
+                history.append({
+                    "step": step, "action": act, "target": target,
+                    "reason": str(action.get("reason") or ""),
+                })
+            except Exception as exc:
+                history.append({"step": step, "action": act, "target": target, "error": str(exc)})
+
+        # max_steps exhausted — session stays alive for user interaction
+        _, final_url = _take_screenshot(page, artifacts_dir, max_steps + 1)
+        yield {
+            "type": "done",
+            "steps_taken": max_steps,
+            "success": False,
+            "reason": "max_steps_reached",
+            "final_screenshot_url": final_url,
+            "session_id": session_id,
+        }
+        # Session remains registered in _browser_sessions; TTL daemon cleans it up.
+
+    except Exception as exc:
+        error_during_task = str(exc)
+
+    if error_during_task:
+        # Fatal error during task — close everything immediately
+        _close_session(session_id)
+        yield {"type": "error", "message": error_during_task}

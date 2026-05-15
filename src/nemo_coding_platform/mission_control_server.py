@@ -2281,10 +2281,18 @@ def api_vault_update(config: MissionControlServerConfig, payload: dict) -> dict:
 
 
 def api_vault_delete(config: MissionControlServerConfig, payload: dict) -> dict:
-    from nemo_coding_platform.credential_vault import vault_delete
+    from nemo_coding_platform.credential_vault import vault_delete, vault_list
     cred_id = str(payload.get("id") or "").strip()
     if not cred_id:
-        raise _bad_request("id is required", error_code="missing_id")
+        # Allow deleting by alias as a convenience
+        alias = str(payload.get("alias") or "").strip()
+        if not alias:
+            raise _bad_request("id or alias is required", error_code="missing_id")
+        creds = vault_list(_vault_db(config))
+        match = next((c for c in creds if c["alias"] == alias), None)
+        if match is None:
+            raise _bad_request(f"Credential alias '{alias}' not found", error_code="not_found", status_code=404)
+        cred_id = match["id"]
     try:
         vault_delete(_vault_db(config), cred_id)
     except KeyError:

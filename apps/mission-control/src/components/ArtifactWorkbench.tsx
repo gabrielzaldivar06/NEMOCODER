@@ -82,10 +82,10 @@ function artifactKindIcon(kind: GeneratedArtifactKind): ReactNode {
 
 type BrowserInfo = { session_id: string; url: string; title: string; step_count: number; active: boolean };
 
-function parseBrowserArtifact(content: string): { session_id: string; url: string; task: string } | null {
+function parseBrowserArtifact(content: string): { session_id: string; url: string; task: string; final_screenshot?: string } | null {
   try {
-    const parsed = JSON.parse(content) as { session_id?: string; url?: string; task?: string };
-    if (parsed && parsed.session_id) return { session_id: parsed.session_id, url: parsed.url ?? "", task: parsed.task ?? "" };
+    const parsed = JSON.parse(content) as { session_id?: string; url?: string; task?: string; final_screenshot?: string };
+    if (parsed && parsed.session_id) return { session_id: parsed.session_id, url: parsed.url ?? "", task: parsed.task ?? "", final_screenshot: parsed.final_screenshot };
   } catch { /* ignore */ }
   return null;
 }
@@ -227,7 +227,10 @@ function BrowserLiveView({ content }: { content: string }) {
           style={{ cursor: connected ? "crosshair" : "default" }}
           data-ts={frameTs}
         />
-        {!connected && (
+        {!connected && parsed?.final_screenshot && (
+          <img src={parsed.final_screenshot} alt="Final state" className="browser-frame-img" draggable={false} />
+        )}
+        {!connected && !parsed?.final_screenshot && (
           <div className="browser-offline-overlay">
             <Globe size={28} />
             <span>Browser session ended or not yet started</span>
