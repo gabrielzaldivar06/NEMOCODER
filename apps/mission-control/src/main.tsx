@@ -910,7 +910,7 @@ export function App() {
   const [reviewSubTab, setReviewSubTab] = useState<"timeline" | "diff">("diff");
   const [repoBusy, setRepoBusy] = useState<boolean>(false);
   const [repoError, setRepoError] = useState<string>("");
-  const [terminalDraft, setTerminalDraft] = useState<string>("git status --short");
+  const [terminalDraft, setTerminalDraft] = useState<string>("");
   const [terminalRunning, setTerminalRunning] = useState<boolean>(false);
   const [terminalResult, setTerminalResult] = useState<TerminalRunResult | null>(null);
   const [browserDraft, setBrowserDraft] = useState<string>("https://github.com");

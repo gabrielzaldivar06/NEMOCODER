@@ -60,7 +60,7 @@ function shortenObjective(value: string, maxLength = 78): string {
 }
 
 function activePhaseTelemetry(run: TelemetryRun | undefined, running: boolean): PhaseTelemetry {
-  if (!run) return { tone: "idle", label: "Idle", progress: 8, detail: "awaiting objective" };
+  if (!run) return { tone: "idle", label: "Idle", progress: 0, detail: "awaiting objective" };
   if (run.review_status === "blocked" || run.runtime_state === "blocked" || run.grade === "blocked") return { tone: "blocked", label: "Blocked", progress: 88, detail: run.runtime_state || run.review_status };
   if (run.review_status === "approved" || run.grade === "ready") return { tone: "ready", label: "Ready", progress: 100, detail: run.grade || run.review_status };
 
@@ -72,7 +72,7 @@ function activePhaseTelemetry(run: TelemetryRun | undefined, running: boolean): 
 }
 
 function memoryFieldLoad(memoryAtomCount: number, evidenceCount: number, feedbackCount: number): number {
-  return Math.max(8, Math.min(99, Math.round(memoryAtomCount * 0.9 + evidenceCount * 3 + feedbackCount * 4)));
+  return Math.max(0, Math.min(99, Math.round(memoryAtomCount * 0.9 + evidenceCount * 3 + feedbackCount * 4)));
 }
 
 export function TelemetryColumn<RunType extends TelemetryRun>({ activeRun, visibleQueue, totalRuns, readyRuns, blockedRuns, queueCount, running, contextLabel, memoryAtomCount, evidenceCount, feedbackCount, sourceReads, sourceCacheHitRate, status, onSelectRun, onOpenMemory, onRefreshCognitiveStats, onRefreshMissionStats }: TelemetryColumnProps<RunType>) {
