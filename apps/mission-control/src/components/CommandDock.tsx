@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Bot, ChevronDown, Clock3, Database, Files, Hand, Plus, Square, Target, Thermometer, Wrench } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, Clock3, Database, Files, Hand, Plus, Server, Square, Target, Thermometer, Wrench, Zap } from "lucide-react";
 
 export type CommandDockMode = "send" | "queue" | "steer" | "plan";
+
+export type ModelCaps = { thinking: boolean; temperature: boolean; reasoning_effort: boolean };
+export type ModelEntry = { id: string; type: string; state?: string; caps: ModelCaps };
+export type ProviderEntry = { id: string; label: string; base_url: string; models: ModelEntry[]; available: boolean };
+export type ChatParams = { model: string; baseUrl: string; temperature: number; enableThinking: boolean };
 
 type CommandDockProps = {
   draft: string;
@@ -16,42 +21,50 @@ type CommandDockProps = {
   onStop: () => void;
   onProviderChange: (provider: string) => void;
   onModelChange: (model: string) => void;
+  onParamsChange?: (params: ChatParams) => void;
   onOpenComposer: () => void;
   onOpenMemory: () => void;
 };
 
-type ModelEntry = { id: string; type: string };
-
-function shortName(id: string): string {
-  const slash = id.indexOf("/");
-  return slash >= 0 ? id.slice(slash + 1) : id;
-}
-
 const TEMP_STEPS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+const DEFAULT_CAPS: ModelCaps = { thinking: false, temperature: true, reasoning_effort: false };
 
 function loadTemp(): number {
   const stored = parseFloat(localStorage.getItem("mc_temperature") ?? "");
   return Number.isFinite(stored) && TEMP_STEPS.includes(stored) ? stored : 0.6;
 }
 
-export function CommandDock({ draft, provider, endpointLabel, currentModel, running, queuedPrompt, queuedPrompts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onOpenComposer, onOpenMemory }: CommandDockProps) {
+function shortName(id: string): string {
+  const slash = id.lastIndexOf("/");
+  return slash >= 0 ? id.slice(slash + 1) : id;
+}
+
+export function CommandDock({ draft, provider, endpointLabel, currentModel, running, queuedPrompt, queuedPrompts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory }: CommandDockProps) {
   const [sendHaloOpen, setSendHaloOpen] = useState<boolean>(false);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
-  const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
+  const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [temperature, setTemperature] = useState<number>(loadTemp);
+  const [enableThinking, setEnableThinking] = useState<boolean>(() => localStorage.getItem("mc_thinking") === "1");
+  const [selectedBaseUrl, setSelectedBaseUrl] = useState<string>("");
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const canSendDraft = draft.trim().length > 0;
   const draftFieldId = "space-code-command-draft";
   const attachmentFieldId = "space-code-command-attachments";
-  const modelFieldId = "space-code-model-select";
 
   useEffect(() => {
     fetch("/api/models")
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d: { models?: ModelEntry[] }) => { setAvailableModels(d.models ?? []); })
+      .then((d: { providers?: ProviderEntry[]; models?: ModelEntry[]; current?: string; current_provider?: string }) => {
+        if (d.providers) {
+          setProviders(d.providers);
+          // Set initial base_url from current provider
+          const active = d.providers.find((p) => p.models.some((m) => m.id === currentModel)) ?? d.providers[0];
+          if (active) setSelectedBaseUrl(active.base_url);
+        }
+      })
       .catch(() => {})
       .finally(() => setModelsLoaded(true));
   }, []);
@@ -67,28 +80,47 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [modelPickerOpen]);
 
+  // Find current model's caps and provider
+  const allModels = providers.flatMap((p) => p.models.map((m) => ({ ...m, providerLabel: p.label, base_url: p.base_url })));
+  const currentEntry = allModels.find((m) => m.id === currentModel);
+  const caps: ModelCaps = currentEntry?.caps ?? DEFAULT_CAPS;
+  const currentProviderLabel = currentEntry?.providerLabel ?? (selectedBaseUrl.includes("nvidia") ? "NVIDIA NIM" : "Local");
+
+  const notifyParams = (model: string, baseUrl: string, temp: number, thinking: boolean) => {
+    onParamsChange?.({ model, baseUrl, temperature: temp, enableThinking: thinking });
+  };
+
+  const selectModel = (modelId: string, baseUrl: string) => {
+    const entry = allModels.find((m) => m.id === modelId);
+    const newCaps = entry?.caps ?? DEFAULT_CAPS;
+    const nextThinking = enableThinking && newCaps.thinking;
+    onModelChange(modelId);
+    setSelectedBaseUrl(baseUrl);
+    setModelPickerOpen(false);
+    if (nextThinking !== enableThinking) setEnableThinking(nextThinking);
+    notifyParams(modelId, baseUrl, temperature, nextThinking);
+  };
+
   const cycleTemperature = () => {
     setTemperature((prev) => {
       const idx = TEMP_STEPS.indexOf(prev);
       const next = TEMP_STEPS[(idx + 1) % TEMP_STEPS.length];
       localStorage.setItem("mc_temperature", String(next));
+      notifyParams(currentModel, selectedBaseUrl, next, enableThinking);
       return next;
     });
   };
 
-  // Group by provider prefix
-  const groups: Record<string, string[]> = {};
-  for (const m of availableModels) {
-    const slash = m.id.indexOf("/");
-    const prefix = slash >= 0 ? m.id.slice(0, slash) : "other";
-    (groups[prefix] ??= []).push(m.id);
-  }
-  const prefixes = Object.keys(groups).sort();
-  const currentInList = availableModels.some((m) => m.id === currentModel);
-
-  const openAttachmentPicker = () => {
-    attachmentInputRef.current?.click();
+  const toggleThinking = () => {
+    setEnableThinking((prev) => {
+      const next = !prev;
+      localStorage.setItem("mc_thinking", next ? "1" : "0");
+      notifyParams(currentModel, selectedBaseUrl, temperature, next);
+      return next;
+    });
   };
+
+  const openAttachmentPicker = () => attachmentInputRef.current?.click();
 
   const attachMedia = (event: React.ChangeEvent<HTMLInputElement>) => {
     const nextFiles = Array.from(event.target.files ?? []);
@@ -98,10 +130,7 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
       const merged = [...current];
       for (const file of nextFiles) {
         const key = `${file.name}-${file.size}-${file.type}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          merged.push(file);
-        }
+        if (!seen.has(key)) { seen.add(key); merged.push(file); }
       }
       return merged;
     });
@@ -113,25 +142,21 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
   };
 
   const runHaloAction = (mode: CommandDockMode | "stop") => {
-    if (mode === "stop") {
-      onStop();
-      setSendHaloOpen(false);
-      return;
-    }
+    if (mode === "stop") { onStop(); setSendHaloOpen(false); return; }
     onSubmit(mode);
     setSendHaloOpen(false);
   };
 
-  const statusLabel = queuedPrompts.length > 0 ? `${queuedPrompts.length} queued` : endpointLabel;
+  const statusLabel = queuedPrompts.length > 0 ? `${queuedPrompts.length} en cola` : endpointLabel;
 
   return (
     <div className="command-dock">
       <div className="command-dock-head" aria-label="Command dock status">
         <span><i /> Command dock</span>
-        <strong>{running ? "Streaming" : canSendDraft ? "Ready" : "Awaiting objective"}</strong>
+        <strong>{running ? "Streaming" : canSendDraft ? "Listo" : "Esperando objetivo"}</strong>
         <small>{statusLabel}</small>
       </div>
-      <label className="sr-only" htmlFor={attachmentFieldId}>Attach files for the next Space Code prompt</label>
+      <label className="sr-only" htmlFor={attachmentFieldId}>Adjuntar archivos al próximo prompt</label>
       <input
         id={attachmentFieldId}
         ref={attachmentInputRef}
@@ -141,15 +166,19 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
         className="hidden-file-input"
         onChange={attachMedia}
       />
-      {pendingAttachments.length > 0 && <div className="attachment-strip" aria-label="Adjuntos preparados">
-        {pendingAttachments.map((file) => (
-          <button key={`${file.name}-${file.size}`} className="attachment-chip" onClick={() => removeAttachment(file.name)} title={`Quitar adjunto: ${file.name}`}>
-            <Files size={12} />
-            <span>{file.name}</span>
-          </button>
-        ))}
-      </div>}
+      {pendingAttachments.length > 0 && (
+        <div className="attachment-strip" aria-label="Adjuntos preparados">
+          {pendingAttachments.map((file) => (
+            <button key={`${file.name}-${file.size}`} className="attachment-chip" onClick={() => removeAttachment(file.name)} title={`Quitar adjunto: ${file.name}`}>
+              <Files size={12} /><span>{file.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── CONTEXT BAR ── */}
       <div className="context-bar">
+        {/* Model chip + dropdown */}
         <div className="context-chip-wrap" ref={modelPickerRef}>
           <button
             className="context-chip model-chip"
@@ -158,38 +187,81 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
             aria-haspopup="listbox"
             aria-expanded={modelPickerOpen}
           >
-            <Bot size={11} />
+            <Server size={11} />
             <span>{shortName(currentModel) || (modelsLoaded ? "Sin modelo" : "Cargando…")}</span>
             <ChevronDown size={10} />
           </button>
           {modelPickerOpen && (
             <div className="model-picker-dropdown" role="listbox" aria-label="Seleccionar modelo">
-              {availableModels.length === 0 && <div className="model-picker-empty">{modelsLoaded ? "Sin modelos disponibles" : "Cargando…"}</div>}
-              {availableModels.map((m) => (
-                <button
-                  key={m.id}
-                  className={`model-picker-option${m.id === currentModel ? " active" : ""}`}
-                  role="option"
-                  aria-selected={m.id === currentModel}
-                  onClick={() => { onModelChange(m.id); setModelPickerOpen(false); }}
-                >
-                  {m.id === currentModel && <span className="model-active-dot">●</span>}
-                  {shortName(m.id)}
-                </button>
+              {!modelsLoaded && <div className="model-picker-empty">Cargando modelos…</div>}
+              {modelsLoaded && providers.every((p) => p.models.length === 0) && (
+                <div className="model-picker-empty">Sin modelos disponibles</div>
+              )}
+              {providers.filter((p) => p.models.length > 0).map((prov) => (
+                <div key={prov.id} className="model-picker-group">
+                  <div className="model-picker-group-label">{prov.label}</div>
+                  {prov.models.map((m) => (
+                    <button
+                      key={m.id}
+                      className={`model-picker-option${m.id === currentModel ? " active" : ""}${m.state === "loaded" ? " loaded" : ""}`}
+                      role="option"
+                      aria-selected={m.id === currentModel}
+                      onClick={() => selectModel(m.id, prov.base_url)}
+                    >
+                      {m.id === currentModel && <span className="model-active-dot">●</span>}
+                      <span className="model-option-name">{shortName(m.id)}</span>
+                      <span className="model-option-badges">
+                        {m.state === "loaded" && <span className="model-badge loaded">▲</span>}
+                        {m.caps.thinking && <span className="model-badge thinking">💭</span>}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               ))}
             </div>
           )}
         </div>
-        <button
-          className="context-chip temp-chip"
-          onClick={cycleTemperature}
-          title={`Temperatura: ${temperature} — click para cambiar`}
-        >
-          <Thermometer size={11} />
-          <span>{temperature.toFixed(1)}</span>
-        </button>
+
+        {/* Provider badge */}
+        <span className={`context-provider-badge ${selectedBaseUrl.includes("nvidia") ? "nvidia" : "local"}`}>
+          {selectedBaseUrl.includes("nvidia") ? "NIM" : "Local"}
+        </span>
+
+        {/* Thinking toggle — only for capable models */}
+        {caps.thinking && (
+          <button
+            className={`context-chip thinking-chip${enableThinking ? " on" : ""}`}
+            onClick={toggleThinking}
+            title={enableThinking ? "Thinking activado — click para desactivar" : "Activar thinking"}
+          >
+            <Brain size={11} />
+            <span>{enableThinking ? "Thinking" : "Think"}</span>
+          </button>
+        )}
+
+        {/* Temperature chip — shown when model supports it (hidden while thinking is on for models that lock temp) */}
+        {caps.temperature && (
+          <button
+            className={`context-chip temp-chip${enableThinking && caps.thinking ? " dimmed" : ""}`}
+            onClick={cycleTemperature}
+            disabled={enableThinking && caps.thinking}
+            title={enableThinking && caps.thinking ? "Temperatura fija en modo thinking" : `Temperatura: ${temperature} — click para cambiar`}
+          >
+            <Thermometer size={11} />
+            <span>{enableThinking && caps.thinking ? "T:auto" : temperature.toFixed(1)}</span>
+          </button>
+        )}
+
+        {/* Reasoning effort — for o1-style models */}
+        {caps.reasoning_effort && (
+          <button className="context-chip effort-chip" title="Nivel de razonamiento (reasoning effort)">
+            <Zap size={11} />
+            <span>medium</span>
+          </button>
+        )}
       </div>
-      <label className="sr-only" htmlFor={draftFieldId}>Describe the next objective, constraint, or experiment</label>
+
+      <label className="sr-only" htmlFor={draftFieldId}>Describe el próximo objetivo, restricción o experimento</label>
       <textarea
         id={draftFieldId}
         value={draft}
@@ -197,30 +269,12 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
         onKeyDown={(event) => {
           if ((event.ctrlKey || event.metaKey) && event.key === "Enter") onSubmit();
         }}
-        placeholder="Describe the next objective, constraint, or experiment..."
+        placeholder="Describe el próximo objetivo, restricción o experimento…"
       />
       <div className="command-dock-actions">
-        <button onClick={openAttachmentPicker} title="Adjuntar multimedia"><Plus size={15} /> File</button>
+        <button onClick={openAttachmentPicker} title="Adjuntar multimedia"><Plus size={15} /> Archivo</button>
         <button onClick={onOpenComposer} title="Configurar handoff"><Hand size={15} /> Handoff</button>
-        <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memory</button>
-        <label className="provider-switch real" htmlFor={modelFieldId} title={`Modelo: ${currentModel || "—"} via ${endpointLabel}`}>
-          <Bot size={15} />
-          <select
-            id={modelFieldId}
-            value={currentModel}
-            onChange={(e) => onModelChange(e.target.value)}
-            disabled={!modelsLoaded || availableModels.length === 0}
-            title={currentModel}
-          >
-            {!currentInList && currentModel && <option value={currentModel}>{shortName(currentModel)}</option>}
-            {modelsLoaded && availableModels.length === 0 && <option value={currentModel}>{shortName(currentModel) || "—"}</option>}
-            {prefixes.map((prefix) => (
-              <optgroup key={prefix} label={prefix}>
-                {groups[prefix].map((id) => <option key={id} value={id}>{shortName(id)}</option>)}
-              </optgroup>
-            ))}
-          </select>
-        </label>
+        <button onClick={onOpenMemory} title="Memoria NEMO"><Database size={15} /> Memoria</button>
         <div className={`send-halo ${sendHaloOpen ? "open" : ""}`} onMouseLeave={() => setSendHaloOpen(false)}>
           <span className="send-halo-label plan">PLAN</span>
           <span className="send-halo-label queue">QUEUE</span>
@@ -235,11 +289,13 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
           </div>
         </div>
       </div>
-      {(pendingAttachments.length > 0 || queuedPrompt || queuedPrompts.length > 1) && <div className="home-chat-notes" role="status" aria-live="polite">
-        {pendingAttachments.length > 0 && <span>Adjuntos preparados para envio multimodal.</span>}
-        {queuedPrompt && <span>En cola: {queuedPrompt}</span>}
-        {queuedPrompts.length > 1 && <span>Pendientes: {queuedPrompts.length}</span>}
-      </div>}
+      {(pendingAttachments.length > 0 || queuedPrompt || queuedPrompts.length > 1) && (
+        <div className="home-chat-notes" role="status" aria-live="polite">
+          {pendingAttachments.length > 0 && <span>Adjuntos preparados para envío multimodal.</span>}
+          {queuedPrompt && <span>En cola: {queuedPrompt}</span>}
+          {queuedPrompts.length > 1 && <span>Pendientes: {queuedPrompts.length}</span>}
+        </div>
+      )}
     </div>
   );
 }

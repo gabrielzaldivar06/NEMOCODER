@@ -2049,10 +2049,10 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
             *[{"role": turn["role"], "content": turn["content"]} for turn in (history or [])[-10:]],
             {"role": "user", "content": user_message},
         ],
-        "temperature": 0.2,
+        "temperature": float(payload.get("chat_temperature", payload.get("temperature", 0.2))),
         "max_tokens": _chat_max_tokens(payload),
         "stream": False,
-        "enable_thinking": False,
+        "enable_thinking": bool(payload.get("enable_thinking", False)),
     }
     data = json.dumps(body).encode("utf-8")
     _api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
@@ -2344,17 +2344,35 @@ def api_browser_sessions(config: MissionControlServerConfig) -> dict:
     return {"sessions": get_sessions_info()}
 
 
-def api_models(config: MissionControlServerConfig) -> dict[str, object]:
-    """Return available chat/vlm models from the configured provider, filtered and deduplicated."""
-    settings = _load_settings(config)
-    base_url = str(settings.get("model_base_url") or "http://127.0.0.1:1234/v1").rstrip("/")
-    api_key = str(settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
-    current = str(settings.get("default_model") or "")
-    _SKIP = re.compile(r"embed|rerank|bge|nomic|guard|safety|nemoretriever|nv-embedqa|content.safety|topic.control", re.I)
-    models: list[dict[str, str]] = []
-    seen: set[str] = set()
+_MODELS_SKIP = re.compile(
+    r"embed|rerank|bge|nomic|guard|safety|nemoretriever|nv-embedqa|content\.safety|topic\.control"
+    r"|whisper|neva|fuyu|deplot|clip|ocdrnet|grounding|segmentation|vila|reward|parse|translate"
+    r"|gliner|detect|cosmos-reason|ising-calibration|synthetic-video|ai-synthetic",
+    re.I,
+)
+_THINKING_MODEL = re.compile(
+    r"deepseek.r1|deepseek.v4|qwq|qwen.*think|nemotron.*ultra|nemotron.*super|nemotron.*reasoning"
+    r"|nemotron.*omni.*reasoning|cosmos.reason|seed.*instruct|kimi|glm.5",
+    re.I,
+)
+_NO_TEMPERATURE = re.compile(r"\bo1\b|\bo3\b|\bo4\b", re.I)  # o1-style reasoning_effort models
 
-    # Strategy 1: LM Studio management API — returns richer metadata (type, state)
+
+def _model_caps(model_id: str) -> dict[str, object]:
+    """Infer model capabilities from its name."""
+    thinking = bool(_THINKING_MODEL.search(model_id))
+    no_temp = bool(_NO_TEMPERATURE.search(model_id))
+    return {
+        "thinking": thinking,
+        "temperature": not no_temp,
+        "reasoning_effort": no_temp,
+    }
+
+
+def _fetch_lmstudio_models(base_url: str) -> list[dict[str, object]]:
+    models: list[dict[str, object]] = []
+    seen: set[str] = set()
+    # LM Studio management API — richer metadata (type, state, loaded vs available)
     try:
         mgmt_base = re.sub(r"/v\d+$", "", base_url)
         req = urllib.request.Request(f"{mgmt_base}/api/v0/models", method="GET")
@@ -2363,34 +2381,81 @@ def api_models(config: MissionControlServerConfig) -> dict[str, object]:
             data = json.loads(r.read().decode())
         for m in data.get("data", []):
             mid = str(m.get("id") or "").strip()
-            if not mid or mid in seen or _SKIP.search(mid):
+            if not mid or mid in seen or _MODELS_SKIP.search(mid):
                 continue
             if m.get("type") not in {"llm", "vlm"}:
                 continue
             seen.add(mid)
-            models.append({"id": mid, "type": str(m.get("type") or "llm"), "state": str(m.get("state") or "")})
+            models.append({"id": mid, "type": str(m.get("type") or "llm"), "state": str(m.get("state") or ""), "caps": _model_caps(mid)})
+        if models:
+            return models
     except Exception:
         pass
+    # Fallback: OpenAI-compatible /v1/models
+    try:
+        req = urllib.request.Request(f"{base_url}/models", method="GET")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read().decode())
+        for m in data.get("data", []):
+            mid = str(m.get("id") or "").strip()
+            if not mid or mid in seen or _MODELS_SKIP.search(mid):
+                continue
+            seen.add(mid)
+            models.append({"id": mid, "type": "llm", "state": "loaded", "caps": _model_caps(mid)})
+    except Exception:
+        pass
+    return models
 
-    # Strategy 2: OpenAI-compatible /v1/models — works for NVIDIA NIM, OpenAI, etc.
-    if not models:
-        try:
-            req = urllib.request.Request(f"{base_url}/models", method="GET")
-            req.add_header("Authorization", f"Bearer {api_key}")
-            req.add_header("Accept", "application/json")
-            with urllib.request.urlopen(req, timeout=10) as r:
-                data = json.loads(r.read().decode())
-            for m in data.get("data", []):
-                mid = str(m.get("id") or "").strip()
-                if not mid or mid in seen or _SKIP.search(mid):
-                    continue
-                seen.add(mid)
-                models.append({"id": mid, "type": "llm", "state": "available"})
-        except Exception:
-            pass
 
+def _fetch_nvidia_nim_models(api_key: str) -> list[dict[str, object]]:
+    _NIM_BASE = "https://integrate.api.nvidia.com/v1"
+    models: list[dict[str, object]] = []
+    seen: set[str] = set()
+    if not api_key or not api_key.startswith("nvapi-"):
+        return models
+    try:
+        req = urllib.request.Request(f"{_NIM_BASE}/models", method="GET")
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("Accept", "application/json")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+        for m in data.get("data", []):
+            mid = str(m.get("id") or "").strip()
+            if not mid or mid in seen or _MODELS_SKIP.search(mid):
+                continue
+            seen.add(mid)
+            models.append({"id": mid, "type": "llm", "state": "available", "caps": _model_caps(mid)})
+    except Exception:
+        pass
     models.sort(key=lambda m: m["id"])
-    return {"models": models, "current": current}
+    return models
+
+
+def api_models(config: MissionControlServerConfig) -> dict[str, object]:
+    """Return available models from all configured providers (Local LM Studio + NVIDIA NIM)."""
+    settings = _load_settings(config)
+    local_base = "http://127.0.0.1:1234/v1"
+    api_key = str(settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
+    current_model = str(settings.get("default_model") or "")
+    current_base = str(settings.get("model_base_url") or local_base).rstrip("/")
+
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        local_fut = pool.submit(_fetch_lmstudio_models, local_base)
+        nvidia_fut = pool.submit(_fetch_nvidia_nim_models, api_key)
+        local_models = local_fut.result()
+        nvidia_models = nvidia_fut.result()
+
+    _NIM_BASE = "https://integrate.api.nvidia.com/v1"
+    current_provider = "nvidia" if current_base.startswith("https://integrate.api.nvidia.com") else "local"
+    providers = [
+        {"id": "local", "label": "Local — LM Studio", "base_url": local_base, "models": local_models, "available": bool(local_models)},
+        {"id": "nvidia", "label": "NVIDIA NIM", "base_url": _NIM_BASE, "models": nvidia_models, "available": bool(nvidia_models)},
+    ]
+    # Legacy flat list for backwards compat with existing CommandDock fetch
+    all_models = local_models + nvidia_models
+    return {"providers": providers, "models": all_models, "current": current_model, "current_provider": current_provider}
 
 
 def _raw_tool_name_fallback(response: str, message: str) -> str | None:

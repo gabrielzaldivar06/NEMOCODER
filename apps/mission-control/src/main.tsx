@@ -897,6 +897,7 @@ export function App() {
   ]);
   const [agentDraft, setAgentDraft] = useState<string>("");
   const [homeAgentDraft, setHomeAgentDraft] = useState<string>("");
+  const [homeChatParams, setHomeChatParams] = useState<{ temperature: number; enableThinking: boolean; baseUrl: string }>({ temperature: 0.6, enableThinking: false, baseUrl: "" });
   const [browserArtifacts, setBrowserArtifacts] = useState<PersistedGeneratedArtifact[]>([]);
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [queuedAgentPrompts, setQueuedAgentPrompts] = useState<string[]>([]);
@@ -1524,8 +1525,10 @@ export function App() {
         require_nemo_mcp_capabilities: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
         require_nemo_roundtrip: false,
         provider: settingsDraft.provider,
-        model_base_url: settingsDraft.model_base_url,
+        model_base_url: homeChatParams.baseUrl || settingsDraft.model_base_url,
         default_model: settingsDraft.default_model,
+        chat_temperature: homeChatParams.temperature,
+        enable_thinking: homeChatParams.enableThinking,
         timeout_seconds: handoffDraft.timeoutSeconds,
         token_budget: settingsDraft.token_budget,
         context_window_tokens: settingsDraft.context_window_tokens,
@@ -2917,6 +2920,7 @@ export function App() {
             setSettingsDraft(next);
             postJson("/api/settings", { default_model: model }).catch(() => {});
           }}
+          onParamsChange={(params) => setHomeChatParams({ temperature: params.temperature, enableThinking: params.enableThinking, baseUrl: params.baseUrl })}
           onOpenComposer={() => setComposerOpen(true)}
           onOpenMemory={openMemorySection}
           running={agentBusy}
@@ -3205,7 +3209,7 @@ function latestHomeLayoutCommand(messages: AgentMessage[]): { command: HomeLayou
   return null;
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onParamsChange?: (params: import("./components/CommandDock").ChatParams) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
   const [layoutMode, setLayoutMode] = useState<HomeLayoutMode>("full-cockpit");
   const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: false, telemetry: false });
   const [layoutSource, setLayoutSource] = useState<string>("manual");
@@ -3303,6 +3307,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
     onStop={onStop}
     onProviderChange={onProviderChange}
     onModelChange={onModelChange}
+    onParamsChange={onParamsChange}
     onOpenComposer={onOpenComposer}
     onOpenMemory={onOpenMemory}
   />;
