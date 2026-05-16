@@ -2788,7 +2788,7 @@ export function App() {
     { section: "runs", label: "Runs", title: "Runs", icon: <Files size={19} /> },
     { section: "versioning", label: "Git", title: "Versionado", icon: <GitBranch size={19} /> },
     { section: "terminal", label: "Term", title: "Terminal", icon: <TerminalSquare size={19} /> },
-    { section: "browser", label: "Web", title: "Browser", icon: <Globe size={19} /> },
+    { section: "browser", label: "Web", title: "Web", icon: <Globe size={19} /> },
     { section: "extensions", label: "Tools", title: "Extensions", icon: <Puzzle size={19} /> },
     { section: "memory", label: "Memory", title: "Memoria", icon: <Database size={19} /> },
     { section: "settings", label: "Core", title: "Ajustes", icon: <Settings size={19} /> },
@@ -4293,7 +4293,7 @@ function TerminalPanel({ command, running, result, onCommandChange, onRun }: { c
 function BrowserPanel({ draft, state, queryDraft, searchState, searching, onDraftChange, onOpen, onQueryDraftChange, onSearch, onOpenSearchResult }: { draft: string; state: BrowserState; queryDraft: string; searchState: BrowserSearchState; searching: boolean; onDraftChange: (value: string) => void; onOpen: () => void; onQueryDraftChange: (value: string) => void; onSearch: () => void; onOpenSearchResult: (url: string) => void }) {
   return (
     <section className="section-surface browser-panel">
-      <div className="panel-title"><Globe size={16} /> Browser</div>
+      <div className="panel-title"><Globe size={16} /> Web</div>
       <div className="ops-panel">
         <div className="panel-title"><Search size={16} /> Búsqueda web</div>
         <div className="repo-open-row">

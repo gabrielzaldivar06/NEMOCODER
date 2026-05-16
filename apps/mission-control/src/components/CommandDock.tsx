@@ -81,10 +81,10 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
   }, [modelPickerOpen]);
 
   // Find current model's caps and provider
-  const allModels = providers.flatMap((p) => p.models.map((m) => ({ ...m, providerLabel: p.label, base_url: p.base_url })));
+  const allModels = providers.flatMap((p) => p.models.map((m) => ({ ...m, providerLabel: p.label, base_url: p.base_url, providerId: p.id })));
   const currentEntry = allModels.find((m) => m.id === currentModel);
   const caps: ModelCaps = currentEntry?.caps ?? DEFAULT_CAPS;
-  const currentProviderLabel = currentEntry?.providerLabel ?? (selectedBaseUrl.includes("nvidia") ? "NVIDIA NIM" : "Local");
+  const isNvidiaProvider = currentEntry ? currentEntry.providerId === "nvidia" : selectedBaseUrl.includes("nvidia");
 
   const notifyParams = (model: string, baseUrl: string, temp: number, thinking: boolean) => {
     onParamsChange?.({ model, baseUrl, temperature: temp, enableThinking: thinking });
@@ -223,8 +223,8 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
         </div>
 
         {/* Provider badge */}
-        <span className={`context-provider-badge ${selectedBaseUrl.includes("nvidia") ? "nvidia" : "local"}`}>
-          {selectedBaseUrl.includes("nvidia") ? "NIM" : "Local"}
+        <span className={`context-provider-badge ${isNvidiaProvider ? "nvidia" : "local"}`}>
+          {isNvidiaProvider ? "NIM" : "Local"}
         </span>
 
         {/* Thinking toggle — only for capable models */}
