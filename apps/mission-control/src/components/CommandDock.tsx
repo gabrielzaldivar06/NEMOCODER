@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Bot, Clock3, Database, Files, Hand, Plus, Square, Target, Wrench } from "lucide-react";
+import { ArrowUp, Bot, ChevronDown, Clock3, Database, Files, Hand, Plus, Square, Target, Thermometer, Wrench } from "lucide-react";
 
 export type CommandDockMode = "send" | "queue" | "steer" | "plan";
 
@@ -27,11 +27,21 @@ function shortName(id: string): string {
   return slash >= 0 ? id.slice(slash + 1) : id;
 }
 
+const TEMP_STEPS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+
+function loadTemp(): number {
+  const stored = parseFloat(localStorage.getItem("mc_temperature") ?? "");
+  return Number.isFinite(stored) && TEMP_STEPS.includes(stored) ? stored : 0.6;
+}
+
 export function CommandDock({ draft, provider, endpointLabel, currentModel, running, queuedPrompt, queuedPrompts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onOpenComposer, onOpenMemory }: CommandDockProps) {
   const [sendHaloOpen, setSendHaloOpen] = useState<boolean>(false);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelEntry[]>([]);
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [temperature, setTemperature] = useState<number>(loadTemp);
+  const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const canSendDraft = draft.trim().length > 0;
   const draftFieldId = "space-code-command-draft";
@@ -45,6 +55,26 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
       .catch(() => {})
       .finally(() => setModelsLoaded(true));
   }, []);
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+        setModelPickerOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [modelPickerOpen]);
+
+  const cycleTemperature = () => {
+    setTemperature((prev) => {
+      const idx = TEMP_STEPS.indexOf(prev);
+      const next = TEMP_STEPS[(idx + 1) % TEMP_STEPS.length];
+      localStorage.setItem("mc_temperature", String(next));
+      return next;
+    });
+  };
 
   // Group by provider prefix
   const groups: Record<string, string[]> = {};
@@ -119,6 +149,46 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
           </button>
         ))}
       </div>}
+      <div className="context-bar">
+        <div className="context-chip-wrap" ref={modelPickerRef}>
+          <button
+            className="context-chip model-chip"
+            onClick={() => setModelPickerOpen((o) => !o)}
+            title={currentModel || "Seleccionar modelo"}
+            aria-haspopup="listbox"
+            aria-expanded={modelPickerOpen}
+          >
+            <Bot size={11} />
+            <span>{shortName(currentModel) || (modelsLoaded ? "Sin modelo" : "Cargando…")}</span>
+            <ChevronDown size={10} />
+          </button>
+          {modelPickerOpen && (
+            <div className="model-picker-dropdown" role="listbox" aria-label="Seleccionar modelo">
+              {availableModels.length === 0 && <div className="model-picker-empty">{modelsLoaded ? "Sin modelos disponibles" : "Cargando…"}</div>}
+              {availableModels.map((m) => (
+                <button
+                  key={m.id}
+                  className={`model-picker-option${m.id === currentModel ? " active" : ""}`}
+                  role="option"
+                  aria-selected={m.id === currentModel}
+                  onClick={() => { onModelChange(m.id); setModelPickerOpen(false); }}
+                >
+                  {m.id === currentModel && <span className="model-active-dot">●</span>}
+                  {shortName(m.id)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button
+          className="context-chip temp-chip"
+          onClick={cycleTemperature}
+          title={`Temperatura: ${temperature} — click para cambiar`}
+        >
+          <Thermometer size={11} />
+          <span>{temperature.toFixed(1)}</span>
+        </button>
+      </div>
       <label className="sr-only" htmlFor={draftFieldId}>Describe the next objective, constraint, or experiment</label>
       <textarea
         id={draftFieldId}
