@@ -3161,6 +3161,7 @@ export function App() {
           terminalResult={terminalResult}
           onTerminalCommandChange={setTerminalDraft}
           onTerminalRun={runTerminal}
+          activeSection={activeSection}
         />
       </section>
     </main>
@@ -4097,6 +4098,20 @@ function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo
   );
 }
 
+function StageButton({ path, staged, onStage }: { path: string; staged: boolean; onStage: (path: string, stage: boolean) => void }) {
+  const [stageStatus, setStageStatus] = useState<"idle" | "busy" | "done">("idle");
+  const handleClick = () => {
+    setStageStatus("busy");
+    onStage(path, !staged);
+    window.setTimeout(() => setStageStatus("done"), 900);
+    window.setTimeout(() => setStageStatus("idle"), 2000);
+  };
+  const label = stageStatus === "busy" ? "Preparando..." : stageStatus === "done" ? "✓ Listo" : staged ? "Desprepararar" : "Preparar";
+  return (
+    <button onClick={handleClick} disabled={stageStatus === "busy"}>{label}</button>
+  );
+}
+
 function VersioningPanel({
   repoPath,
   status,
@@ -4161,9 +4176,9 @@ function VersioningPanel({
       <div className="panel-title"><GitBranch size={16} /> Versionado</div>
       <div className="ops-panel">
         <div className="review-actions">
-          <button onClick={onRefresh} disabled={busy}><RefreshCw size={14} /> Refresh</button>
-          <button onClick={() => onSync("pull")}>Pull --rebase</button>
-          <button onClick={() => onSync("push")}>Push</button>
+          <button onClick={onRefresh} disabled={busy}><RefreshCw size={14} /> Refrescar</button>
+          <button onClick={() => onSync("pull")}>Actualizar</button>
+          <button onClick={() => onSync("push")}>Publicar</button>
         </div>
         <div className="repo-open-row">
           <select value={syncRemote} onChange={(event) => onSyncRemoteChange(event.target.value)}>
@@ -4180,7 +4195,7 @@ function VersioningPanel({
       </div>
 
       <div className="ops-panel">
-        <div className="panel-title"><GitCompare size={16} /> Working tree</div>
+        <div className="panel-title"><GitCompare size={16} /> Árbol de trabajo</div>
         {status.entries.length === 0 ? <span className="empty-inline">Working tree limpio.</span> : <div className="extension-list">{status.entries.map((entry) => (
           <div className="extension-row" key={`${entry.xy}-${entry.path}`}>
             <div>
@@ -4191,8 +4206,8 @@ function VersioningPanel({
               <button onClick={() => {
                 onDiffPathChange(entry.path);
                 onLoadDiff(entry.path, false);
-              }}>Diff</button>
-              <button onClick={() => onStage(entry.path, !entry.staged)}>{entry.staged ? "Unstage" : "Stage"}</button>
+              }}>Ver diff</button>
+              <StageButton path={entry.path} staged={entry.staged} onStage={onStage} />
             </div>
           </div>
         ))}</div>}
@@ -4255,7 +4270,7 @@ function TerminalPanel({ command, running, result, onCommandChange, onRun }: { c
       <div className="ops-panel">
         <div className="repo-open-row">
           <input value={command} onChange={(event) => onCommandChange(event.target.value)} placeholder="git status --short" />
-          <button className="repo-item" onClick={onRun} disabled={running}>{running ? "Running" : "Run"}</button>
+          <button className="repo-item" onClick={onRun} disabled={running}>{running ? "Ejecutando" : "Ejecutar"}</button>
         </div>
         {result && <div className="mini-list">
           <span>exit: {result.exit_code ?? "timeout"} / duration: {result.duration_ms} ms</span>
@@ -4263,8 +4278,8 @@ function TerminalPanel({ command, running, result, onCommandChange, onRun }: { c
         </div>}
       </div>
       <div className="ops-panel terminal-output">
-        <div className="panel-title"><Code2 size={16} /> Output</div>
-        <pre>{result ? `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim() || "(no output)" : "Run a command to view output."}</pre>
+        <div className="panel-title"><Code2 size={16} /> Salida</div>
+        <pre>{result ? `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim() || "(no output)" : "Ejecuta un comando para ver la salida."}</pre>
       </div>
     </section>
   );
@@ -4275,16 +4290,16 @@ function BrowserPanel({ draft, state, queryDraft, searchState, searching, onDraf
     <section className="section-surface browser-panel">
       <div className="panel-title"><Globe size={16} /> Browser</div>
       <div className="ops-panel">
-        <div className="panel-title"><Search size={16} /> Web Search (Playwright Chromium)</div>
+        <div className="panel-title"><Search size={16} /> Búsqueda web</div>
         <div className="repo-open-row">
-          <input value={queryDraft} onChange={(event) => onQueryDraftChange(event.target.value)} placeholder="Search the web..." />
-          <button className="repo-item" onClick={onSearch} disabled={searching}>{searching ? "Searching" : "Search"}</button>
+          <input value={queryDraft} onChange={(event) => onQueryDraftChange(event.target.value)} placeholder="Buscar en la web..." />
+          <button className="repo-item" onClick={onSearch} disabled={searching}>{searching ? "Buscando" : "Buscar"}</button>
         </div>
         <div className="mini-list">
           <span>query: {searchState.query || state.search_query || "-"}</span>
           <span>engine: {searchState.engine || "playwright-chromium"}</span>
         </div>
-        {searchState.results.length === 0 ? <span className="empty-inline">No search results yet.</span> : <div className="mini-list">{searchState.results.map((item) => (
+        {searchState.results.length === 0 ? <span className="empty-inline">Sin resultados aún.</span> : <div className="mini-list">{searchState.results.map((item) => (
           <button key={item.url} onClick={() => onOpenSearchResult(item.url)} title={item.url}>
             <strong>{item.title}</strong>
             <br />
@@ -4295,7 +4310,7 @@ function BrowserPanel({ draft, state, queryDraft, searchState, searching, onDraf
       <div className="ops-panel">
         <div className="repo-open-row">
           <input value={draft} onChange={(event) => onDraftChange(event.target.value)} placeholder="https://github.com" />
-          <button className="repo-item" onClick={onOpen}>Open</button>
+          <button className="repo-item" onClick={onOpen}>Abrir</button>
         </div>
         <div className="mini-list">
           <span>last: {state.last_url || "-"}</span>
@@ -4303,12 +4318,12 @@ function BrowserPanel({ draft, state, queryDraft, searchState, searching, onDraf
         </div>
       </div>
       <div className="ops-panel">
-        <div className="panel-title"><Clock3 size={16} /> History</div>
-        {state.history.length === 0 ? <span className="empty-inline">No browser history yet.</span> : <div className="mini-list">{state.history.map((item) => <span key={item}>{item}</span>)}</div>}
+        <div className="panel-title"><Clock3 size={16} /> Historial</div>
+        {state.history.length === 0 ? <span className="empty-inline">Sin historial de navegación.</span> : <div className="mini-list">{state.history.map((item) => <span key={item}>{item}</span>)}</div>}
       </div>
       <div className="ops-panel">
-        <div className="panel-title"><Clock3 size={16} /> Search History</div>
-        {state.search_history.length === 0 ? <span className="empty-inline">No search history yet.</span> : <div className="mini-list">{state.search_history.map((item) => <button key={item} onClick={() => onQueryDraftChange(item)}>{item}</button>)}</div>}
+        <div className="panel-title"><Clock3 size={16} /> Historial de búsquedas</div>
+        {state.search_history.length === 0 ? <span className="empty-inline">Sin historial de búsquedas.</span> : <div className="mini-list">{state.search_history.map((item) => <button key={item} onClick={() => onQueryDraftChange(item)}>{item}</button>)}</div>}
       </div>
     </section>
   );
@@ -5089,7 +5104,7 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
   );
 }
 
-function BottomPanel({ run, status, job, onControl, terminalCommand, terminalRunning, terminalResult, onTerminalCommandChange, onTerminalRun }: {
+function BottomPanel({ run, status, job, onControl, terminalCommand, terminalRunning, terminalResult, onTerminalCommandChange, onTerminalRun, activeSection }: {
   run: MissionRun | undefined;
   status: string;
   job: HandoffJob | null;
@@ -5099,6 +5114,7 @@ function BottomPanel({ run, status, job, onControl, terminalCommand, terminalRun
   terminalResult: TerminalRunResult | null;
   onTerminalCommandChange: (value: string) => void;
   onTerminalRun: () => void;
+  activeSection: AppSection;
 }) {
   const running = job ? ["starting", "running"].includes(job.status) : false;
   const paused = job?.status === "paused";
@@ -5122,27 +5138,31 @@ function BottomPanel({ run, status, job, onControl, terminalCommand, terminalRun
           <>
             <div className="terminal-line"><span>nemo</span> {status}</div>
             <div className="job-console">
-              <div className="job-iteration-title">Terminal real</div>
-              <div className="repo-open-row" style={{ padding: "6px 12px", gridTemplateColumns: "minmax(0, 1fr) auto", marginBottom: 0 }}>
-                <input
-                  value={terminalCommand}
-                  onChange={(event) => onTerminalCommandChange(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      onTerminalRun();
-                    }
-                  }}
-                  placeholder="git status --short"
-                />
-                <button className="repo-item" onClick={onTerminalRun} disabled={terminalRunning}>
-                  {terminalRunning ? "Running" : "Run"}
-                </button>
-              </div>
-              {terminalResult && <div className="mini-list" style={{ padding: "0 12px 8px" }}>
-                <span>exit: {terminalResult.exit_code ?? "timeout"} / duration: {terminalResult.duration_ms} ms</span>
-                <span>cwd: {terminalResult.cwd}</span>
-              </div>}
+              {activeSection === "terminal" && (
+                <>
+                  <div className="job-iteration-title">Terminal real</div>
+                  <div className="repo-open-row" style={{ padding: "6px 12px", gridTemplateColumns: "minmax(0, 1fr) auto", marginBottom: 0 }}>
+                    <input
+                      value={terminalCommand}
+                      onChange={(event) => onTerminalCommandChange(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          onTerminalRun();
+                        }
+                      }}
+                      placeholder="git status --short"
+                    />
+                    <button className="repo-item" onClick={onTerminalRun} disabled={terminalRunning}>
+                      {terminalRunning ? "Ejecutando" : "Ejecutar"}
+                    </button>
+                  </div>
+                  {terminalResult && <div className="mini-list" style={{ padding: "0 12px 8px" }}>
+                    <span>exit: {terminalResult.exit_code ?? "timeout"} / duration: {terminalResult.duration_ms} ms</span>
+                    <span>cwd: {terminalResult.cwd}</span>
+                  </div>}
+                </>
+              )}
               <div className="job-iteration-title">Salida</div>
               <pre>{terminalResult ? `${terminalResult.stdout || ""}${terminalResult.stderr ? `\n${terminalResult.stderr}` : ""}`.trim() || "(no output)" : "Ejecuta un comando para ver salida."}</pre>
             </div>
@@ -5393,7 +5413,7 @@ function VaultPanel() {
 }
 
 function EmptyState() {
-  return <div className="empty">No live workspace data available.</div>;
+  return <div className="empty">Sin datos disponibles.</div>;
 }
 
 const rootElement = document.getElementById("root");

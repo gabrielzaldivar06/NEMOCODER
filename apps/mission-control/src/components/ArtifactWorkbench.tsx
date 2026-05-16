@@ -491,10 +491,10 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
   };
 
   const viewOptions: Array<{ mode: ArtifactViewMode; label: string; icon: ReactNode; disabled?: boolean }> = [
-    { mode: "preview", label: "Preview", icon: <Eye size={13} />, disabled: !renderable },
-    { mode: "source", label: "Source", icon: <Code2 size={13} /> },
-    { mode: "compare", label: "Compare", icon: <History size={13} />, disabled: !previousArtifact },
-    { mode: "inspect", label: "Inspect", icon: <Info size={13} /> },
+    { mode: "preview", label: "Vista previa", icon: <Eye size={13} />, disabled: !renderable },
+    { mode: "source", label: "Fuente", icon: <Code2 size={13} /> },
+    { mode: "compare", label: "Comparar", icon: <History size={13} />, disabled: !previousArtifact },
+    { mode: "inspect", label: "Inspeccionar", icon: <Info size={13} /> },
   ];
 
   return (
