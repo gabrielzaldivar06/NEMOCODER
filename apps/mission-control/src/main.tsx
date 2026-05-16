@@ -1092,15 +1092,15 @@ export function App() {
       try {
         payload = JSON.parse(rawText) as T | ApiError;
       } catch {
-        if (!response.ok) throw new Error(rawText.trim() || response.statusText || "Request failed");
-        throw new Error("Invalid JSON response from server");
+        // Not JSON — surface raw text so the developer can see the actual error
+        throw new Error(`${response.status} ${response.statusText}: ${rawText.slice(0, 300)}`);
       }
     }
     if (!response.ok) {
       if (payload && typeof payload === "object" && "error" in payload) {
         throw new Error((payload as ApiError).error);
       }
-      throw new Error(response.statusText || "Request failed");
+      throw new Error(`${response.status} ${response.statusText}${rawText ? `: ${rawText.slice(0, 200)}` : ""}`);
     }
     if (!payload) throw new Error("Empty response from server");
     return payload as T;

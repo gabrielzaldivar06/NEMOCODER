@@ -42,10 +42,10 @@ type TelemetryColumnProps<RunType extends TelemetryRun> = {
 };
 
 function statusLabel(status: string): string {
-  if (status === "approved") return "Approved";
-  if (status === "blocked") return "Blocked";
-  if (status === "needs_review") return "Review";
-  return status || "pending";
+  if (status === "approved") return "Aprobado";
+  if (status === "blocked") return "Bloqueado";
+  if (status === "needs_review") return "Revisión";
+  return status || "pendiente";
 }
 
 function toQueueBucket(status: string): "blocked" | "queued" | "ready" {

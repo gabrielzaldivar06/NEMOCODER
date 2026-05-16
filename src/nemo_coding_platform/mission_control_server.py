@@ -1859,9 +1859,16 @@ def _positive_int(value: object, fallback: int, *, minimum: int = 1, maximum: in
 
 def _redact_secrets(text: str) -> str:
     value = str(text)
-    for env_name in ("LMSTUDIO_API_KEY", "OPENAI_API_KEY"):
+    # Redact Bearer tokens (Authorization headers, inline JSON)
+    value = re.sub(r'Bearer\s+[A-Za-z0-9\-_\.]{8,}', 'Bearer ***', value)
+    # Redact api_key / password JSON fields
+    value = re.sub(r'"(api_key|password|secret|token)"\s*:\s*"[^"]*"', r'"\1": "***"', value, flags=re.I)
+    # Redact credentials embedded in URLs (https://user:pass@host)
+    value = re.sub(r'://[^:@/\s]+:[^@/\s]+@', '://***:***@', value)
+    # Redact known env secrets by value
+    for env_name in ("LMSTUDIO_API_KEY", "OPENAI_API_KEY", "NVIDIA_API_KEY"):
         secret = os.environ.get(env_name)
-        if secret:
+        if secret and len(secret) > 4:
             value = value.replace(secret, "***")
     return value
 
@@ -5354,9 +5361,12 @@ def _extract_json_score(critique: str) -> float:
 # from the same or different models — driver-level contention causes freezes.
 _LLM_SEM = threading.Semaphore(1)
 
+_SERVER_START_TIME: float = time.time()
+
 # Per-job control plane for running plan loops.
 # Keys are job_ids; values are mutable dicts with {cancel: bool, steer: str | None}.
 _plan_jobs: dict[str, dict[str, object]] = {}
+_plan_jobs_lock = threading.Lock()
 
 
 def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: int = 1024, timeout: int = 120, temperature: float = 0.6) -> str:
@@ -5641,7 +5651,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
 
     # Register job in control plane so stop/steer endpoints can reach it
     if job_id:
-        _plan_jobs[job_id] = {"cancel": False, "steer": None}
+        with _plan_jobs_lock:
+            _plan_jobs[job_id] = {"cancel": False, "steer": None}
 
     def _nemo(tool_name: str, phase: str, **kw: Any) -> dict[str, Any]:
         return _nemo_chat_tool_call(
@@ -5678,18 +5689,20 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     for i in range(1, max_iterations + 1):
         # --- Check stop/steer control plane ---
         if job_id:
-            _ctrl = _plan_jobs.get(job_id, {})
-            if _ctrl.get("cancel"):
+            with _plan_jobs_lock:
+                _ctrl = _plan_jobs.get(job_id, {})
+                should_cancel = _ctrl.get("cancel")
+                _steer_directive = str(_ctrl.get("steer") or "")
+                if _steer_directive:
+                    _ctrl["steer"] = None  # consume atomically
+            if should_cancel:
                 yield {"type": "cancelled", "job_id": job_id, "iterations_run": len(iterations),
                        "best_score": best_score}
-                _plan_jobs.pop(job_id, None)
+                with _plan_jobs_lock:
+                    _plan_jobs.pop(job_id, None)
                 return
-        _steer_directive = ""
-        if job_id:
-            _ctrl = _plan_jobs.get(job_id, {})
-            _steer_directive = str(_ctrl.get("steer") or "")
-            if _steer_directive:
-                _ctrl["steer"] = None  # consume directive
+        else:
+            _steer_directive = ""
 
         # --- Retrieve NEMO pattern memory (known bad patterns from past sessions) ---
         nemo_hint = ""
@@ -5916,7 +5929,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     }
     # Cleanup control plane entry
     if job_id:
-        _plan_jobs.pop(job_id, None)
+        with _plan_jobs_lock:
+            _plan_jobs.pop(job_id, None)
 
 
 def api_agent_plan(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
@@ -5931,9 +5945,10 @@ def api_agent_plan(config: MissionControlServerConfig, payload: dict[str, object
 def api_plan_cancel(payload: dict[str, object]) -> dict[str, object]:
     """Signal a running plan job to cancel after the current iteration."""
     job_id = str(payload.get("job_id") or "")
-    if not job_id or job_id not in _plan_jobs:
-        return {"ok": False, "error": "job not found"}
-    _plan_jobs[job_id]["cancel"] = True
+    with _plan_jobs_lock:
+        if not job_id or job_id not in _plan_jobs:
+            return {"ok": False, "error": "job not found"}
+        _plan_jobs[job_id]["cancel"] = True
     return {"ok": True, "job_id": job_id}
 
 
@@ -5941,11 +5956,12 @@ def api_plan_steer(payload: dict[str, object]) -> dict[str, object]:
     """Inject a user directive into the next iteration of a running plan job."""
     job_id = str(payload.get("job_id") or "")
     directive = str(payload.get("directive") or "").strip()
-    if not job_id or job_id not in _plan_jobs:
-        return {"ok": False, "error": "job not found"}
     if not directive:
         return {"ok": False, "error": "directive is required"}
-    _plan_jobs[job_id]["steer"] = directive
+    with _plan_jobs_lock:
+        if not job_id or job_id not in _plan_jobs:
+            return {"ok": False, "error": "job not found"}
+        _plan_jobs[job_id]["steer"] = directive
     return {"ok": True, "job_id": job_id, "directive": directive}
 
 
@@ -6701,7 +6717,7 @@ def api_health(config: MissionControlServerConfig) -> dict[str, object]:
         "backend": {
             "type": "mission_control",
             "port": 8787,
-            "uptime_seconds": int(time.time() % 86400),  # Approximate uptime
+            "uptime_seconds": int(time.time() - _SERVER_START_TIME),
         },
         "lm_studio": {
             "reachable": lm_studio_reachable,
@@ -7121,7 +7137,8 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001
             _send_event({"type": "error", "error": str(error), "error_code": "internal_error"})
         finally:
-            _plan_jobs.pop(plan_job_id, None)
+            with _plan_jobs_lock:
+                _plan_jobs.pop(plan_job_id, None)
 
     def _handle_browser_task_sse(self, payload: dict[str, object]) -> None:
         """Stream browser agent steps as Server-Sent Events."""
