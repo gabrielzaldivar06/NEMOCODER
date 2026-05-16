@@ -2947,6 +2947,9 @@ export function App() {
             </button>
             <button type="button" className={`tab ${runsWorkbenchTab === "review" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("review")}>
               <GitCompare size={14} /> Review
+              {state.jobs.some((j) => j.status === "completed") && (
+                <span className="tab-worktree-dot" title="Worktree listo para review" />
+              )}
             </button>
             <button type="button" className={`tab ${runsWorkbenchTab === "agent" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("agent")}>
               <MessageSquareText size={14} /> Agent

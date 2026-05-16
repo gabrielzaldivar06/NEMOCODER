@@ -1922,6 +1922,15 @@ button { font: inherit; }
 
 .tab.active { background: rgba(4, 10, 20, 0.98); color: #f0f3f6; border-top: 1px solid var(--accent); }
 
+.tab-worktree-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e3b341;
+  flex-shrink: 0;
+}
+
 .workspace-main {
   flex: 1 1 auto;
   min-height: 0;
