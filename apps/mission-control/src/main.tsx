@@ -969,8 +969,8 @@ export function App() {
   useEffect(() => {
     const PUBLIC_HTML_PATHS = ["/game.html"];
     for (const path of PUBLIC_HTML_PATHS) {
-      if (_injectedPublicPaths.has(path)) continue;
-      _injectedPublicPaths.add(path);
+      if (window._injectedPublicPaths!.has(path)) continue;
+      window._injectedPublicPaths!.add(path);
       fetch(path)
         .then((r) => r.ok ? r.text() : Promise.reject())
         .then((html) => {
@@ -991,7 +991,7 @@ export function App() {
           });
           setActiveSection("home");
         })
-        .catch(() => { _injectedPublicPaths.delete(path); /* retry allowed on next mount */ });
+        .catch(() => { window._injectedPublicPaths!.delete(path); /* retry allowed on next mount */ });
     }
   }, []);
 

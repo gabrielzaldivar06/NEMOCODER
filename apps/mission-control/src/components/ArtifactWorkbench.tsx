@@ -84,8 +84,9 @@ type BrowserInfo = { session_id: string; url: string; title: string; step_count:
 
 function parseBrowserArtifact(content: string): { session_id: string; url: string; task: string; final_screenshot?: string } | null {
   try {
-    const parsed = JSON.parse(content) as { session_id?: string; url?: string; task?: string; final_screenshot?: string };
-    if (parsed && parsed.session_id) return { session_id: parsed.session_id, url: parsed.url ?? "", task: parsed.task ?? "", final_screenshot: parsed.final_screenshot };
+    const parsed = JSON.parse(content) as { session_id?: unknown; url?: unknown; task?: unknown; final_screenshot?: unknown };
+    if (parsed && typeof parsed.session_id === "string" && parsed.session_id)
+      return { session_id: parsed.session_id, url: typeof parsed.url === "string" ? parsed.url : "", task: typeof parsed.task === "string" ? parsed.task : "", final_screenshot: typeof parsed.final_screenshot === "string" ? parsed.final_screenshot : undefined };
   } catch { /* ignore */ }
   return null;
 }
@@ -159,6 +160,7 @@ function BrowserLiveView({ content }: { content: string }) {
   // Map click position from displayed img size → browser viewport (1280×720)
   const handleImgClick = (e: React.MouseEvent<HTMLImageElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
     const x = ((e.clientX - rect.left) / rect.width) * 1280;
     const y = ((e.clientY - rect.top) / rect.height) * 720;
     sendInteract({ action: "click", x, y });
