@@ -114,6 +114,7 @@ class HandoffJob:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     timeline: list[dict[str, object]] = field(default_factory=list)
+    _tl_event_count: int = 0
 
     @classmethod
     def from_snapshot(cls, payload: dict[str, Any]) -> "HandoffJob":
@@ -759,25 +760,44 @@ class HandoffJobManager:
             self._append_log(job, f"tracking run_json={job.run_json}")
             self._start_heartbeat(config, job)
             if job.process.stdout:
+                _stdout = job.process.stdout
+                _lock = self._lock
+
+                def _pipe_reader() -> None:
+                    try:
+                        for raw_line in _stdout:
+                            line = raw_line.rstrip("\r\n")
+                            if line.startswith(NEMO_EVENT_PREFIX):
+                                try:
+                                    event = json.loads(line[len(NEMO_EVENT_PREFIX):])
+                                    with _lock:
+                                        job.timeline.append(event)
+                                        job.updated_at = datetime.now(timezone.utc).isoformat()
+                                        job._tl_event_count = getattr(job, "_tl_event_count", 0) + 1
+                                        if job._tl_event_count % _TIMELINE_PERSIST_BATCH == 0:
+                                            self._persist_job(job)
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
+                            else:
+                                self._append_log(job, line)
+                    finally:
+                        try:
+                            _stdout.close()
+                        except Exception:
+                            pass
+
+                _reader = threading.Thread(target=_pipe_reader, daemon=True, name=f"pipe-{job.job_id}")
+                _reader.start()
+                job.returncode = job.process.wait()
+                # Force-close stdout so _pipe_reader unblocks if another
+                # process is holding the write end of the pipe open.
                 try:
-                    for raw_line in job.process.stdout:
-                        line = raw_line.rstrip("\r\n")
-                        if line.startswith(NEMO_EVENT_PREFIX):
-                            try:
-                                event = json.loads(line[len(NEMO_EVENT_PREFIX):])
-                                with self._lock:
-                                    job.timeline.append(event)
-                                    job.updated_at = datetime.now(timezone.utc).isoformat()
-                                    job._tl_event_count = getattr(job, "_tl_event_count", 0) + 1
-                                    if job._tl_event_count % _TIMELINE_PERSIST_BATCH == 0:
-                                        self._persist_job(job)
-                            except (json.JSONDecodeError, ValueError):
-                                pass
-                        else:
-                            self._append_log(job, line)
-                finally:
-                    job.process.stdout.close()
-            job.returncode = job.process.wait()
+                    _stdout.close()
+                except Exception:
+                    pass
+                _reader.join(timeout=10.0)
+            else:
+                job.returncode = job.process.wait()
             if job.heartbeat_stop is not None:
                 job.heartbeat_stop.set()
             self._join_heartbeat(job)
