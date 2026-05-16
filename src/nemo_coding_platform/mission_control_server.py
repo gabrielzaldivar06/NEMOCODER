@@ -1752,13 +1752,21 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
     except Exception:
         pass
     # Strategy 2: /v1/models with Authorization (works for NVIDIA NIM and other remote APIs)
+    _UUID_ONLY = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
     try:
         req = urllib.request.Request(f"{base}/models", method="GET")
         req.add_header("Authorization", f"Bearer {api_key}")
         req.add_header("Accept", "application/json")
         with urllib.request.urlopen(req, timeout=5) as r:
             data = json.loads(r.read().decode())
-        models = [m["id"] for m in data.get("data", []) if not _SKIP.search(m.get("id", ""))]
+        models = [
+            m["id"] for m in data.get("data", [])
+            if not _SKIP.search(m.get("id", "")) and not _UUID_ONLY.match(m.get("id", ""))
+        ]
+        # Prefer named models (contain "/") — NIM public models are "org/name" format
+        named = [m for m in models if "/" in m]
+        if named:
+            return named[0]
         if models:
             return models[0]
     except Exception:
@@ -1823,7 +1831,13 @@ def _resolve_vlm_model(base_url: str, *, api_key: str = "lm-studio") -> str | No
 
 
 def _chat_model(payload: dict[str, object]) -> str:
-    value = str(payload.get("model") or payload.get("default_model") or "").strip()
+    _UUID_ONLY = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+    # Explicit model from payload (user just selected it — trust even if UUID)
+    value = str(payload.get("model") or "").strip()
+    if not value:
+        # default_model from settings may be a stale UUID NIM private endpoint — skip it
+        default = str(payload.get("default_model") or "").strip()
+        value = default if default and not _UUID_ONLY.match(default) else ""
     if not value:
         api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
         value = _resolve_lmstudio_model(_chat_base_url(payload), api_key=api_key)

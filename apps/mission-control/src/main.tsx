@@ -897,7 +897,7 @@ export function App() {
   ]);
   const [agentDraft, setAgentDraft] = useState<string>("");
   const [homeAgentDraft, setHomeAgentDraft] = useState<string>("");
-  const [homeChatParams, setHomeChatParams] = useState<{ temperature: number; enableThinking: boolean; baseUrl: string }>({ temperature: 0.6, enableThinking: false, baseUrl: "" });
+  const [homeChatParams, setHomeChatParams] = useState<{ temperature: number; enableThinking: boolean; baseUrl: string; model: string }>({ temperature: 0.6, enableThinking: false, baseUrl: "", model: "" });
   const [browserArtifacts, setBrowserArtifacts] = useState<PersistedGeneratedArtifact[]>([]);
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [queuedAgentPrompts, setQueuedAgentPrompts] = useState<string[]>([]);
@@ -1526,6 +1526,7 @@ export function App() {
         require_nemo_roundtrip: false,
         provider: settingsDraft.provider,
         model_base_url: homeChatParams.baseUrl || settingsDraft.model_base_url,
+        model: homeChatParams.model || undefined,
         default_model: settingsDraft.default_model,
         chat_temperature: homeChatParams.temperature,
         enable_thinking: homeChatParams.enableThinking,
@@ -2920,7 +2921,7 @@ export function App() {
             setSettingsDraft(next);
             postJson("/api/settings", { default_model: model }).catch(() => {});
           }}
-          onParamsChange={(params) => setHomeChatParams({ temperature: params.temperature, enableThinking: params.enableThinking, baseUrl: params.baseUrl })}
+          onParamsChange={(params) => setHomeChatParams({ temperature: params.temperature, enableThinking: params.enableThinking, baseUrl: params.baseUrl, model: params.model })}
           onOpenComposer={() => setComposerOpen(true)}
           onOpenMemory={openMemorySection}
           running={agentBusy}
