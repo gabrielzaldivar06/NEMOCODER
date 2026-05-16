@@ -728,6 +728,23 @@ class HandoffJobManager:
         existing_pythonpath = os.environ.get("PYTHONPATH", "")
         pythonpath = str(source_root) if not existing_pythonpath else f"{source_root};{existing_pythonpath}"
         env = {**os.environ, "PYTHONPATH": pythonpath, "PYTHONUNBUFFERED": "1"}
+        _nemo_settings = _load_settings(config) if config.memory_db else {}
+        _nemo_url = str(_nemo_settings.get("nemo_mcp_url") or "")
+        _nemo_db = str(config.memory_db) if config.memory_db else ""
+        if _nemo_db and _nemo_url:
+            try:
+                mcp_call_nemo_tool(
+                    "context_bootstrap",
+                    lifecycle_phase="start",
+                    memory_db=_nemo_db,
+                    mcp_url=_nemo_url,
+                    task=str(job.payload.get("objective") or "handoff job")[:200],
+                    topic="Space Code Handoff",
+                    token_budget=400,
+                    compact=True,
+                )
+            except Exception:
+                pass
         try:
             job.process = subprocess.Popen(
                 job.command,
@@ -777,6 +794,19 @@ class HandoffJobManager:
             job.error = str(error)
             self._append_log(job, str(error))
         finally:
+            if _nemo_db and _nemo_url:
+                try:
+                    mcp_call_nemo_tool(
+                        "store_conversation",
+                        lifecycle_phase="close",
+                        memory_db=_nemo_db,
+                        mcp_url=_nemo_url,
+                        content=f"Handoff job {job.job_id}: objective={str(job.payload.get('objective') or '')[:100]}, status={job.status}, returncode={job.returncode}",
+                        role="assistant",
+                        session_id=job.job_id,
+                    )
+                except Exception:
+                    pass
             if job.run_thread is threading.current_thread():
                 job.run_thread = None
 
