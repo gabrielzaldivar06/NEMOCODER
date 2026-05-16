@@ -641,6 +641,7 @@ const DEFAULT_SESSION_NEMO_TOOLS = [
   "cognitive_ingest",
 ];
 const DEFAULT_HANDOFF_VALIDATION_COMMAND = "npm --prefix apps/mission-control run build";
+const WORKTREE_ISOLATION_ENABLED = true;
 
 type ChatSessionSnapshot = {
   version: 1;
@@ -1392,6 +1393,7 @@ export function App() {
       require_nemo_mcp_capabilities: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
       require_nemo_roundtrip: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
       selected_nemo_tools: selectedNemoTools,
+      use_git_worktree: WORKTREE_ISOLATION_ENABLED,
     })
       .then((payload) => {
         setActiveJob(payload.job);
@@ -1705,6 +1707,7 @@ export function App() {
         selected_nemo_tools: selectedNemoTools,
         require_nemo_mcp_capabilities: true,
         require_nemo_roundtrip: false,
+        use_git_worktree: WORKTREE_ISOLATION_ENABLED,
       })
         .then((payload) => {
           setActiveJob(payload.job);
@@ -2203,6 +2206,7 @@ export function App() {
       nemo_mcp_url: String(action.payload.nemo_mcp_url || settingsDraft.nemo_mcp_url || initialState.settings.nemo_mcp_url),
       nemo_mcp_prefix: String(action.payload.nemo_mcp_prefix || "nemo."),
       selected_nemo_tools: selectedNemoTools,
+      use_git_worktree: WORKTREE_ISOLATION_ENABLED,
     })
       .then((payload) => {
         setActiveJob(payload.job);
