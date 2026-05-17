@@ -2133,8 +2133,9 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         "temperature": float(payload.get("chat_temperature", payload.get("temperature", 0.2))),
         "max_tokens": _chat_max_tokens(payload),
         "stream": False,
-        "enable_thinking": bool(payload.get("enable_thinking", False)),
     }
+    if payload.get("enable_thinking"):
+        body["enable_thinking"] = True
     data = json.dumps(body).encode("utf-8")
     _api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
     request = urllib.request.Request(
