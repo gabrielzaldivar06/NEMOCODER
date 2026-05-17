@@ -1672,7 +1672,7 @@ def _require_nemo_mcp_for_execution(
             message = f"{message}: {details}"
         raise _bad_request(message, error_code="nemo_mcp_unreachable")
     require_capabilities = bool(payload.get("require_nemo_mcp_capabilities", payload.get("nemo_required", True)))
-    require_roundtrip = bool(payload.get("require_nemo_roundtrip", require_capabilities))
+    require_roundtrip = bool(payload.get("require_nemo_roundtrip", False))
     if require_capabilities:
         capabilities = _probe_nemo_mcp_capabilities(
             config,
@@ -2883,7 +2883,7 @@ def _run_timestamp_from_state_run(run: dict[str, object]) -> float | None:
 def api_state(config: MissionControlServerConfig, jobs: HandoffJobManager | None = None) -> dict[str, object]:
     settings = _load_settings(config)
     recent = tuple(str(item) for item in settings.get("recent_repos", []) if isinstance(item, str))
-    state = build_mission_control_state(config.repo_path, config.runtimes_path, settings=settings, recent_repos=recent)
+    state = build_mission_control_state(config.repo_path, config.run_results_path, settings=settings, recent_repos=recent)
     hidden_source_json = _hidden_run_source_json(settings)
     if hidden_source_json:
         runs = state.get("runs")
