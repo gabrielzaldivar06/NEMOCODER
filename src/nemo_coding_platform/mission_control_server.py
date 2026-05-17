@@ -7043,6 +7043,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         "/api/nemo/risk-map",
         "/api/nemo/cognitive-stats",
     })
+    _RATE_LIMIT_EXEMPT_PREFIXES = (
+        "/api/run/",   # worktree-diff, worktree-merge, worktree-cleanup, permission-*
+        "/api/handoff-job/",
+    )
 
     def do_OPTIONS(self) -> None:
         _json_response(self, 204, {})
@@ -7484,6 +7488,8 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
     def _check_rate_limit(self) -> bool:
         route = urlparse(self.path).path
         if route in self._RATE_LIMIT_EXEMPT_PATHS:
+            return True
+        if any(route.startswith(p) for p in self._RATE_LIMIT_EXEMPT_PREFIXES):
             return True
         client_ip = self.client_address[0]
         status = self.server.rate_limiter.check(client_ip)
