@@ -1391,7 +1391,7 @@ export function App() {
       nemo_mcp_url: normalizeNemoMcpUrl(settingsDraft.nemo_mcp_url),
       nemo_mcp_prefix: "nemo.",
       require_nemo_mcp_capabilities: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
-      require_nemo_roundtrip: Boolean(settingsDraft.nemo_required || settingsDraft.nemo_mcp_url),
+      require_nemo_roundtrip: false,
       selected_nemo_tools: selectedNemoTools,
       use_git_worktree: WORKTREE_ISOLATION_ENABLED,
     })

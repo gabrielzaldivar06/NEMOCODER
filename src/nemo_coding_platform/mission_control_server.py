@@ -1000,9 +1000,9 @@ def _validate_model_roles_payload(raw: object) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for role in MODEL_ROLES:
         value = raw.get(role)
-        if not isinstance(value, str) or not value.strip():
-            raise _bad_request(f"model_roles.{role} must be a non-empty string", error_code="invalid_setting_value")
-        normalized[role] = value.strip()
+        if not isinstance(value, str):
+            raise _bad_request(f"model_roles.{role} must be a string", error_code="invalid_setting_value")
+        normalized[role] = value.strip()  # empty string = use default_model (handled by _load_and_normalize_settings)
     unknown = [str(key) for key in raw.keys() if str(key) not in MODEL_ROLES]
     if unknown:
         raise _bad_request(f"unknown model_roles key(s): {', '.join(sorted(unknown))}", error_code="invalid_setting_value")

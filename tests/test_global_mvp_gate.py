@@ -63,7 +63,13 @@ class GlobalMvpGateTests(unittest.TestCase):
                     "--save-json",
                     str(run_json),
                 ])
-            task_create_payload = json.loads(task_create_out.getvalue())
+            _nemo_prefix = "NEMO_EVENT:"
+            _json_line = next(
+                (ln.strip() for ln in reversed(task_create_out.getvalue().splitlines())
+                 if ln.strip() and not ln.strip().startswith(_nemo_prefix)),
+                "",
+            )
+            task_create_payload = json.loads(_json_line) if _json_line else {}
             persisted_payload = json.loads(run_json.read_text(encoding="utf-8")) if run_json.exists() else {}
 
         checklist = {

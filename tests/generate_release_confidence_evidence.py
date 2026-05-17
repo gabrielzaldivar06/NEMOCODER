@@ -8,6 +8,17 @@ import tempfile
 from pathlib import Path
 
 from nemo_coding_platform.cli import main
+
+NEMO_EVENT_PREFIX = "NEMO_EVENT:"
+
+
+def _parse_json_output(buf: io.StringIO) -> object:
+    """Extract the JSON summary line from CLI output that may include NEMO_EVENT: lines."""
+    for line in reversed(buf.getvalue().splitlines()):
+        line = line.strip()
+        if line and not line.startswith(NEMO_EVENT_PREFIX):
+            return json.loads(line)
+    raise ValueError("no JSON line found in CLI output")
 from nemo_coding_platform.mission_control_server import (
     MissionControlServerConfig,
     api_apply,
@@ -37,7 +48,7 @@ def build_release_confidence_evidence() -> dict[str, object]:
 
         run_json = runtimes / "run.json"
         write_ready_run(run_json, repo, sandbox, ["existing.txt", "created.txt"])
-        config = MissionControlServerConfig.from_paths(repo, runtimes, apply_results, None)
+        config = MissionControlServerConfig.from_paths(repo, runtimes, apply_results, runtimes)
 
         replay_run_json = root / "headless-result.json"
         benchmark_baseline_json = root / "bench-baseline.json"
@@ -101,7 +112,7 @@ def build_release_confidence_evidence() -> dict[str, object]:
                 "0.0",
                 "--json",
             ])
-        benchmark_gate_payload = json.loads(benchmark_gate_output.getvalue())
+        benchmark_gate_payload = _parse_json_output(benchmark_gate_output)
 
         # Controlled failing scenario to prove gate blocks regressions when threshold is strict.
         benchmark_gate_fail_output = io.StringIO()
@@ -125,7 +136,7 @@ def build_release_confidence_evidence() -> dict[str, object]:
                 "0.1",
                 "--json",
             ])
-        benchmark_gate_fail_payload = json.loads(benchmark_gate_fail_output.getvalue())
+        benchmark_gate_fail_payload = _parse_json_output(benchmark_gate_fail_output)
 
         review_payload = api_review(config, {"source_json": str(run_json)})
         file_payload = api_file(config, {"source_json": str(run_json), "file_path": "existing.txt"})
@@ -136,7 +147,7 @@ def build_release_confidence_evidence() -> dict[str, object]:
         replay_output = io.StringIO()
         with contextlib.redirect_stdout(replay_output):
             replay_exit = main(["replay-run-json", str(replay_run_json), "--json"])
-        replay_payload = json.loads(replay_output.getvalue())
+        replay_payload = _parse_json_output(replay_output)
 
         rollback_payload = api_rollback(config, {"apply_json": str(apply_json), "approve_review": True})
         state_payload = api_state(config)

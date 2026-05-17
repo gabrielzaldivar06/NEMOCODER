@@ -65,8 +65,8 @@ class PermissionAnalyzer:
     """Inspect objective + target_files to compute a PermissionRequest."""
 
     _SHELL_KEYWORDS = frozenset({
-        "run ", "execute", "pytest", "npm run", "pip install", "script",
-        "bash", "cmd", "make ", "invoke", "deploy", "build", "test suite",
+        "execute", "pytest", "npm run", "pip install", "script",
+        "bash", "cmd", "make ", "invoke", "deploy", "test suite",
     })
     _NETWORK_KEYWORDS = frozenset({
         "fetch", " http", "curl", "request", "download", "upload",
