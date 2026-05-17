@@ -1532,7 +1532,7 @@ export function App() {
         model: homeChatParams.model || undefined,
         default_model: settingsDraft.default_model,
         chat_temperature: homeChatParams.temperature,
-        enable_thinking: homeChatParams.enableThinking,
+        ...(homeChatParams.enableThinking ? { enable_thinking: true } : {}),
         timeout_seconds: handoffDraft.timeoutSeconds,
         token_budget: settingsDraft.token_budget,
         context_window_tokens: settingsDraft.context_window_tokens,
