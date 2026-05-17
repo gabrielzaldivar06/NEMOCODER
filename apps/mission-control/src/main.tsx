@@ -910,6 +910,7 @@ export function App() {
   const [activeSection, setActiveSection] = useState<AppSection>("home");
     const [runsWorkbenchTab, setRunsWorkbenchTab] = useState<RunsWorkbenchTab>("file");
   const [reviewSubTab, setReviewSubTab] = useState<"timeline" | "diff">("diff");
+  const [reviewedJobIds, setReviewedJobIds] = useState<Set<string>>(new Set());
   const [repoBusy, setRepoBusy] = useState<boolean>(false);
   const [repoError, setRepoError] = useState<string>("");
   const [terminalDraft, setTerminalDraft] = useState<string>("");
@@ -2947,7 +2948,7 @@ export function App() {
             </button>
             <button type="button" className={`tab ${runsWorkbenchTab === "review" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("review")}>
               <GitCompare size={14} /> Review
-              {state.jobs.some((j) => j.status === "completed") && (
+              {state.jobs.some((j) => j.status === "completed" && !reviewedJobIds.has(j.job_id)) && (
                 <span className="tab-worktree-dot" title="Worktree listo para review" />
               )}
             </button>
@@ -3002,8 +3003,14 @@ export function App() {
                   {reviewSubTab === "diff" && (
                     <WorktreeDiffPanel
                       jobId={selectedJob?.job_id ?? ""}
-                      onMerged={() => { /* state will refresh via polling */ }}
-                      onRejected={() => { /* state will refresh via polling */ }}
+                      onMerged={() => {
+                        if (selectedJob?.job_id) setReviewedJobIds((prev) => new Set([...prev, selectedJob.job_id]));
+                        refreshState();
+                      }}
+                      onRejected={() => {
+                        if (selectedJob?.job_id) setReviewedJobIds((prev) => new Set([...prev, selectedJob.job_id]));
+                        refreshState();
+                      }}
                     />
                   )}
                 </div>

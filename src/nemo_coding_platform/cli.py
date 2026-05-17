@@ -19,7 +19,7 @@ from nemo_coding_platform.core.llm_benchmark import run_llm_benchmark, save_benc
 from nemo_coding_platform.core.memory import MemoryAtomType, nemo_tools_for_phase
 from nemo_coding_platform.core.mission_control import build_mission_control_state
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
-from nemo_coding_platform.core.model_config import ModelProfile, default_model_profile
+from nemo_coding_platform.core.model_config import ModelProfile, ModelRoleProfile, default_model_profile
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan, QualityMutationEngine
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, NemoCallResult, PersistentNemoAdapter, McpNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
@@ -155,6 +155,8 @@ def build_parser() -> argparse.ArgumentParser:
     long_run.add_argument("--target-file", action="append", default=[])
     long_run.add_argument("--model-profile", default=default_model_profile().model)
     long_run.add_argument("--lmstudio-base-url", default=default_model_profile().base_url)
+    long_run.add_argument("--model-roles", default="",
+        help="Role-specific models as comma-separated role=model pairs (e.g. planner=modelA,editor=modelB)")
     long_run.add_argument("--timeout", type=float, default=300.0)
     long_run.add_argument("--max-runtime-minutes", type=int, default=240)
     long_run.add_argument("--heartbeat-minutes", type=int, default=30)
@@ -733,6 +735,21 @@ def main(argv: list[str] | None = None) -> int:
             linked_prd=args.prd_text or None,
             spec_mode=args.spec_mode,
         )
+        _model_role_profile: ModelRoleProfile | None = None
+        if args.model_roles:
+            _role_map: dict[str, str] = {}
+            for _pair in args.model_roles.split(","):
+                if "=" in _pair:
+                    _role, _mdl = _pair.split("=", 1)
+                    _role_map[_role.strip()] = _mdl.strip()
+            if _role_map:
+                _base = args.model_profile
+                _model_role_profile = ModelRoleProfile(
+                    planner=_role_map.get("planner", _base),
+                    editor=_role_map.get("editor", _base),
+                    reviewer=_role_map.get("reviewer", _base),
+                    summarizer=_role_map.get("summarizer", _base),
+                )
         result = execute_long_handoff_supervisor(
             request,
             budget=LongHandoffBudget(
@@ -751,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
             validation_cwd=args.validation_cwd,
             provider_mode=args.provider,
             model_profile=ModelProfile(model=args.model_profile, base_url=args.lmstudio_base_url),
+            model_role_profile=_model_role_profile,
             engine_command=tuple(shlex.split(args.engine_command)) if args.engine_command else None,
             timeout_seconds=args.timeout,
             target_files=tuple(args.target_file),

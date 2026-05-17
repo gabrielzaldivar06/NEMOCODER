@@ -8,7 +8,7 @@ from nemo_coding_platform.core.checkpoint import build_checkpoint_markdown, load
 from nemo_coding_platform.core.contracts import ExecutionPhase, RuntimeState
 from nemo_coding_platform.core.headless_handoff import HandoffRequest, build_handoff_plan, validate_handoff_request
 from nemo_coding_platform.core.memory import MemoryAtomType
-from nemo_coding_platform.core.model_config import ModelProfile, default_model_profile
+from nemo_coding_platform.core.model_config import ModelProfile, ModelRoleProfile, default_model_profile
 from nemo_coding_platform.core.mutations import QualityMutationEngine
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter, NemoCallResult, PersistentNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
@@ -236,6 +236,7 @@ def execute_headless_handoff(
     mutation_provider: EngineProvider | None = None,
     provider_mode: str = "subprocess",
     model_profile: ModelProfile | None = None,
+    model_role_profile: ModelRoleProfile | None = None,
     engine_command: tuple[str, ...] | None = None,
     timeout_seconds: float = 300.0,
     target_files: tuple[str, ...] = (),
@@ -371,6 +372,10 @@ def execute_headless_handoff(
         nemo_context = _bounded_nemo_context(str(search_result.payload.get("results", "")))
     platform = get_platform_info("space-code")
     profile = model_profile or default_model_profile()
+    if model_role_profile:
+        editor_model = model_role_profile.model_for_role("editor")
+        if editor_model:
+            profile = replace(profile, model=editor_model)
     run = Run(
         run_id,
         task.id,

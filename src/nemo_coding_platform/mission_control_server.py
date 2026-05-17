@@ -666,6 +666,11 @@ class HandoffJobManager:
         model_run = str(payload.get("model") or "").strip() or _resolve_lmstudio_model(base_url_run)
         command.extend(("--model-profile", model_run))
         command.extend(("--lmstudio-base-url", base_url_run))
+        model_roles = payload.get("model_roles") or {}
+        if isinstance(model_roles, dict) and model_roles:
+            roles_str = ",".join(f"{k}={v}" for k, v in model_roles.items() if v)
+            if roles_str:
+                command.extend(("--model-roles", roles_str))
         if payload.get("pause_after_minutes") is not None:
             command.extend(("--pause-after-minutes", str(payload.get("pause_after_minutes"))))
         if bool(payload.get("validation_escalation_mode")):
