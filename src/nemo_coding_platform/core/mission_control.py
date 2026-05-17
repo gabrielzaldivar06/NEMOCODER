@@ -246,6 +246,10 @@ def build_mission_control_state(repo_path: str | Path = ".", runtimes_path: str 
     }
     if settings:
         state_settings.update(settings)
+    state_settings.pop("api_key", None)
+    metrics = state_settings.get("chat_metrics")
+    if isinstance(metrics, list) and len(metrics) > 50:
+        state_settings["chat_metrics"] = metrics[-50:]
     if not isinstance(state_settings.get("validation_policy"), str) or not state_settings.get("validation_policy"):
         state_settings["validation_policy"] = "smoke"
     return {

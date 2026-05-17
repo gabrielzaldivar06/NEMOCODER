@@ -882,7 +882,12 @@ class MissionControlServerConfig:
             runtimes = repo / runtimes
         memory_value = settings.get("memory_db")
         memory_db = _resolve_under_repo(repo, memory_value) if isinstance(memory_value, str) and memory_value else self.memory_db
-        return MissionControlServerConfig(repo, runtimes, runtimes / "mission-control" / "apply-results", runtimes / "mission-control" / "runs", memory_db)
+        # Preserve run_results_path: run JSONs don't move when runtime_path changes in settings.
+        # Re-anchor only if the existing path was relative to the old repo root.
+        old_run_results = self.run_results_path
+        if not old_run_results.is_absolute():
+            old_run_results = repo / old_run_results
+        return MissionControlServerConfig(repo, runtimes, runtimes / "mission-control" / "apply-results", old_run_results, memory_db)
 
 
 def _resolve_under_repo(repo: Path, path: str | Path | None) -> Path:
@@ -6976,12 +6981,21 @@ def api_run_timeline(
         job = jobs._jobs.get(job_id)
         if not job:
             return {"error": f"job not found: {job_id}"}
-        return {
-            "job_id": job_id,
-            "status": str(job.status),
-            "timeline": list(job.timeline),
-            "event_count": len(job.timeline),
-        }
+        status = str(job.status)
+        in_memory = list(job.timeline)
+        run_json_path = Path(job.run_json) if job.run_json else None
+    if in_memory:
+        return {"job_id": job_id, "status": status, "timeline": in_memory, "event_count": len(in_memory)}
+    # In-memory timeline is empty (server restarted or job loaded from snapshot).
+    # Fall back to the persisted run JSON.
+    if run_json_path and run_json_path.exists():
+        try:
+            run_data = json.loads(run_json_path.read_text(encoding="utf-8"))
+            events = run_data.get("timeline", {}).get("events", []) or []
+            return {"job_id": job_id, "status": status, "timeline": events, "event_count": len(events)}
+        except Exception:
+            pass
+    return {"job_id": job_id, "status": status, "timeline": [], "event_count": 0}
 
 
 def api_run_public_html_files(
