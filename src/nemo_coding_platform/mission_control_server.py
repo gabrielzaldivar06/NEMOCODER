@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -38,12 +39,16 @@ from nemo_coding_platform.core.memory import MemoryAtomType, NEMO_TOOL_REGISTRY,
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.mission_control import build_mission_control_state
 from nemo_coding_platform.core.model_config import MODEL_ROLES, default_model_role_profile
-from nemo_coding_platform.core.nemo_adapter import McpNemoAdapter, PersistentNemoAdapter
+from nemo_coding_platform.core.nemo_adapter import McpNemoAdapter, NemoCallResult, NemoCall, PersistentNemoAdapter
+from nemo_coding_platform.core.nemo_patterns import nemo_before_attempt, nemo_after_failure, nemo_after_success
+from nemo_coding_platform.core.reflexion import ReflexionEntry, persist_reflexion
+from nemo_coding_platform.core.sdd import SDDPhase
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase, lifecycle_contract, tool_allowed_in_lifecycle
-from nemo_coding_platform.core.persistence import load_headless_result_json, save_headless_result_json
+from nemo_coding_platform.core.persistence import build_replay_summary, load_headless_result_json, save_headless_result_json
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
 from nemo_coding_platform.core.rate_limiter import RateLimiter
 from nemo_coding_platform.core.self_modification import get_self_mod_continuity, query_self_mod_risk_patterns, self_mod_impact, self_mod_similar_runs, self_mod_trajectory
+from nemo_coding_platform.core.repo_map import build_repo_map
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, default_nemo_mcp_url, discover_vscode_mcp_server
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
@@ -365,6 +370,36 @@ class HandoffJobManager:
         self._append_log(resumed, f"resumed from {job_id}")
         return resumed
 
+    @staticmethod
+    def _kill_process_tree(pid: int, log_lines: list[str]) -> None:
+        """Kill a process and all its descendants. Uses psutil when available for reliability on Windows."""
+        try:
+            import psutil
+            try:
+                parent = psutil.Process(pid)
+                children = parent.children(recursive=True)
+            except psutil.NoSuchProcess:
+                return
+            # Kill children first so the parent can't respawn them
+            for child in children:
+                try:
+                    child.kill()
+                    log_lines.append(f"killed child pid={child.pid} name={child.name()}")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            try:
+                parent.kill()
+                log_lines.append(f"killed parent pid={pid}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        except ImportError:
+            # psutil not available — plain kill
+            try:
+                import signal
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
     def _stop(self, job_id: str, stopped_status: str, log_line: str) -> HandoffJob:
         job = self.get(job_id)
         if job.status in {"completed", "failed", "cancelled"}:
@@ -375,12 +410,16 @@ class HandoffJobManager:
             job.heartbeat_stop.set()
         if job.process and job.process.poll() is None:
             self._set_status(job, stopped_status)
-            job.process.terminate()
+            pid = job.process.pid
+            kill_logs: list[str] = []
+            self._kill_process_tree(pid, kill_logs)
+            for line in kill_logs:
+                self._append_log(job, line)
             try:
                 job.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 job.process.kill()
-                self._append_log(job, "process did not stop after terminate; sent kill")
+                self._append_log(job, "process did not exit after tree kill; sent direct kill")
         elif job.status not in {"completed", "failed", "cancelled"}:
             self._set_status(job, stopped_status)
         self._join_heartbeat(job)
@@ -2069,7 +2108,7 @@ def _runtime_verified_nemo_tools(payload: dict[str, object]) -> tuple[tuple[str,
     return verified_tuple, declared_tuple
 
 
-def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, context_summary: str, history: list[dict[str, str]] | None = None) -> str:
+def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, context_summary: str, history: list[dict[str, str]] | None = None) -> tuple[str, str | None, str | None]:
     verified_tools = _verified_nemo_tool_list()
     runtime_read_only, declared_write_or_destructive = _runtime_verified_nemo_tools(payload)
     native_mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
@@ -2096,8 +2135,8 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "ROUTING RULES — FOLLOW EXACTLY:\n"
                     "- Web search, URL navigation, web scraping, login, form filling, any website interaction: ALWAYS use browser_task with the real target URL. Never write a Python/requests script for this.\n"
                     "- Source file changes (create/edit .py, .ts, .js, .tsx, .go, .rs, etc.): ALWAYS use handoff_start. Never write source code inline.\n"
-                    "- Standalone scripts, data visualizations, standalone programs: use plan_generate.\n"
-                    "- Visual artifacts (HTML page, SVG, Mermaid diagram, React component, image prompt): generate inline using the artifact fences below.\n"
+                    "- Standalone Python scripts, matplotlib charts, Python CLI tools: use plan_generate. plan_generate runs PYTHON code in a subprocess — NOT HTML.\n"
+                    "- Visual/interactive artifacts (HTML game, HTML dashboard, HTML page, SVG, Mermaid diagram, React component, image prompt): generate inline using the artifact fences below. NEVER route these to plan_generate.\n"
                     "- Conversation, questions, status queries: respond directly in text.\n"
                     "CRITICAL: NEVER ask '¿Quieres ejecutar...?' or 'Do you want me to...?' — trigger the tool IMMEDIATELY. The user asked for the action, not a proposal.\n"
                     "BREVITY RULE: Keep responses under 80 words. When triggering a tool, embed the JSON and add ONE short sentence. No pseudocode, no lists."
@@ -2109,7 +2148,7 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "ARTIFACT STUDIO OUTPUT CONTRACT:\n"
                     "When the user asks for a chart, dashboard, visualization, diagram, interface mockup, visual report, image prompt, or other renderable artifact, produce a typed fenced code block so Mission Control can render and version it.\n\n"
                     "Supported artifact fences (for visual/renderable content ONLY — NOT for source files):\n"
-                    "- ```html_artifact for complete self-contained HTML documents with inline CSS/JS.\n"
+                    "- ```html_artifact for complete self-contained HTML documents (games, dashboards, tools) with inline CSS/JS. SANDBOX RULES: no localStorage/sessionStorage (use JS variables instead), no external CDN scripts (embed all JS inline), no alert/confirm/prompt.\n"
                     "- ```svg_artifact for SVG with viewBox and xmlns.\n"
                     "- ```mermaid for diagrams.\n"
                     "- ```react_artifact for self-contained React components exposing function App().\n"
@@ -2144,26 +2183,71 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {_api_key}"},
         method="POST",
     )
-    timeout = min(max(_timeout_seconds(payload), 1.0), 300.0)
-    try:
+    # Cap chat timeout at 60s — long enough for slow models but won't block the UI
+    timeout = min(max(_timeout_seconds(payload), 1.0), 60.0)
+    primary_base = _chat_base_url(payload)
+    _local_fallback_base = "http://127.0.0.1:1234/v1"
+    _try_local_fallback = (
+        primary_base.rstrip("/") != _local_fallback_base.rstrip("/")
+        and "127.0.0.1:1234" not in primary_base
+        and "localhost:1234" not in primary_base
+    )
+
+    def _do_request(req: urllib.request.Request) -> dict[str, object]:
         with _LLM_SEM:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                response_payload = json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))  # type: ignore[no-any-return]
+
+    def _extract_content(resp_payload: dict[str, object]) -> str:
+        choices = resp_payload.get("choices") if isinstance(resp_payload, dict) else None
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("LM Studio chat failed: response had no choices")
+        first = choices[0]
+        if not isinstance(first, dict):
+            raise ValueError("LM Studio chat failed: invalid choice")
+        response_message = first.get("message")
+        if not isinstance(response_message, dict) or not isinstance(response_message.get("content"), str):
+            raise ValueError("LM Studio chat failed: response message had no content")
+        return response_message["content"].strip() or "The model returned an empty response."
+
+    fallback_error: str | None = None
+    fallback_model: str | None = None
+
+    try:
+        response_payload = _do_request(request)
     except urllib.error.HTTPError as error:
+        # HTTP errors (401, 429, 5xx) — fast fail, no local fallback (auth/quota issue)
         details = _redact_secrets(error.read().decode("utf-8", errors="replace"))
         raise ValueError(f"LM Studio chat failed: HTTP {error.code} {details[:400]}") from error
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise ValueError(f"LM Studio chat failed: {_redact_secrets(str(error))}") from error
-    choices = response_payload.get("choices") if isinstance(response_payload, dict) else None
-    if not isinstance(choices, list) or not choices:
-        raise ValueError("LM Studio chat failed: response had no choices")
-    first = choices[0]
-    if not isinstance(first, dict):
-        raise ValueError("LM Studio chat failed: invalid choice")
-    response_message = first.get("message")
-    if not isinstance(response_message, dict) or not isinstance(response_message.get("content"), str):
-        raise ValueError("LM Studio chat failed: response message had no content")
-    return response_message["content"].strip() or "The model returned an empty response."
+    except (urllib.error.URLError, TimeoutError) as primary_error:
+        if not _try_local_fallback:
+            raise ValueError(f"LM Studio chat failed: {_redact_secrets(str(primary_error))}") from primary_error
+        # Primary endpoint unreachable/timed out — try local LM Studio silently
+        fallback_error = _redact_secrets(str(primary_error))
+        local_model = _resolve_lmstudio_model(_local_fallback_base)
+        if not local_model:
+            raise ValueError(
+                f"LM Studio chat failed: {fallback_error} (local fallback: no model loaded at {_local_fallback_base})"
+            ) from primary_error
+        fallback_model = local_model
+        local_body = json.loads(data.decode("utf-8"))
+        local_body["model"] = local_model
+        local_req = urllib.request.Request(
+            f"{_local_fallback_base}/chat/completions",
+            data=json.dumps(local_body).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": "Bearer lm-studio"},
+            method="POST",
+        )
+        try:
+            response_payload = _do_request(local_req)
+        except Exception as local_error:  # noqa: BLE001
+            raise ValueError(
+                f"LM Studio chat failed: primary={fallback_error} | local={_redact_secrets(str(local_error))}"
+            ) from local_error
+
+    text = _extract_content(response_payload)
+    # Return (text, fallback_error, fallback_model) — caller uses these for tool_calls transparency
+    return text, fallback_error, fallback_model
 
 
 def _chat_max_tokens(payload: dict[str, object]) -> int:
@@ -2212,6 +2296,8 @@ def api_generate_image(config: MissionControlServerConfig, payload: dict[str, ob
     settings = _load_settings(config)
     image_gen_backend = str(settings.get("image_gen_backend") or payload.get("image_gen_backend") or "auto").strip().lower()
     image_gen_url = str(settings.get("image_gen_url") or payload.get("image_gen_url") or "").strip()
+    _settings_base_url = str(settings.get("model_base_url") or "").strip().rstrip("/")
+    _settings_api_key = str(settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
 
     def _write_generated_image(image_bytes: bytes) -> dict[str, object]:
         artifacts_dir = Path(config.repo_path) / ".nemo-runtimes" / "mission-control" / "artifacts" / "images"
@@ -2274,16 +2360,92 @@ def api_generate_image(config: MissionControlServerConfig, payload: dict[str, ob
                     return _write_generated_image(image_response.read())
         raise ValueError("ComfyUI generation timed out after 180 seconds")
 
+    def _try_nim(base_url: str, api_key: str) -> dict[str, object]:
+        import base64 as b64
+        nim_models = [
+            "black-forest-labs/flux-schnell",
+            "stabilityai/stable-diffusion-xl",
+            "stability-ai/sdxl-turbo",
+        ]
+        body_base = {
+            "prompt": prompt,
+            "n": 1,
+            "size": f"{width}x{height}",
+            "response_format": "b64_json",
+        }
+        if negative_prompt:
+            body_base["negative_prompt"] = negative_prompt
+        last_nim_err = ""
+        for nim_model in nim_models:
+            body = json.dumps({**body_base, "model": nim_model}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base_url.rstrip('/')}/images/generations",
+                data=body,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+                data = result.get("data", []) if isinstance(result, dict) else []
+                if data:
+                    entry = data[0] if isinstance(data[0], dict) else {}
+                    raw_b64 = entry.get("b64_json") or entry.get("url") or ""
+                    if raw_b64 and not raw_b64.startswith("http"):
+                        return _write_generated_image(b64.b64decode(raw_b64))
+                    if raw_b64.startswith("http"):
+                        with urllib.request.urlopen(raw_b64, timeout=60) as img_resp:
+                            return _write_generated_image(img_resp.read())
+            except urllib.error.HTTPError as http_err:
+                last_nim_err = f"model={nim_model} HTTP {http_err.code}"
+                if http_err.code in (400, 404, 422):
+                    continue
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_nim_err = f"model={nim_model}: {exc}"
+        raise ValueError(f"NIM image generation failed with all models. Last error: {last_nim_err}")
+
+    def _try_pollinations() -> dict[str, object]:
+        """Free public image generation via Pollinations.ai — no API key required."""
+        from urllib.parse import quote as _quote
+        prompt_enc = _quote(prompt, safe="")
+        url = (
+            f"https://image.pollinations.ai/prompt/{prompt_enc}"
+            f"?width={width}&height={height}&nologo=true&model=flux"
+        )
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", "SpaceCode-MissionControl/1.0")
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            image_bytes = resp.read()
+        if len(image_bytes) < 1000:
+            raise ValueError(f"Pollinations returned suspiciously small response ({len(image_bytes)} bytes)")
+        return _write_generated_image(image_bytes)
+
+    _nim_base = image_gen_url if image_gen_url else _settings_base_url
+    _is_nim_url = "nvidia.com" in _nim_base or "nvcf.ngc.nvidia.com" in _nim_base
+
     if image_gen_backend in {"automatic1111", "a1111"}:
         backends_to_try = [("a1111", image_gen_url or "http://localhost:7860")]
     elif image_gen_backend == "comfyui":
         backends_to_try = [("comfyui", image_gen_url or "http://localhost:8188")]
+    elif image_gen_backend == "nim":
+        backends_to_try = [("nim", _nim_base)]
+    elif image_gen_backend == "pollinations":
+        backends_to_try = [("pollinations", "")]
     else:
-        backends_to_try = [("a1111", image_gen_url or "http://localhost:7860"), ("comfyui", image_gen_url or "http://localhost:8188")]
+        # auto: try NIM first (if configured), then local SD, always fall back to Pollinations
+        if _is_nim_url and _settings_api_key and _settings_api_key != "lm-studio":
+            backends_to_try = [("nim", _nim_base), ("a1111", "http://localhost:7860"), ("comfyui", "http://localhost:8188"), ("pollinations", "")]
+        else:
+            backends_to_try = [("a1111", image_gen_url or "http://localhost:7860"), ("comfyui", image_gen_url or "http://localhost:8188"), ("pollinations", "")]
 
     last_error = ""
     for backend_name, backend_url in backends_to_try:
         try:
+            if backend_name == "nim":
+                return _try_nim(backend_url, _settings_api_key)
+            if backend_name == "pollinations":
+                return _try_pollinations()
             check_path = "sdapi/v1/sd-models" if backend_name == "a1111" else "system_stats"
             with urllib.request.urlopen(f"{backend_url.rstrip('/')}/{check_path}", timeout=3):
                 pass
@@ -2438,16 +2600,25 @@ _THINKING_MODEL = re.compile(
     re.I,
 )
 _NO_TEMPERATURE = re.compile(r"\bo1\b|\bo3\b|\bo4\b", re.I)  # o1-style reasoning_effort models
+_VISION_MODEL = re.compile(
+    r"\bvl\b|vision|visual|multimodal|\bvlm\b|llava|bakllava|minicpm.v|phi.*vision|qwen.*vl"
+    r"|internvl|molmo|pixtral|idefics|cogvlm|deepseek.*vl|yi.*vl|smollvision|paligemma"
+    r"|janus|nvila|aria.*vl|ovis|gemma.*4.*it|gpt.4o|gpt.4.*vision|claude.*3|gemini",
+    re.I,
+)
 
 
-def _model_caps(model_id: str) -> dict[str, object]:
-    """Infer model capabilities from its name."""
+def _model_caps(model_id: str, model_type: str = "llm") -> dict[str, object]:
+    """Infer model capabilities from its name and type."""
     thinking = bool(_THINKING_MODEL.search(model_id))
     no_temp = bool(_NO_TEMPERATURE.search(model_id))
+    vision = model_type == "vlm" or bool(_VISION_MODEL.search(model_id))
     return {
         "thinking": thinking,
         "temperature": not no_temp,
         "reasoning_effort": no_temp,
+        "vision": vision,
+        "tools": True,
     }
 
 
@@ -2468,7 +2639,8 @@ def _fetch_lmstudio_models(base_url: str) -> list[dict[str, object]]:
             if m.get("type") not in {"llm", "vlm"}:
                 continue
             seen.add(mid)
-            models.append({"id": mid, "type": str(m.get("type") or "llm"), "state": str(m.get("state") or ""), "caps": _model_caps(mid)})
+            mtype = str(m.get("type") or "llm")
+            models.append({"id": mid, "type": mtype, "state": str(m.get("state") or ""), "caps": _model_caps(mid, mtype)})
         if models:
             return models
     except Exception:
@@ -2512,6 +2684,12 @@ def _fetch_nvidia_nim_models(api_key: str) -> list[dict[str, object]]:
         pass
     models.sort(key=lambda m: m["id"])
     return models
+
+
+def api_repo_map(config: MissionControlServerConfig) -> dict[str, object]:
+    """Return a compact repo map (symbols/files) for the current repository."""
+    repo_map = build_repo_map(config.repo_path, max_chars=2000)
+    return {"ok": True, "repo_path": str(config.repo_path), "map": repo_map}
 
 
 def api_models(config: MissionControlServerConfig) -> dict[str, object]:
@@ -2992,6 +3170,19 @@ def api_runs_cleanup(server: "MissionControlHttpServer", payload: dict[str, obje
     }
 
 
+def api_runs_delete_one(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
+    """Hide a single run by adding its source_json to the hidden list."""
+    source_json = str(payload.get("source_json") or "").strip()
+    if not source_json:
+        raise _bad_request("source_json is required", error_code="missing_source_json")
+    settings = _load_settings(server.config)
+    existing = _hidden_run_source_json(settings)
+    existing.add(source_json)
+    settings["hidden_run_source_json"] = sorted(existing)
+    _save_settings(server.config, settings)
+    return {"ok": True, "hidden": source_json, "state": api_state(server.config, server.jobs)}
+
+
 def api_settings(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
     settings = _load_settings(server.config)
     allowed = {
@@ -3069,8 +3260,8 @@ def api_settings(server: "MissionControlHttpServer", payload: dict[str, object])
         raise _bad_request("validation_escalation_mode must be boolean", error_code="invalid_setting_value")
     if "real_validation" in payload and not isinstance(payload.get("real_validation"), bool):
         raise _bad_request("real_validation must be boolean", error_code="invalid_setting_value")
-    if "image_gen_backend" in payload and str(payload.get("image_gen_backend") or "").strip().lower() not in {"auto", "automatic1111", "a1111", "comfyui"}:
-        raise _bad_request("image_gen_backend must be auto, automatic1111, a1111, or comfyui", error_code="invalid_setting_value")
+    if "image_gen_backend" in payload and str(payload.get("image_gen_backend") or "").strip().lower() not in {"auto", "automatic1111", "a1111", "comfyui", "nim", "pollinations"}:
+        raise _bad_request("image_gen_backend must be auto, automatic1111, a1111, comfyui, nim, or pollinations", error_code="invalid_setting_value")
     if "model_roles" in payload:
         settings["model_roles"] = _validate_model_roles_payload(payload.get("model_roles"))
     elif "default_model" in payload:
@@ -5092,7 +5283,7 @@ def _verified_nemo_memory_response(message: str, payloads: list[tuple[str, dict[
         and _memory_matches_lookup(memory, lookup_query)
     ]
     if not useful_memories:
-        return ""
+        return f"Consulté NEMO MCP real por {lookup_query!r} pero no encontré memorias útiles."
 
     lines = [f"Sí. Consulté NEMO MCP real por {lookup_query!r} y encontré {len(useful_memories)} memoria(s) verificadas:"]
     for index, memory in enumerate(useful_memories[:5], start=1):
@@ -5431,9 +5622,10 @@ _plan_jobs_lock = threading.Lock()
 
 
 def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: int = 1024, timeout: int = 120, temperature: float = 0.6) -> str:
-    """Minimal LM Studio call for plan loop — no Space Code context, tight budget."""
+    """Minimal LM call for plan loop — works with LM Studio, NVIDIA NIM, or any OpenAI-compatible endpoint."""
     base_url = _chat_base_url(payload)
     model = _chat_model(payload)
+    api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
     body = json.dumps({
         "model": model,
         "messages": [
@@ -5445,9 +5637,9 @@ def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: i
         "stream": False,
     }).encode("utf-8")
     req = urllib.request.Request(
-        f"{_chat_base_url(payload)}/chat/completions",
+        f"{base_url}/chat/completions",
         data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {os.environ.get('LMSTUDIO_API_KEY', 'lm-studio')}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         method="POST",
     )
     with _LLM_SEM:
@@ -5468,7 +5660,8 @@ _SHELL_BARE_LINES: frozenset[str] = frozenset({"fi", "then", "done", "esac", ";;
 
 # Heuristic: a line that starts a Python code block (used by _extract_ast_valid).
 _PY_LINE_START = re.compile(
-    r"^(import |from |def |class |#|@|matplotlib|plt\.|np\.|[A-Za-z_]\w*\s*[=(])"
+    r"^(import |from |def |class |for |if |while |with |try:|return |yield |raise |"
+    r"print\(|#|@|matplotlib|plt\.|np\.|[A-Za-z_]\w*\s*[=(])"
 )
 
 
@@ -5546,9 +5739,10 @@ DO NOT call any NEMO MCP tools (search_memories, context_bootstrap, etc.) here �
    {"tool": "handoff_start", "params": {"objective": "...", "acceptance": "...", "target_files": "optional"}}
    Use when the user asks to implement, fix bugs, or change repo source code.
 
-2. plan_generate — iterative code generation with scoring (minutes, for scripts and standalone artifacts)
+2. plan_generate — iterative PYTHON code generation with scoring (minutes, for Python scripts only)
    {"tool": "plan_generate", "params": {"objective": "...", "max_iterations": 3, "quality_threshold": 7.0}}
-   Use when the user asks for a script, visualization, or standalone program.
+   Use ONLY for Python scripts, matplotlib charts, data analysis, or Python CLI programs.
+   DO NOT use for HTML pages, HTML games, or anything that runs in a browser — use html_artifact instead.
 
 3. job_status — query the status of a running background job
    {"tool": "job_status", "params": {"job_id": "job-..."}}
@@ -5609,19 +5803,140 @@ def _parse_llm_tool_calls(text: str) -> list[dict[str, object]]:
     return results
 
 
-def _try_run_code(code: str, timeout: int = 10) -> tuple[bool, str]:
-    """Attempt to execute Python code in a subprocess. Returns (success, output)."""
+_LANG_DETECT: dict[str, re.Pattern[str]] = {
+    "html": re.compile(
+        r"\b(html\s+game|html\s+page|html\s+app|html\s+dashboard|html\s+canvas|"
+        r"web\s+game|canvas\s+game|browser\s+game|html5\s+game|interactive\s+html|"
+        r"html\s+tool|html\s+widget|html\s+animation|html\s+simulation)\b",
+        re.I,
+    ),
+    "javascript": re.compile(
+        r"\b(javascript|node\.?js?|typescript|ts\b|react|vue|express|npm|deno|bun)\b", re.I
+    ),
+    "bash": re.compile(
+        r"\b(bash|shell script|sh script|powershell|zsh|fish|cmd|batch script)\b", re.I
+    ),
+    "sql": re.compile(
+        r"\b(sql|sqlite|mysql|postgres|postgresql|select .* from|create table)\b", re.I
+    ),
+    "rust": re.compile(r"\b(rust|cargo|rustc|crate)\b", re.I),
+    "go": re.compile(r"\b(golang?|go lang)\b", re.I),
+}
+
+
+def _detect_language(objective: str) -> str:
+    """Return the target language for code generation (defaults to 'python')."""
+    for lang, pat in _LANG_DETECT.items():
+        if pat.search(objective):
+            return lang
+    return "python"
+
+
+_FILE_MARKER_RE = re.compile(r"^##\s*FILE:\s*(.+?)\s*$", re.M)
+
+
+def _write_workspace(code: str, workspace: Path) -> tuple[Path, list[Path]]:
+    """Parse ## FILE: markers and write files to workspace. Returns (entry_file, all_files).
+
+    If no markers are present, writes the whole code to main.py (or test_generated.py
+    when it looks like a test-only file). Multi-file format example:
+
+        ## FILE: utils.py
+        def helper(): ...
+
+        ## FILE: main.py
+        from utils import helper
+    """
+    markers = list(_FILE_MARKER_RE.finditer(code))
+    if not markers:
+        # Single-file: choose filename based on content
+        has_main = re.search(r"^if\s+__name__\s*==\s*['\"]__main__['\"]", code, re.M)
+        only_tests = bool(re.search(r"^\s*def test_", code, re.M)) and not has_main
+        fname = "test_generated.py" if only_tests else "main.py"
+        entry = workspace / fname
+        entry.write_text(code, encoding="utf-8")
+        return entry, [entry]
+
+    files: list[Path] = []
+    for idx, m in enumerate(markers):
+        filename = m.group(1).strip()
+        start = m.end()
+        end = markers[idx + 1].start() if idx + 1 < len(markers) else len(code)
+        content = code[start:end].strip()
+        file_path = workspace / filename
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text(content, encoding="utf-8")
+        files.append(file_path)
+
+    # Entry = first non-test file; fall back to first file
+    entry = next((f for f in files if not f.name.startswith("test_")), files[0])
+    return entry, files
+
+
+def _try_run_code(
+    code: str,
+    language: str = "python",
+    timeout: int = 30,
+    workspace: Path | None = None,
+) -> tuple[bool, str]:
+    """Attempt to execute code in a subprocess. Returns (success, output).
+
+    When workspace is provided, Python code is written to a file and run from
+    there — enabling proper tracebacks with line numbers and multi-file imports.
+    """
     try:
+        if language == "python":
+            if workspace is not None:
+                entry, _ = _write_workspace(code, workspace)
+                cmd = [sys.executable, str(entry)]
+                cwd = str(workspace)
+            else:
+                cmd = [sys.executable, "-c", code]
+                cwd = None
+        elif language == "javascript":
+            cmd = ["node", "-e", code]
+            cwd = None
+        elif language == "bash":
+            cmd = ["bash", "-c", code]
+            cwd = None
+        elif language == "sql":
+            sql_runner = (
+                "import sqlite3, sys\n"
+                "conn = sqlite3.connect(':memory:')\n"
+                f"sql = {repr(code)}\n"
+                "try:\n"
+                "    for stmt in sql.split(';'):\n"
+                "        s = stmt.strip()\n"
+                "        if s:\n"
+                "            cur = conn.execute(s)\n"
+                "            rows = cur.fetchall()\n"
+                "            if rows: print('\\n'.join(str(r) for r in rows))\n"
+                "except Exception as e: print(f'Error: {e}', file=sys.stderr); sys.exit(1)\n"
+            )
+            cmd = [sys.executable, "-c", sql_runner]
+            cwd = None
+        elif language == "html":
+            trimmed = code.strip()
+            if not trimmed or ("<html" not in trimmed.lower() and "<!doctype" not in trimmed.lower()):
+                return False, "HTML must contain <html> or <!doctype html>"
+            if workspace is not None:
+                out_file = workspace / "output.html"
+                out_file.write_text(code, encoding="utf-8")
+            return True, f"HTML artifact generated ({len(trimmed)} chars)"
+        else:
+            return True, f"execution skipped (language: {language})"
         result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True, text=True, timeout=timeout,
+            cmd, capture_output=True, text=True, timeout=timeout,
+            cwd=cwd if language == "python" and workspace else None,
         )
         out = (result.stdout + result.stderr).strip()
-        return result.returncode == 0, out[:400]
+        return result.returncode == 0, out[:800]
     except subprocess.TimeoutExpired:
-        return False, "timeout after 10s"
+        return False, f"timeout after {timeout}s"
+    except FileNotFoundError as exc:
+        return True, f"runtime not found ({exc.filename}) — execution skipped"
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)[:200]
+        return False, str(exc)[:400]
 
 
 _CANDIDATE_TEMPS = [0.4, 0.7, 1.0]
@@ -5632,7 +5947,7 @@ def _generate_candidates(payload: dict[str, Any], system: str, user: str, n: int
     temps = _CANDIDATE_TEMPS[:n]
     with ThreadPoolExecutor(max_workers=n) as ex:
         futures = {
-            ex.submit(_plan_lm_call, payload, system, user, 512, 300, t): t
+            ex.submit(_plan_lm_call, payload, system, user, 2048, 300, t): t
             for t in temps
         }
         results: list[str] = []
@@ -5678,7 +5993,7 @@ def _visual_critique_lm_call(payload: dict[str, Any], objective: str, image_path
     req = urllib.request.Request(
         f"{vis_base_url}/chat/completions",
         data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {os.environ.get('LMSTUDIO_API_KEY', 'lm-studio')}"},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {str(payload.get('api_key') or os.environ.get('LMSTUDIO_API_KEY') or 'lm-studio')}"},
         method="POST",
     )
     try:
@@ -5691,6 +6006,67 @@ def _visual_critique_lm_call(payload: dict[str, Any], objective: str, image_path
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+class _PlanNemoAdapter:
+    """Adapter that bridges the plan loop's _nemo() callable to the nemo_patterns interface.
+
+    nemo_patterns functions expect adapter.call(phase, tool_name, **kw) → (adapter, NemoCallResult).
+    The plan loop's _nemo() expects (tool_name, phase_str, **kw) → dict.
+    """
+
+    def __init__(self, nemo_fn: Any) -> None:
+        self._fn = nemo_fn
+
+    def call(self, phase: Any, tool_name: str, **kw: Any) -> tuple["_PlanNemoAdapter", NemoCallResult]:
+        phase_str = str(getattr(phase, "value", phase))
+        try:
+            raw = self._fn(tool_name, phase_str, **kw)
+            payload = raw if isinstance(raw, dict) else {}
+            ok = not payload.get("error")
+            call = NemoCall(phase=phase, tool_name=tool_name, arguments=kw)
+            return self, NemoCallResult(call=call, ok=ok, payload=payload)
+        except Exception as exc:  # noqa: BLE001
+            call = NemoCall(phase=phase, tool_name=tool_name, arguments=kw)
+            return self, NemoCallResult(call=call, ok=False, payload={"error": str(exc)})
+
+
+def _run_pytest_harness(code: str, tmpdir: "Path", timeout: int = 30) -> dict[str, Any]:
+    """Run pytest on generated code if it contains test functions.
+
+    Returns dict with keys: skipped (bool), passed, failed, errors (int), output (str).
+    Never raises — errors are captured in the returned dict.
+    """
+    try:
+        # Write code to a file so pytest can discover it
+        code_file = tmpdir / "test_generated.py"
+        code_file.write_text(code, encoding="utf-8")
+
+        # Check if there are test functions/classes
+        has_tests = bool(re.search(r"^\s*def test_|^\s*class Test", code, re.M))
+        if not has_tests:
+            return {"skipped": True, "reason": "no test functions in generated code", "passed": 0, "failed": 0, "errors": 0, "output": ""}
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", str(code_file), "--tb=short", "-q", "--no-header"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        out = (result.stdout + result.stderr).strip()[:1200]
+
+        # Parse summary line: "3 passed, 1 failed, 0 errors"
+        passed = failed = errors = 0
+        for m in re.finditer(r"(\d+)\s+(passed|failed|error)", out):
+            n, kind = int(m.group(1)), m.group(2)
+            if kind == "passed":
+                passed = n
+            elif kind == "failed":
+                failed = n
+            elif kind == "error":
+                errors = n
+
+        return {"skipped": False, "passed": passed, "failed": failed, "errors": errors, "output": out}
+    except Exception as exc:  # noqa: BLE001
+        return {"skipped": True, "reason": str(exc), "passed": 0, "failed": 0, "errors": 0, "output": ""}
 
 
 def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, object], job_id: str = ""):  # type: ignore[return]
@@ -5724,26 +6100,129 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     # Bootstrap NEMO context
     _nemo("context_bootstrap", "start", task=objective, topic=topic, token_budget=600, limit=6)
 
+    # Adapter so nemo_patterns.py functions can use the plan loop's _nemo() callable
+    _nemo_adapter = _PlanNemoAdapter(_nemo)
+
     iterations: list[dict[str, Any]] = []
     best_code = ""
     best_score = 0.0
     best_exec_ok = False
     final_score = 0.0
     think_snippet = ""
+    _plan_tmpdir: Path | None = None
+    last_exec_output = ""  # last failure output — used for reflexion root_cause
+    harness_total_failed = 0  # aggregate pytest failures across all iterations
 
-    gen_sys = (
-        "You are a Python code generator. Output ONLY raw Python code — no markdown fences, "
-        "no explanations, no comments. Keep it under 50 lines. "
-        "IMPORTANT rules: (1) always start with 'import matplotlib; matplotlib.use(\"Agg\")' "
-        "before other imports so it runs headless; "
-        "(2) save the figure with plt.savefig('hand.png') and call plt.close() — never plt.show(); "
-        "(3) use simple FancyBboxPatch or Polygon shapes — no deep nested list literals."
+    _VIZ_KWS = re.compile(
+        r"\b(plot|chart|graph|visuali[sz]|draw|diagr|spiral|matplotlib|pyplot|figure|bar|pie|"
+        r"scatter|histogram|heatmap|contour|3d|surface|render|image|pixel)\b",
+        re.I,
     )
+    is_viz = bool(_VIZ_KWS.search(objective))
+    lang = _detect_language(objective)
+
+    _TEST_KWS = re.compile(
+        r"\b(pytest|unit.?test|test.?function|test.?case|def test_|tdd|test.?suite|"
+        r"write.{0,15}test|add.{0,15}test|generat.{0,15}test|assert.{0,15}correct)\b",
+        re.I,
+    )
+    is_test = lang == "python" and bool(_TEST_KWS.search(objective))
+
+    _COMPLEX_KWS = re.compile(
+        r"\b(module|package|project|multiple.?file|multi.?file|class.*and.*class|"
+        r"cli.?(tool|app)|library|framework|implement.{0,20}with.{0,20}(util|helper|model|service)|"
+        r"split.{0,15}file|separate.{0,15}file|complex|full.?stack|web.?app|api.?server|"
+        r"design.?pattern|architecture)\b",
+        re.I,
+    )
+    is_complex = lang == "python" and bool(_COMPLEX_KWS.search(objective)) and not is_viz
+
+    if is_viz:
+        gen_sys = (
+            "You are a Python code generator. Output ONLY raw Python code — no markdown fences, "
+            "no explanations, no comments. Keep it under 60 lines. "
+            "IMPORTANT rules: (1) always start with 'import matplotlib; matplotlib.use(\"Agg\")' "
+            "before other imports so it runs headless; "
+            "(2) save the figure with plt.savefig('hand.png') and call plt.close() — never plt.show(); "
+            "(3) use simple FancyBboxPatch or Polygon shapes — no deep nested list literals."
+        )
+    elif is_complex:
+        gen_sys = (
+            "You are a Python multi-file project generator. "
+            "Output ONLY raw Python code structured as multiple files using this exact format:\n"
+            "## FILE: filename.py\n"
+            "<file contents>\n\n"
+            "## FILE: another.py\n"
+            "<file contents>\n\n"
+            "Rules: "
+            "(1) First file listed is the entry point (main.py or similar). "
+            "(2) Use relative imports between files — they run from the same directory. "
+            "(3) Every file is complete and syntactically valid Python. "
+            "(4) No markdown fences, no explanations outside FILE markers. "
+            "(5) Do NOT use input(), GUI libraries, or blocking calls. "
+            "(6) The entry point must print meaningful output to stdout."
+        )
+    elif is_test:
+        gen_sys = (
+            "You are a Python code generator that writes implementation code AND pytest tests in a single file. "
+            "Output ONLY raw Python code — no markdown fences, no explanations, no comments. "
+            "Keep it under 100 lines. "
+            "CRITICAL rules: "
+            "(1) Write the implementation functions first (no 'test_' prefix). "
+            "(2) Then write pytest test functions — each MUST start with 'def test_' exactly. "
+            "    Example: 'def test_add_positive(): assert add(1,2) == 3' "
+            "(3) Do NOT use unittest.TestCase — use plain pytest 'def test_*' functions only. "
+            "(4) Do NOT use input(), GUI libraries, or any blocking calls. "
+            "(5) Do NOT wrap tests in 'if __name__ == \"__main__\"'. "
+            "(6) All imports (including pytest if used) at the top of the file."
+        )
+    elif lang == "html":
+        gen_sys = (
+            "You are an expert HTML/CSS/JavaScript developer. "
+            "Output ONLY a complete self-contained HTML document — no markdown fences, no explanations, no prose. "
+            "Start directly with <!doctype html> or <html>. "
+            "RULES: "
+            "(1) Single HTML file with all CSS inside <style> and all JS inside <script> tags. "
+            "(2) No localStorage or sessionStorage — use plain JS variables instead. "
+            "(3) No external URLs, CDN scripts, or network requests — everything must be inline. "
+            "(4) No alert(), confirm(), or prompt() calls. "
+            "(5) For games: use requestAnimationFrame for game loops and <canvas> for rendering. "
+            "(6) The document must be fully functional with no missing pieces."
+        )
+    elif lang == "python":
+        gen_sys = (
+            "You are a Python code generator. Output ONLY raw Python code — no markdown fences, "
+            "no explanations, no comments. Keep it under 80 lines. "
+            "IMPORTANT rules: "
+            "(1) The code must be self-contained and runnable with no missing imports. "
+            "(2) Do NOT use input(), GUI libraries (tkinter, pygame, wx), or any blocking calls. "
+            "(3) Print meaningful output to stdout so results are visible. "
+            "(4) Handle all edge cases — the code will be executed and the output verified."
+        )
+    else:
+        lang_display = lang.capitalize()
+        gen_sys = (
+            f"You are a {lang_display} code generator. "
+            f"Output ONLY raw {lang_display} code — no markdown fences, no explanations, no comments. "
+            "Keep it concise and complete. "
+            "IMPORTANT rules: "
+            "(1) The code must be self-contained and correct. "
+            "(2) Do NOT add placeholders or TODOs — produce fully working code. "
+            "(3) Include all necessary imports or dependencies at the top. "
+            "(4) If the code produces output, print it to stdout."
+        )
+    _repo_summary = build_repo_map(config.repo_path, max_chars=1200)
+    if _repo_summary:
+        gen_sys = "## Repo context\n" + _repo_summary + "\n\n" + gen_sys
+
     critique_sys = (
         "You are a code reviewer. Reply ONLY with a JSON object — no markdown, no prose. "
         'Format: {"score":<int 1-10>,"present":[<str>],"missing":[<str>],'
         '"improvements":[<str>],"summary":"<str>"}'
     )
+
+    # SDD phase tracking: SPEC (iter 1 with test mode) → IMPLEMENT → VALIDATE
+    _sdd_phase = SDDPhase.SPEC if is_test else SDDPhase.IMPLEMENT
 
     yield {"type": "start", "objective": objective, "max_iterations": max_iterations, "quality_threshold": quality_threshold, "job_id": job_id}
 
@@ -5765,24 +6244,39 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         else:
             _steer_directive = ""
 
-        # --- Retrieve NEMO pattern memory (known bad patterns from past sessions) ---
-        nemo_hint = ""
-        try:
-            mem_result = _nemo("search_memories", "read",
-                               query=f"{topic} matplotlib error failure syntax",
-                               compact=True, limit=4, min_importance=5)
-            snippets = [m.get("content", "")[:100] for m in (mem_result.get("memories") or [])]
-            if snippets:
-                nemo_hint = "\nKnown bad patterns to avoid:\n" + "\n".join(f"- {s}" for s in snippets[:3])
-        except Exception:  # noqa: BLE001
-            pass
+        # --- Retrieve NEMO pattern memory via nemo_patterns.nemo_before_attempt ---
+        nemo_hint = nemo_before_attempt(
+            _nemo_adapter,
+            query=f"{topic} {lang} code generation error failure",
+            tags=("plan_loop", lang, topic),
+            limit=4,
+        )
 
         # --- Build generation prompt ---
         if i == 1:
+            if is_viz:
+                extra = "Use simple shapes (polygons/patches), no complex list literals. Keep total code under 55 lines."
+                lang_tag = "Python"
+            elif is_complex:
+                extra = (
+                    "REQUIRED: use '## FILE: filename.py' markers to split into multiple files. "
+                    "First file is the entry point. Each file must be complete and importable. "
+                    "No markdown fences — FILE markers only."
+                )
+                lang_tag = "Python"
+            elif is_test:
+                extra = (
+                    "REQUIRED: include BOTH implementation functions AND pytest test functions. "
+                    "Every test function MUST start with 'def test_' (not inside a class, not inside main). "
+                    "Keep total code under 100 lines."
+                )
+                lang_tag = "Python"
+            else:
+                extra = "Output must run without errors. Print results to stdout. Keep total code under 75 lines."
+                lang_tag = lang.capitalize()
             gen_user = (
                 f"Task: {objective}\n\n"
-                "Rules: output ONLY valid Python. Use simple shapes (polygons/patches), "
-                f"no complex list literals. Keep total code under 45 lines.{nemo_hint}"
+                f"Rules: output ONLY valid {lang_tag} code. {extra}{nemo_hint}"
             )
         else:
             last = iterations[-1]
@@ -5790,14 +6284,22 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             base_code = best_code if best_score > last["score"] + 0.5 else last["code"]
             exec_hint = ""
             if not last["exec_ok"] and last["exec_output"]:
-                exec_hint = f"\nEXECUTION ERROR (fix this first): {last['exec_output'][:200]}\n"
+                exec_hint = f"\nEXECUTION ERROR (fix this first): {last['exec_output'][:400]}\n"
             steer_hint = f"\nUSER DIRECTIVE (apply this now): {_steer_directive}\n" if _steer_directive else ""
+            line_limit = 60 if is_viz else (100 if is_test else 80)
+            lang_tag = "Python" if lang == "python" else lang.capitalize()
+            test_reminder = (
+                " CRITICAL: keep all 'def test_*' functions — do NOT remove them or rename to non-test_ prefix."
+                if is_test else
+                " CRITICAL: keep '## FILE:' markers — output must remain multi-file format."
+                if is_complex else ""
+            )
             gen_user = (
                 f"Improve this code (best score so far: {best_score:.1f}/10, current: {last['score']:.1f}/10)."
                 f"{exec_hint}{steer_hint}\n"
-                f"Critique: {last['critique_text'][:250]}\n\n"
-                f"Base code:\n{base_code[:700]}\n\n"
-                f"Return ONLY valid complete Python. Under 45 lines.{nemo_hint}"
+                f"Critique: {last['critique_text'][:300]}\n\n"
+                f"Base code:\n{base_code[:1000]}\n\n"
+                f"Return ONLY valid complete {lang_tag} code. Under {line_limit} lines.{test_reminder}{nemo_hint}"
             )
 
         # --- Brief cooldown: let NEMO embedding (iGPU) drain before LLM inference ---
@@ -5806,64 +6308,106 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         # --- Generate: parallel candidates or single call ---
         code = ""
         code_response = ""
+        lm_error: str = ""
         try:
             if use_parallel and i > 1:
                 responses = _generate_candidates(payload, gen_sys, gen_user, n=3)
             else:
-                responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=512, timeout=300, temperature=0.6)]
-        except Exception:  # noqa: BLE001
-            break  # LM Studio unavailable; stop loop
+                responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=2048, timeout=300, temperature=0.6)]
+        except Exception as _lm_exc:  # noqa: BLE001
+            lm_error = str(_lm_exc)[:300]
+            yield {"type": "error", "error": f"LM call failed at iteration {i}: {lm_error}"}
+            break
 
         # Capture think snippet from first response (before stripping)
         think_snippet = _extract_think_snippet(responses[0]) if responses else ""
 
+        def _ast_ok(c: str) -> bool:
+            if lang != "python":
+                return bool(c.strip())
+            if not c.strip():
+                return False
+            # Multi-file: validate each block separately
+            markers = list(_FILE_MARKER_RE.finditer(c))
+            if markers:
+                blocks = []
+                for idx, m in enumerate(markers):
+                    start = m.end()
+                    end = markers[idx + 1].start() if idx + 1 < len(markers) else len(c)
+                    blocks.append(c[start:end].strip())
+            else:
+                blocks = [c]
+            try:
+                for block in blocks:
+                    if block:
+                        ast.parse(block)
+                return True
+            except SyntaxError:
+                return False
+
         # Pick best syntactically-valid candidate
         for resp in responses:
             candidate = _extract_code_block(resp)
-            try:
-                ast.parse(candidate)
+            if _ast_ok(candidate):
                 code = candidate
                 code_response = resp
                 break
-            except SyntaxError:
-                pass
         if not code:
-            # All candidates have syntax errors — try single fix retry on the longest one
+            # All candidates invalid — try single fix retry on the longest one
             longest = max(responses, key=len) if responses else ""
             candidate = _extract_code_block(longest)
             syntax_err_msg = ""
-            try:
-                ast.parse(candidate)
+            if _ast_ok(candidate):
                 code = candidate
                 code_response = longest
-            except SyntaxError as se:
-                syntax_err_msg = f"{se.msg} at line {se.lineno}"
-                fix_user = f"SyntaxError: {syntax_err_msg}\n\nBroken code:\n{candidate}\n\nReturn ONLY corrected Python."
+            else:
+                syntax_err_msg = ""
+                if lang == "python":
+                    try:
+                        ast.parse(candidate)
+                    except SyntaxError as se:
+                        syntax_err_msg = f"{se.msg} at line {se.lineno}"
+                fix_user = (
+                    f"SyntaxError: {syntax_err_msg}\n\nBroken code:\n{candidate}\n\n"
+                    f"Return ONLY corrected {lang.capitalize()} code."
+                )
                 try:
-                    fix_resp = _plan_lm_call(payload, gen_sys, fix_user, max_tokens=512, timeout=120, temperature=0.0)
+                    fix_resp = _plan_lm_call(payload, gen_sys, fix_user, max_tokens=2048, timeout=120, temperature=0.0)
                     fixed = _extract_code_block(fix_resp)
-                    ast.parse(fixed)
-                    code = fixed
-                    code_response = fix_resp
-                except SyntaxError:
-                    # Still broken — record and continue to next iteration
+                    if _ast_ok(fixed):
+                        code = fixed
+                        code_response = fix_resp
+                    else:
+                        raise SyntaxError("still invalid after fix")
+                except (SyntaxError, Exception):  # noqa: BLE001
+                    err_msg = f"SyntaxError: {syntax_err_msg}" if syntax_err_msg else "code extraction failed"
                     record: dict[str, Any] = {
                         "iteration": i, "code": candidate, "critique_text": "{}",
-                        "score": 1.0, "exec_ok": False,
-                        "exec_output": f"SyntaxError: {syntax_err_msg}",
+                        "score": 1.0, "exec_ok": False, "exec_output": err_msg,
                     }
                     iterations.append(record)
                     yield {
                         "type": "iteration", "iteration": i, "score": 1.0,
-                        "exec_ok": False, "exec_output": f"SyntaxError: {syntax_err_msg}",
+                        "exec_ok": False, "exec_output": err_msg,
                         "critique_summary": "{}", "code_chars": len(candidate),
                     }
                     continue
-                except Exception:  # noqa: BLE001
-                    break
+
+        # --- Ensure workspace exists (shared across iterations) ---
+        if _plan_tmpdir is None:
+            _plan_tmpdir = Path(tempfile.mkdtemp(prefix="plan_ws_"))
 
         # --- Execute code first so critique sees runtime result ---
-        exec_ok, exec_output = _try_run_code(code)
+        exec_ok, exec_output = _try_run_code(code, lang, workspace=_plan_tmpdir if lang in ("python", "html") else None)
+
+        # --- Pytest harness: reuse the file already written to workspace ---
+        harness_result: dict[str, Any] = {}
+        if lang == "python" and exec_ok:
+            harness_result = _run_pytest_harness(code, _plan_tmpdir)
+            if not harness_result.get("skipped") and harness_result.get("failed", 0) > 0:
+                exec_ok = False
+                exec_output = harness_result["output"][:600]
+            harness_total_failed += harness_result.get("failed", 0)
 
         # --- Visual critique if image was produced ---
         visual_raw: str | None = None
@@ -5871,10 +6415,12 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             visual_raw = _visual_critique_lm_call(payload, objective)
 
         # --- Text self-critique ---
-        exec_note = "Execution: OK" if exec_ok else f"Execution FAILED: {exec_output[:150]}"
-        critique_user = f"Task: {objective[:120]}\n{exec_note}\n\nCode:\n{code[:900]}"
+        exec_note = "Execution: OK" if exec_ok else f"Execution FAILED: {exec_output[:300]}"
+        if harness_result and not harness_result.get("skipped"):
+            exec_note += f" | Tests: {harness_result.get('passed',0)} passed, {harness_result.get('failed',0)} failed"
+        critique_user = f"Task: {objective[:200]}\n{exec_note}\n\nCode:\n{code[:1500]}"
         try:
-            critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=250, timeout=120, temperature=0.0)
+            critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=120, temperature=0.0)
         except Exception:  # noqa: BLE001
             critique_raw = '{"score":5,"present":[],"missing":[],"improvements":[],"summary":"unavailable"}'
 
@@ -5884,29 +6430,61 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         score = max(text_score, visual_score) if visual_score > 0 else text_score
         if not exec_ok:
             score = min(score, 5.0)
+        # Pytest bonus: all tests pass → small boost capped at 10
+        if harness_result and not harness_result.get("skipped") and harness_result.get("passed", 0) > 0 and harness_result.get("failed", 0) == 0:
+            score = min(10.0, score + 0.5)
 
         # --- Update best-known snapshot ---
+        if not exec_ok:
+            last_exec_output = exec_output
         if score > best_score:
             best_score, best_code, best_exec_ok = score, code, exec_ok
 
         # --- Brief cooldown: let LLM inference (iGPU) drain before NEMO embedding ---
         time.sleep(2.0)
 
-        # --- NEMO checkpoint ---
-        _nemo(
-            "cognitive_ingest", "review",
-            content=(
-                f"Plan autonomo — iteracion {i}/{max_iterations}\n"
-                f"Objetivo: {objective}\n"
-                f"Puntuacion: {score}/10  Ejecutable: {'si' if exec_ok else 'no'}\n"
-                f"Critica texto: {critique_raw[:300]}\n"
-                + (f"Critica visual: {visual_raw[:200]}\n" if visual_raw else "")
-                + f"Codigo ({len(code)} chars):\n{code[:700]}"
-            ),
-            memory_type="evidence",
-            tags=("plan", "autonomous", "iteration", topic),
-            context=f"Autonomous plan loop iteration {i}",
-        )
+        # --- NEMO structured checkpoint via nemo_patterns ---
+        critique_summary = critique_raw[:300]
+        if not exec_ok or score < 5.0:
+            nemo_after_failure(
+                _nemo_adapter,
+                evidence=(
+                    f"objective={objective[:120]} lang={lang} score={score:.1f}/10\n"
+                    f"exec_error={exec_output[:200]}\ncritique={critique_summary}"
+                ),
+                task_id=topic,
+                attempt_n=i,
+                tags=("plan_loop", "plan_failure", lang, topic),
+            )
+        elif score >= quality_threshold:
+            nemo_after_success(
+                _nemo_adapter,
+                solution_summary=(
+                    f"objective={objective[:120]} lang={lang} score={score:.1f}/10\n"
+                    f"critique={critique_summary}\ncode_preview={code[:400]}"
+                ),
+                task_id=topic,
+                tags=("plan_loop", "plan_success", lang, topic),
+            )
+        else:
+            # Partial progress — still ingest as evidence
+            _nemo(
+                "cognitive_ingest", "review",
+                content=(
+                    f"Plan loop iter {i}/{max_iterations} — {objective[:100]}\n"
+                    f"lang={lang} score={score:.1f}/10 exec={'ok' if exec_ok else 'fail'}\n"
+                    f"critique={critique_summary}"
+                ),
+                memory_type="evidence",
+                tags=("plan", "autonomous", "iteration", topic),
+                context=f"Autonomous plan loop iteration {i}",
+            )
+
+        # Advance SDD phase: after first test-only iteration → IMPLEMENT; after passing → VALIDATE
+        if _sdd_phase == SDDPhase.SPEC and exec_ok:
+            _sdd_phase = SDDPhase.IMPLEMENT
+        elif _sdd_phase == SDDPhase.IMPLEMENT and exec_ok and score >= quality_threshold:
+            _sdd_phase = SDDPhase.VALIDATE
 
         record = {
             "iteration": i,
@@ -5915,6 +6493,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             "score": score,
             "exec_ok": exec_ok,
             "exec_output": exec_output,
+            "harness": harness_result,
+            "sdd_phase": str(_sdd_phase),
         }
         iterations.append(record)
         final_score = score
@@ -5929,39 +6509,90 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             "visual_critique": visual_raw[:200] if visual_raw else None,
             "code_chars": len(code),
             "think_snippet": think_snippet[:400],
+            "harness": harness_result if not harness_result.get("skipped") else None,
+            "sdd_phase": str(_sdd_phase),
         }
 
         if score >= quality_threshold:
             break
 
     # Copy any generated image artifacts to the served artifacts folder.
-    # Done in a finally block so it runs even if the SSE client disconnects early.
+    # Done before tmpdir cleanup so it runs even if the SSE client disconnects early.
     artifact_file: str | None = None
+    artifact_html_content: str | None = None
     try:
         artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
-        for ext in ("png", "jpg", "jpeg", "svg"):
-            for img in Path(".").glob(f"*.{ext}"):
-                dest = artifacts_dir / img.name
-                shutil.copy2(img, dest)
-                if artifact_file is None:
-                    artifact_file = img.name
+        search_dirs = [Path(".")]
+        if _plan_tmpdir is not None and _plan_tmpdir.exists():
+            search_dirs.append(_plan_tmpdir)
+        for search_dir in search_dirs:
+            for ext in ("png", "jpg", "jpeg", "svg"):
+                for img in search_dir.glob(f"*.{ext}"):
+                    dest = artifacts_dir / img.name
+                    shutil.copy2(img, dest)
+                    if artifact_file is None:
+                        artifact_file = img.name
+            if artifact_html_content is None:
+                for html_f in search_dir.glob("*.html"):
+                    try:
+                        artifact_html_content = html_f.read_text(encoding="utf-8")
+                        break
+                    except Exception:  # noqa: BLE001
+                        pass
     except Exception:  # noqa: BLE001
         pass
 
-    # Final NEMO summary
-    _nemo(
-        "cognitive_ingest", "review",
-        content=(
-            f"Plan autonomo COMPLETADO: {objective}\n"
-            f"Iteraciones: {len(iterations)}  Puntuacion final: {final_score}/10\n"
-            f"Mejor puntuacion: {best_score}/10\n"
-            f"Resultado: {'ACEPTABLE' if final_score >= quality_threshold else 'PARCIAL'}"
+    # Cleanup tmpdir harness
+    if _plan_tmpdir is not None:
+        try:
+            shutil.rmtree(_plan_tmpdir, ignore_errors=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Final structured reflexion via reflexion.py
+    completed = final_score >= quality_threshold and best_exec_ok
+    stop_reason = "quality_threshold_reached" if completed else "max_iterations_reached"
+    tests_broken: tuple[str, ...] = ("pytest_failures",) if harness_total_failed > 0 else ()
+    _reflexion_entry = ReflexionEntry(
+        task_type="plan_loop",
+        objective=objective,
+        outcome="passed" if completed else "failed",
+        what_worked=(
+            f"lang={lang} best_score={best_score:.1f}/10 code_chars={len(best_code)}"
+            if completed else "no iteration reached quality threshold"
         ),
-        memory_type="preference",
-        tags=("plan", "autonomous", "completed", topic),
-        context="Autonomous plan loop finished",
+        what_failed=(
+            "none — quality threshold reached"
+            if completed else
+            f"score={final_score:.1f} never reached {quality_threshold} | last_error={last_exec_output[:150]}"
+        ),
+        root_cause=(
+            "n/a" if completed else
+            (last_exec_output[:200] if last_exec_output else f"score capped at {final_score:.1f}/10")
+        ),
+        corrective_action=(
+            f"Reuse this approach for {lang} tasks with similar objective: {objective[:80]}"
+            if completed else
+            f"Before retrying, retrieve past reflexions for plan_loop {lang} and avoid: {last_exec_output[:100]}"
+        ),
+        files_touched=(),
+        tests_broken=tests_broken,
+        validation_summary=(
+            f"exec_ok on best iteration; pytest_failures={harness_total_failed}"
+            if best_exec_ok else
+            f"exec failed; pytest_failures={harness_total_failed}"
+        ),
+        repair_attempts_used=max(0, len(iterations) - 1),
+        stop_reason=stop_reason,
+        confidence=min(0.95, final_score / 10.0),
+        task_id=topic,
+        run_id=job_id,
     )
+    try:
+        persist_reflexion(_nemo_adapter, _reflexion_entry)
+    except Exception:  # noqa: BLE001
+        pass
 
     yield {
         "type": "done",
@@ -5973,6 +6604,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         "quality_threshold": quality_threshold,
         "completed": final_score >= quality_threshold,
         "artifact_file": artifact_file,
+        "artifact_html_content": artifact_html_content,
         "iterations": [
             {
                 "iteration": it["iteration"],
@@ -5981,9 +6613,12 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                 "exec_output": it["exec_output"],
                 "critique_summary": it["critique_text"][:300],
                 "code_chars": len(it["code"]),
+                "harness": it["harness"] if not (it.get("harness") or {}).get("skipped") else None,
+                "sdd_phase": it.get("sdd_phase"),
             }
             for it in iterations
         ],
+        "final_sdd_phase": str(_sdd_phase),
         "final_code": iterations[-1]["code"] if iterations else "",
         "final_critique": iterations[-1]["critique_text"] if iterations else "",
         "tool_calls": tool_calls,
@@ -6577,7 +7212,7 @@ def api_agent_message(
         trace_step += 1
         try:
             history = [h for h in (payload.get("history") or []) if isinstance(h, dict) and h.get("role") in {"user", "assistant"} and isinstance(h.get("content"), str)]
-            response = _lmstudio_chat_completion(payload, message, context_summary, history=history)
+            response, _fb_error, _fb_model = _lmstudio_chat_completion(payload, message, context_summary, history=history)
             raw_tool_fallback = _raw_tool_name_fallback(response, message)
             if raw_tool_fallback:
                 response = raw_tool_fallback
@@ -6589,14 +7224,35 @@ def api_agent_message(
                         "summary": "Normalized raw tool-name-only model output into an operational chat response.",
                     }
                 )
-            tool_calls.append(
-                {
-                    "id": f"tool-{uuid4().hex[:8]}",
-                    "name": "lmstudio.chat_completions",
-                    "status": "completed",
-                    "summary": f"Model={_chat_model(payload)} base_url={_chat_base_url(payload)}.",
-                }
-            )
+            if _fb_error:
+                # Primary endpoint failed, local fallback was used — make it visible
+                primary_model = _chat_model(payload)
+                primary_base = _chat_base_url(payload)
+                tool_calls.append(
+                    {
+                        "id": f"tool-{uuid4().hex[:8]}",
+                        "name": "lmstudio.chat_completions",
+                        "status": "failed",
+                        "summary": f"Primary endpoint unreachable: {_fb_error} (model={primary_model} base={primary_base})",
+                    }
+                )
+                tool_calls.append(
+                    {
+                        "id": f"tool-{uuid4().hex[:8]}",
+                        "name": "lmstudio.local_fallback",
+                        "status": "completed",
+                        "summary": f"Responded via local LM Studio fallback · model={_fb_model} · base=http://127.0.0.1:1234/v1",
+                    }
+                )
+            else:
+                tool_calls.append(
+                    {
+                        "id": f"tool-{uuid4().hex[:8]}",
+                        "name": "lmstudio.chat_completions",
+                        "status": "completed",
+                        "summary": f"Model={_chat_model(payload)} base_url={_chat_base_url(payload)}.",
+                    }
+                )
             tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
         except ValueError as error:
             tool_calls.append(
@@ -6609,8 +7265,8 @@ def api_agent_message(
             )
             tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
             response = (
-                "[real-mode fallback] LM Studio is unavailable right now. "
-                "I prepared safe next actions from Mission Control state so you can continue without blocking."
+                "[real-mode fallback] El modelo no está disponible ahora mismo. "
+                "Revisa los tool calls para ver el error específico y qué endpoint se intentó."
             )
     if _is_artifact_request(message) and not _has_typed_artifact_fence(response):
         response = _artifact_fallback_response(message, tool_calls)
@@ -6973,6 +7629,131 @@ def api_worktree_cleanup(config: "MissionControlServerConfig", job_id: str, jobs
     return {"cleaned_up": True, "branch": branch}
 
 
+def _find_run_payload_by_id(config: "MissionControlServerConfig", run_id: str) -> dict[str, Any] | None:
+    for root in (config.runtimes_path, config.run_results_path):
+        if not root.exists():
+            continue
+        for path in root.rglob("*.json"):
+            try:
+                payload = load_headless_result_json(path)
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            run = payload.get("run")
+            if isinstance(run, dict) and str(run.get("id", "")) == run_id:
+                return payload
+    return None
+
+
+def api_replay_gen(config: "MissionControlServerConfig", run_id: str):  # type: ignore[return]
+    """Generator that yields SSE events for a dry-comparison replay of a persisted run."""
+    import subprocess as _subprocess
+    payload = _find_run_payload_by_id(config, run_id)
+    if payload is None:
+        yield {"type": "error", "error": f"run not found: {run_id}", "error_code": "not_found"}
+        return
+
+    summary = build_replay_summary(payload)
+    original_score = float(summary.get("score") or 0.0)
+    original_grade = str(summary.get("grade") or "unknown")
+    task_id = str(summary.get("task_id") or "")
+    can_replay = bool(summary.get("can_replay"))
+    orig_readiness = score_persisted_result(payload)
+
+    yield {
+        "type": "start",
+        "run_id": run_id,
+        "task_id": task_id,
+        "original_score": round(original_score, 3),
+        "original_grade": original_grade,
+        "can_replay": can_replay,
+    }
+
+    run_meta = payload.get("run", {}) if isinstance(payload.get("run"), dict) else {}
+    sandbox_path_str = str(run_meta.get("sandbox_path") or "")
+    sandbox = Path(sandbox_path_str) if sandbox_path_str else None
+    sandbox_exists = sandbox is not None and sandbox.exists()
+
+    # Artifact existence checks
+    artifact_paths: list[str] = [p for p in (summary.get("artifact_paths") or []) if p]
+    for art_path in artifact_paths:
+        yield {"type": "artifact", "path": art_path, "exists": Path(art_path).exists()}
+
+    # Re-run validation commands
+    validation = payload.get("validation", {}) if isinstance(payload.get("validation"), dict) else {}
+    validation_results = validation.get("results", []) if isinstance(validation, dict) else []
+    replay_checks_passed = 0
+    replay_checks_total = 0
+    for i, result in enumerate(validation_results):
+        if not isinstance(result, dict):
+            continue
+        cmd_obj = result.get("command", {})
+        command = cmd_obj.get("command") if isinstance(cmd_obj, dict) else None
+        original_status = str(result.get("status") or "unknown")
+        if not command:
+            continue
+        replay_checks_total += 1
+        if sandbox_exists:
+            try:
+                proc = _subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=str(sandbox),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                replay_status = "passed" if proc.returncode == 0 else "failed"
+                output = (proc.stdout + proc.stderr)[:1000]
+            except (_subprocess.TimeoutExpired, OSError) as err:
+                replay_status = "failed"
+                output = str(err)
+        else:
+            replay_status = "skipped"
+            output = "sandbox not available for replay"
+        if replay_status == "passed":
+            replay_checks_passed += 1
+        yield {
+            "type": "check",
+            "index": i,
+            "command": command,
+            "original_status": original_status,
+            "replay_status": replay_status,
+            "output": output,
+        }
+
+    # Compute replay score — only validation_passed changes; other checks are unchanged
+    if replay_checks_total > 0:
+        replay_validation_passed = replay_checks_passed == replay_checks_total
+    else:
+        replay_validation_passed = orig_readiness.validation_passed
+    checks = (
+        replay_validation_passed,
+        orig_readiness.has_checkpoint,
+        orig_readiness.has_review_package,
+        orig_readiness.memory_writeback_present,
+        orig_readiness.mutation_present,
+    )
+    replay_score = round(sum(1 for c in checks if c) / len(checks), 3)
+    replay_grade = "ready" if replay_score == 1.0 else "blocked" if replay_score < 0.75 else "needs_review"
+    score_delta = round(replay_score - round(orig_readiness.score, 3), 3)
+
+    yield {
+        "type": "done",
+        "run_id": run_id,
+        "task_id": task_id,
+        "original_score": round(orig_readiness.score, 3),
+        "original_grade": original_grade,
+        "replay_score": replay_score,
+        "replay_grade": replay_grade,
+        "score_delta": score_delta,
+        "sandbox_available": sandbox_exists,
+        "checks_run": replay_checks_total,
+        "checks_passed": replay_checks_passed,
+    }
+
+
 def api_run_timeline(
     config: "MissionControlServerConfig",
     job_id: str,
@@ -7174,6 +7955,9 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/models":
             self._handle(lambda _: api_models(self.server.config), {})
             return
+        if route == "/api/repo/map":
+            self._handle(lambda _: api_repo_map(self.server.config), {})
+            return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
             return
@@ -7278,6 +8062,35 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             _send({"type": "error", "message": str(exc)})
         finally:
             gen.close()
+
+    def _handle_replay_sse(self, run_id: str) -> None:
+        """Stream replay comparison events as Server-Sent Events."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+        def _send(data: dict[str, object]) -> bool:
+            try:
+                line = ("data: " + json.dumps(data, sort_keys=True) + "\n\n").encode("utf-8")
+                self.wfile.write(line)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return False
+
+        try:
+            for event in api_replay_gen(self.server.config, run_id):
+                if not _send(event):
+                    break
+        except Exception as error:  # noqa: BLE001
+            _send({"type": "error", "error": str(error), "error_code": "internal_error"})
 
     def _handle_browser_frame(self, session_id: str) -> None:
         """Serve a single PNG screenshot of the live browser session."""
@@ -7421,6 +8234,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
                 return
             self._handle(lambda payload: api_permission_deny(self.server.config, job_id, payload, self.server.jobs), body)
             return
+        if route.startswith("/api/run/") and route.endswith("/replay"):
+            run_id = route[len("/api/run/"): -len("/replay")].strip("/")
+            self._handle_replay_sse(run_id)
+            return
         handlers = {
             "/api/refresh": lambda payload: api_state(self.server.config, self.server.jobs),
             "/api/settings": lambda payload: api_settings(self.server, payload),
@@ -7439,6 +8256,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/git/sync": lambda payload: api_git_sync(self.server.config, payload),
             "/api/artifacts/cleanup": lambda payload: api_cleanup(self.server.config, payload),
             "/api/runs/cleanup": lambda payload: api_runs_cleanup(self.server, payload),
+            "/api/runs/delete-one": lambda payload: api_runs_delete_one(self.server, payload),
             "/api/file": lambda payload: api_file(self.server.config, payload),
             "/api/handoff": lambda payload: api_handoff(self.server.config, payload),
             "/api/handoff/start": lambda payload: api_handoff_start(self.server, payload),

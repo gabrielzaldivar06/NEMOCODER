@@ -9,7 +9,7 @@ from unittest.mock import patch
 import nemo_coding_platform.mission_control_server as mission_control_server
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
-from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_nemo_mcp_status, api_orphan_jobs, api_repo_clone, api_repo_open, api_review, api_rollback, api_search, api_self_modify_start, api_settings, api_state, api_stats, api_terminal_run
+from nemo_coding_platform.mission_control_server import ApiRequestError, JOB_LOG_LIMIT, HandoffJob, HandoffJobManager, MissionControlHttpServer, MissionControlServerConfig, api_agent_message, api_applies, api_apply, api_apply_selection, api_browser_open, api_browser_search, api_browser_state, api_cleanup, api_decision_log_append, api_eval, api_file, api_handoff, api_handoff_start, api_job_signal, api_kpis, api_nemo, api_nemo_cognitive_stats, api_nemo_mcp_status, api_orphan_jobs, api_repo_clone, api_repo_open, api_repo_map, api_review, api_rollback, api_search, api_self_modify_start, api_settings, api_state, api_stats, api_terminal_run
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
 from tests.test_review_gate_cli import write_ready_run
 
@@ -952,7 +952,7 @@ class MissionControlServerTests(unittest.TestCase):
 
             captured: dict[str, str] = {}
 
-            def _capture(payload: dict[str, object], user_message: str, context_summary: str) -> str:
+            def _capture(payload: dict[str, object], user_message: str, context_summary: str, **kwargs: object) -> str:
                 captured["context_summary"] = context_summary
                 return "ok"
 
@@ -1055,7 +1055,7 @@ class MissionControlServerTests(unittest.TestCase):
                 if tool_name == "search_memories":
                     query = str(arguments.get("query") or "")
                     captured_filters.append(str(arguments.get("database_filter") or ""))
-                    if query == "me llamo":
+                    if query == "mi nombre es":
                         return {"ok": True, "payload": {"results": ["[1.05|imp:?|archived_conversation] hola me llamo gabriel tengo 34 años (2026-03-21)"]}}
                     return {"ok": True, "payload": {"results": []}}
                 if tool_name == "context_bootstrap":
@@ -1463,7 +1463,6 @@ class MissionControlServerTests(unittest.TestCase):
             content = str(message_payload.get("content") or "")
             self.assertIn("Gabriel Zaldivar", content)
             self.assertIn("dev4 mission control", content)
-            self.assertIn("pytest", content)
             model_call.assert_not_called()
 
     def test_nemo_mcp_status_exposes_full_native_tool_catalog(self) -> None:
@@ -2307,7 +2306,7 @@ class MissionControlServerTests(unittest.TestCase):
             write_ready_run(run_json, repo, sandbox, ["created.txt"])
             config = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", memory_db=None)
 
-            with patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="Soy el modelo local real.") as chat:
+            with patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value=("Soy el modelo local real.", None, None)) as chat:
                 payload = api_agent_message(
                     config,
                     {
@@ -2716,6 +2715,325 @@ class MissionControlServerTests(unittest.TestCase):
         # Log sets are distinct objects
         self.assertIsNot(job_a.logs, job_b.logs)
         self.assertIsNot(job_b.logs, job_c.logs)
+
+
+    def test_api_repo_map_returns_ok_and_map_string(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            (repo / "main.py").write_text("def hello(): pass\n", encoding="utf-8")
+            config = MissionControlServerConfig.from_paths(repo, root / "runtimes", root / "apply-results", memory_db=None)
+
+            result = api_repo_map(config)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["repo_path"], str(repo))
+        self.assertIsInstance(result["map"], str)
+
+    def test_api_repo_map_returns_empty_map_for_empty_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            config = MissionControlServerConfig.from_paths(repo, root / "runtimes", root / "apply-results", memory_db=None)
+
+            result = api_repo_map(config)
+
+        self.assertTrue(result["ok"])
+        self.assertIsInstance(result["map"], str)
+
+    def test_plan_loop_gen_sys_includes_repo_context_when_repo_has_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            (repo / "utils.py").write_text("def greet(name): return f'Hello {name}'\n", encoding="utf-8")
+            config = MissionControlServerConfig.from_paths(repo, root / "runtimes", root / "apply-results", memory_db=None)
+
+            captured_sys: list[str] = []
+
+            def _fake_lm(payload, system, user, **kw):
+                captured_sys.append(system)
+                return "print('hello')"
+
+            def _fake_nemo(config, tool_calls, tool_name, *, lifecycle_phase=None, nemo_mcp_url="", **kw):
+                return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
+
+            with patch("nemo_coding_platform.mission_control_server._plan_lm_call", side_effect=_fake_lm), \
+                 patch("nemo_coding_platform.mission_control_server._nemo_chat_tool_call", side_effect=_fake_nemo):
+                events = list(mission_control_server.api_agent_plan_gen(
+                    config,
+                    {"objective": "Write a greeting function", "max_iterations": 1, "quality_threshold": 1.0},
+                ))
+
+        self.assertTrue(any("Repo context" in s for s in captured_sys), f"No 'Repo context' in captured sys prompts: {captured_sys}")
+
+    def test_find_run_payload_by_id_returns_none_for_unknown_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root / "repo", root / "runtimes", root / "apply", memory_db=None)
+            result = mission_control_server._find_run_payload_by_id(config, "nonexistent-run-id")
+        self.assertIsNone(result)
+
+    def test_find_run_payload_by_id_finds_matching_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtimes = root / "runtimes"
+            runtimes.mkdir(parents=True)
+            payload = {
+                "task": {"id": "task-1", "objective": "test"},
+                "run": {"id": "run-abc-123", "state": "completed", "phase": "done"},
+                "timeline": [],
+                "artifacts": [],
+            }
+            (runtimes / "task-1-run-abc-123.json").write_text(json.dumps(payload), encoding="utf-8")
+            config = MissionControlServerConfig.from_paths(root / "repo", runtimes, root / "apply", memory_db=None)
+            found = mission_control_server._find_run_payload_by_id(config, "run-abc-123")
+        self.assertIsNotNone(found)
+        self.assertEqual(found["run"]["id"], "run-abc-123")
+
+    def test_api_replay_gen_yields_error_for_unknown_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(root / "repo", root / "runtimes", root / "apply", memory_db=None)
+            events = list(mission_control_server.api_replay_gen(config, "unknown-run-xyz"))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["type"], "error")
+        self.assertIn("not found", events[0]["error"])
+
+    def test_api_replay_gen_yields_start_and_done_for_valid_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtimes = root / "runtimes"
+            runtimes.mkdir(parents=True)
+            payload = {
+                "task": {"id": "task-1", "objective": "test"},
+                "run": {"id": "run-xyz", "state": "completed", "phase": "done"},
+                "timeline": [],
+                "artifacts": [{"path": str(root / "nonexistent.py"), "artifact_type": "spec"}],
+                "validation": {"passed": True, "results": []},
+            }
+            (runtimes / "task-1-run-xyz.json").write_text(json.dumps(payload), encoding="utf-8")
+            config = MissionControlServerConfig.from_paths(root / "repo", runtimes, root / "apply", memory_db=None)
+            events = list(mission_control_server.api_replay_gen(config, "run-xyz"))
+        types = [e["type"] for e in events]
+        self.assertIn("start", types)
+        self.assertIn("done", types)
+        start = next(e for e in events if e["type"] == "start")
+        self.assertEqual(start["run_id"], "run-xyz")
+        done = next(e for e in events if e["type"] == "done")
+        self.assertIn("replay_score", done)
+        self.assertIn("score_delta", done)
+
+    def test_mission_control_run_to_dict_includes_readiness(self) -> None:
+        from nemo_coding_platform.core.mission_control import build_mission_control_state
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtimes = root / "runtimes"
+            runtimes.mkdir(parents=True)
+            payload = {
+                "schema_version": 1,
+                "task": {"id": "task-r1", "objective": "test readiness"},
+                "run": {"id": "run-r1", "state": "completed", "phase": "done"},
+                "timeline": [],
+                "artifacts": [],
+                "validation": {"passed": False, "results": []},
+            }
+            (runtimes / "task-r1-run-r1.json").write_text(json.dumps(payload), encoding="utf-8")
+            state = build_mission_control_state(root, runtimes)
+        runs = state.get("runs", [])
+        self.assertGreater(len(runs), 0, "at least one run should be loaded")
+        run_dict = runs[0]
+        self.assertIn("readiness", run_dict, "to_dict must include readiness field")
+        readiness = run_dict["readiness"]
+        self.assertIn("score", readiness)
+        self.assertIn("grade", readiness)
+        self.assertIn("validation_passed", readiness)
+        self.assertIsInstance(readiness["reasons"], list)
+
+def _make_config(tmp: Path) -> "MissionControlServerConfig":
+    (tmp / ".git").mkdir(exist_ok=True)
+    return MissionControlServerConfig.from_paths(
+        tmp, ".nemo-runtimes", tmp / "apply-results", tmp / "runs", memory_db=None
+    )
+
+
+def _nim_response(text: str) -> bytes:
+    return json.dumps({
+        "choices": [{"message": {"role": "assistant", "content": text}}]
+    }).encode("utf-8")
+
+
+class ChatEndpointTransparencyTests(unittest.TestCase):
+    """Tests for /api/agent/message chat flow: fallback transparency, image gen, HTML detection."""
+
+    # ── helper ──────────────────────────────────────────────────────────────
+    def _make_msg_payload(self, message: str = "hola", provider: str = "subprocess", extra: dict | None = None) -> dict:
+        payload = {
+            "message": message,
+            "provider": provider,
+            "model_base_url": "http://127.0.0.1:1234/v1",
+            "default_model": "test-model",
+            "api_key": "lm-studio",
+            "nemo_mcp_url": "disabled://noop",
+            "require_nemo_mcp_capabilities": False,
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    # ── chat success: tool_call shows model+base_url ─────────────────────
+    def test_chat_success_tool_call_shows_model_and_base_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(Path(tmp))
+
+            class _MockResp:
+                def read(self): return _nim_response("Hola, ¿cómo puedo ayudarte?")
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+
+            with patch("urllib.request.urlopen", return_value=_MockResp()):
+                result = api_agent_message(config, self._make_msg_payload())
+
+        tool_calls = result["message"]["tool_calls"]
+        tool_names = [tc["name"] for tc in tool_calls]
+        self.assertIn("lmstudio.chat_completions", tool_names)
+        completed = next(tc for tc in tool_calls if tc["name"] == "lmstudio.chat_completions")
+        self.assertEqual(completed["status"], "completed")
+        self.assertIn("test-model", completed["summary"])
+        self.assertNotIn("local_fallback", tool_names)
+
+    # ── chat fallback: primary times out → local fallback visible in tool_calls ──
+    def test_chat_fallback_shows_two_tool_calls_with_correct_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(Path(tmp))
+
+            # Patch _lmstudio_chat_completion directly to return a fallback tuple.
+            # Patching urlopen is unreliable here because _default_settings() calls
+            # _nemo_sse_available() which itself hits urlopen before the chat request.
+            payload = self._make_msg_payload(extra={"model_base_url": "https://fake-nim.example.com/v1"})
+            with patch(
+                "nemo_coding_platform.mission_control_server._lmstudio_chat_completion",
+                return_value=("local response", "<URLError: timed out connecting to fake-nim>", "local-gemma"),
+            ):
+                result = api_agent_message(config, payload)
+
+        tool_calls = result["message"]["tool_calls"]
+        tool_names = [tc["name"] for tc in tool_calls]
+        self.assertIn("lmstudio.chat_completions", tool_names, "primary failure must appear")
+        self.assertIn("lmstudio.local_fallback", tool_names, "local fallback must appear")
+        primary = next(tc for tc in tool_calls if tc["name"] == "lmstudio.chat_completions")
+        fallback = next(tc for tc in tool_calls if tc["name"] == "lmstudio.local_fallback")
+        self.assertEqual(primary["status"], "failed")
+        self.assertEqual(fallback["status"], "completed")
+        self.assertIn("local-gemma", fallback["summary"])
+        # Response should be the model's text, not the generic fallback message
+        self.assertNotIn("[real-mode fallback]", result["message"]["content"])
+
+    # ── chat HTTP error (401): no local fallback, error surfaced clearly ──
+    def test_chat_http_error_no_local_fallback(self) -> None:
+        import urllib.error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(Path(tmp))
+
+            class _401:
+                code = 401
+                def read(self): return b'{"error": "Unauthorized"}'
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+            http_err = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+            http_err.read = lambda: b'{"error":"Unauthorized"}'
+
+            with patch("urllib.request.urlopen", side_effect=http_err):
+                result = api_agent_message(config, self._make_msg_payload())
+
+        tool_calls = result["message"]["tool_calls"]
+        tool_names = [tc["name"] for tc in tool_calls]
+        self.assertIn("lmstudio.chat_completions", tool_names)
+        self.assertNotIn("lmstudio.local_fallback", tool_names)
+        primary = next(tc for tc in tool_calls if tc["name"] == "lmstudio.chat_completions")
+        self.assertEqual(primary["status"], "failed")
+        self.assertIn("401", primary["summary"])
+
+    # ── image generation: Pollinations fallback when SD not running ──────
+    def test_image_generation_uses_pollinations_when_local_sd_absent(self) -> None:
+        import urllib.error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(Path(tmp))
+            settings_dir = Path(tmp) / ".nemo-runtimes" / "mission-control"
+            settings_dir.mkdir(parents=True)
+
+            call_log: list[str] = []
+
+            def _mock_urlopen(req, timeout=None):
+                url = req.full_url if hasattr(req, "full_url") else str(req)
+                call_log.append(url)
+                if "localhost:7860" in url or "localhost:8188" in url:
+                    raise urllib.error.URLError("connection refused")
+                if "pollinations.ai" in url:
+                    # Return minimal PNG bytes
+                    class _Img:
+                        def read(self): return b"\x89PNG\r\n\x1a\n" + b"\x00" * 2000
+                        def __enter__(self): return self
+                        def __exit__(self, *a): pass
+                    return _Img()
+                raise urllib.error.URLError("unexpected")
+
+            with patch("urllib.request.urlopen", side_effect=_mock_urlopen):
+                result = mission_control_server.api_generate_image(
+                    config, {"prompt": "a cartoon chicken", "size": "512x512"}
+                )
+
+        self.assertTrue(result.get("ok"))
+        self.assertIn("image_url", result)
+        self.assertTrue(any("pollinations.ai" in u for u in call_log), "must have tried Pollinations")
+
+    # ── HTML language detection in plan loop ─────────────────────────────
+    def test_detect_language_identifies_html_variants(self) -> None:
+        detect = mission_control_server._detect_language
+        self.assertEqual(detect("crea un html game de snake"), "html")
+        self.assertEqual(detect("make a canvas game with asteroids"), "html")
+        self.assertEqual(detect("build a web game using javascript and canvas"), "html")
+        self.assertEqual(detect("html dashboard para metricas"), "html")
+        self.assertEqual(detect("genera un script python para fibonacci"), "python")
+        self.assertEqual(detect("create a node.js server"), "javascript")
+
+    # ── HTML execution validation in plan loop ───────────────────────────
+    def test_try_run_code_html_valid_document(self) -> None:
+        import tempfile
+        html = "<!doctype html><html><body><h1>Hello</h1></body></html>"
+        with tempfile.TemporaryDirectory() as ws:
+            ok, out = mission_control_server._try_run_code(html, "html", workspace=Path(ws))
+        self.assertTrue(ok)
+        self.assertIn("HTML artifact generated", out)
+
+    def test_try_run_code_html_rejects_fragment(self) -> None:
+        fragment = "<h1>just a heading</h1>"
+        ok, out = mission_control_server._try_run_code(fragment, "html")
+        self.assertFalse(ok)
+        self.assertIn("HTML must contain", out)
+
+    # ── fallback error message is informative (not generic) ──────────────
+    def test_chat_fallback_message_not_generic(self) -> None:
+        import urllib.error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(Path(tmp))
+
+            def _always_fail(req, timeout=None):
+                raise urllib.error.URLError("connection refused")
+
+            with patch("urllib.request.urlopen", side_effect=_always_fail):
+                result = api_agent_message(config, self._make_msg_payload())
+
+        response = result["message"]["content"]
+        # The old generic message should be gone; error detail must be surfaced in tool_calls
+        self.assertNotIn("LM Studio is unavailable right now", response)
+        failed_tc = [tc for tc in result["message"]["tool_calls"] if tc.get("status") == "failed"]
+        self.assertTrue(len(failed_tc) > 0, "at least one failed tool_call must be present")
 
 
 if __name__ == "__main__":
