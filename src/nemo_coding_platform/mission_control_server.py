@@ -6528,7 +6528,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         try:
             _gen_max_tokens = 4096 if lang == "html" else 2048
             _gen_temp = _adaptive_temp(best_score)
-            responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=_gen_max_tokens, timeout=300, temperature=_gen_temp)]
+            _gen_timeout = 600 if _is_local_llm else 300
+            responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=_gen_max_tokens, timeout=_gen_timeout, temperature=_gen_temp)]
         except Exception as _lm_exc:  # noqa: BLE001
             lm_error = str(_lm_exc)[:300]
             yield {"type": "error", "error": f"LM call failed at iteration {i}: {lm_error}"}
@@ -6643,7 +6644,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             f"Code (best artifact so far, score {best_score:.1f}/10):\n{_critique_target[:1500]}"
         )
         try:
-            critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=120, temperature=0.0)
+            critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=240 if _is_local_llm else 120, temperature=0.0)
         except Exception:  # noqa: BLE001
             critique_raw = '{"score":5,"present":[],"missing":[],"improvements":[],"summary":"unavailable"}'
 
