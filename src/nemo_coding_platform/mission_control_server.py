@@ -712,8 +712,8 @@ class HandoffJobManager:
                     mcp_url = LEGACY_NEMO_SSE_URL
                 command.extend(("--mcp-url", mcp_url))
                 command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
-        base_url_run = str(payload.get("base_url") or "http://127.0.0.1:1234/v1")
-        model_run = str(payload.get("model") or "").strip() or _resolve_lmstudio_model(base_url_run)
+        base_url_run = str(payload.get("base_url") or payload.get("model_base_url") or "http://127.0.0.1:1234/v1")
+        model_run = str(payload.get("model") or payload.get("default_model") or "").strip() or _resolve_lmstudio_model(base_url_run)
         command.extend(("--model-profile", model_run))
         command.extend(("--lmstudio-base-url", base_url_run))
         model_roles = payload.get("model_roles") or {}
