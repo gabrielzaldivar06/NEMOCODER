@@ -197,7 +197,7 @@ type RenderedToolCall = AgentToolCall & {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel" | "workspace_open";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -1903,6 +1903,21 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_id: jobId, directive: directive.trim() }),
       }).catch(() => null);
+      return;
+    }
+    if (action.kind === "workspace_open") {
+      const wsPath = String(action.payload.path || "");
+      if (!wsPath) return;
+      setStatus(`Opening workspace: ${wsPath}`);
+      postJson<{ ok: boolean; repo_path?: string }>("/api/repo/open", { path: wsPath })
+        .then((res) => {
+          if (res.ok) {
+            setStatus(`Workspace opened: ${res.repo_path || wsPath}`);
+          } else {
+            setStatus(`Workspace open failed: ${wsPath}`);
+          }
+        })
+        .catch((err: Error) => setStatus(`Workspace open error: ${err.message}`));
       return;
     }
     if (action.kind === "browser_cancel") {

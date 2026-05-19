@@ -2692,6 +2692,8 @@ button { font: inherit; }
 .mission-action-btn.plan_cancel:hover { border-color: #ef4444; background: #2d1010; }
 .mission-action-btn.plan_steer { border-color: #b45309; background: #1a1000; color: #fbbf24; }
 .mission-action-btn.plan_steer:hover { border-color: #f59e0b; background: #251800; }
+.mission-action-btn.workspace_open { border-color: #0e7490; background: #001a20; color: #67e8f9; }
+.mission-action-btn.workspace_open:hover { border-color: #06b6d4; background: #002830; }
 .chat-controls {
   display: flex;
   gap: 6px;

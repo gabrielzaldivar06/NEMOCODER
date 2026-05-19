@@ -5800,7 +5800,7 @@ def _extract_code_block(text: str, lang: str = "python") -> str:
 
 _AGENT_TOOL_CATALOG = """\
 ═══════════════════════════════════════════════════════════
-AGENT ACTION TOOLS — THE ONLY 4 TOOLS YOU CAN TRIGGER
+AGENT ACTION TOOLS — THE ONLY 5 TOOLS YOU CAN TRIGGER
 Call these tools using the native function-calling mechanism (preferred), or embed the JSON in your
 response text as a fallback. DO NOT call NEMO MCP tools (search_memories, context_bootstrap, etc.)
 — those are server-only and executed automatically by the backend.
@@ -5825,7 +5825,11 @@ response text as a fallback. DO NOT call NEMO MCP tools (search_memories, contex
    params: url (required), task (required), max_steps (default 8, max 20)
    Only include credential_alias when the user explicitly mentions needing to log in. Never invent one.
 
-CRITICAL: These 4 are the ONLY tools available to you. Do NOT embed NEMO tool names in your response.
+5. workspace_open — switch the active workspace / project folder
+   Use when the user asks to open a different folder, project, or workspace.
+   params: path (required — absolute path to the directory to open)
+
+CRITICAL: These 5 are the ONLY tools available to you. Do NOT embed NEMO tool names in your response.
 """
 
 _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
@@ -5855,7 +5859,7 @@ _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
                 "properties": {
                     "objective": {"type": "string", "description": "What to implement or fix"},
                     "acceptance": {"type": "string", "description": "How to verify it's done (tests, behavior)"},
-                    "target_files": {"type": "string", "description": "Specific files to focus on (optional)"},
+                    "target_files": {"type": "array", "items": {"type": "string"}, "description": "Specific files to focus on (optional, list of relative paths)"},
                 },
                 "required": ["objective", "acceptance"],
             },
@@ -5888,6 +5892,20 @@ _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
                     "job_id": {"type": "string", "description": "Job ID (e.g., job-abc123)"},
                 },
                 "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "workspace_open",
+            "description": "Switch the active workspace to a different project folder or directory on disk.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the directory to open as the new workspace"},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -6993,6 +7011,10 @@ def _llm_tool_call_to_action(
         objective = str(params.get("objective") or payload.get("objective") or "")
         if not objective:
             return None
+        raw_targets = params.get("target_files") or []
+        target_files_str = (
+            "\n".join(raw_targets) if isinstance(raw_targets, list) else str(raw_targets)
+        )
         return {
             "id": f"llm-handoff-{uuid4().hex[:8]}",
             "kind": "run",
@@ -7001,7 +7023,7 @@ def _llm_tool_call_to_action(
             "payload": {
                 "objective": objective,
                 "acceptance_criteria": str(params.get("acceptance") or "satisfies the objective"),
-                "target_files": str(params.get("target_files") or ""),
+                "target_files": target_files_str,
                 "provider": str(payload.get("provider") or "subprocess"),
                 "timeout_seconds": str(payload.get("timeout_seconds") or "120"),
                 "nemo_mcp_url": str(payload.get("nemo_mcp_url") or ""),
@@ -7020,7 +7042,7 @@ def _llm_tool_call_to_action(
             "payload": {
                 "objective": objective,
                 "max_iterations": int(params.get("max_iterations") or 5),
-                "quality_threshold": float(params.get("quality_threshold") or 9.0),
+                "quality_threshold": float(params.get("quality_threshold") or 10.0),
                 "topic": str(params.get("topic") or "llm_generated"),
                 "parallel_candidates": False,
                 "visual_critique": False,
@@ -7062,6 +7084,18 @@ def _llm_tool_call_to_action(
                 "credential_alias": params.get("credential_alias") or None,
                 "max_steps": int(params.get("max_steps") or 8),
             },
+        }
+
+    if tool == "workspace_open":
+        path = str(params.get("path") or "").strip()
+        if not path:
+            return None
+        return {
+            "id": f"llm-ws-{uuid4().hex[:8]}",
+            "kind": "workspace_open",
+            "label": f"Open: {path[:60]}",
+            "summary": "Switch active workspace to a different project folder.",
+            "payload": {"path": path},
         }
 
     return None

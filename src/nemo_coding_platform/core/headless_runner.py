@@ -474,6 +474,26 @@ def execute_headless_handoff(
         cache_path=Path(request.repo_path) / ".nemo-runtimes" / "repo-map-cache.json",
     )
 
+    # --- NEMO workspace file structure awareness ---
+    # Search for prior file changes in this workspace so the agent has context.
+    try:
+        adapter, _ws_result = adapter.call(
+            NemoLifecyclePhase.BUILD,
+            "search_memories",
+            query=f"workspace files changed {request.repo_path}",
+            compact=True,
+            limit=5,
+            tags_include=["workspace_files"],
+        )
+        nemo_results.append(_ws_result)
+        _ws_context = str(_ws_result.payload.get("results", "")).strip()
+        if _ws_context and nemo_context:
+            nemo_context = f"{nemo_context}\n\n# Recent Workspace File Changes\n{_ws_context}"
+        elif _ws_context:
+            nemo_context = f"# Recent Workspace File Changes\n{_ws_context}"
+    except Exception:  # noqa: BLE001
+        pass  # Non-critical — workspace file memory is additive
+
     # --- GENERATE_TESTS step (TDD red phase) ---
     # Skip LLM call in fake mode — no real engine to drive the TDD cycle.
     emit_event("mutation_created", "Generating tests (TDD red phase)", "plan", {"step": "generate_tests"})
@@ -512,6 +532,24 @@ def execute_headless_handoff(
     )
     mutation_result = apply_mutation_request(engine, provider, mutation_request)
     emit_event("mutation_created", f"Mutation applied: {len(mutation_result.changed_files or mutation_result.applied_files)} files", "execute", {"files": list(mutation_result.changed_files or mutation_result.applied_files)})
+
+    # --- NEMO: persist changed files for future workspace awareness ---
+    _changed = list(mutation_result.changed_files or mutation_result.applied_files)
+    if _changed:
+        try:
+            adapter.call(
+                NemoLifecyclePhase.REVIEW,
+                "cognitive_ingest",
+                content=(
+                    f"workspace={request.repo_path} | task={task.title[:80]} | "
+                    f"files_modified={_changed}"
+                ),
+                memory_type="workspace_files",
+                tags=["workspace_files", "file_changes"],
+                importance_level=6,
+            )
+        except Exception:  # noqa: BLE001
+            pass  # Non-critical — workspace memory is additive
     if _should_retry_chunked(request, mutation_result):
         retry_request = MutationRequest(
             _chunked_retry_objective(request),
