@@ -106,7 +106,7 @@ class HeadlessRunnerTests(unittest.TestCase):
             run_id="run-files",
         )
 
-        self.assertEqual([item.call.tool_name for item in result.nemo_results], ["prime_context", "build_context_portfolio", "record_context_feedback", "compress_context_artifact", "store_conversation"])
+        self.assertEqual([item.call.tool_name for item in result.nemo_results], ["prime_context", "build_context_portfolio", "search_memories", "record_context_feedback", "compress_context_artifact", "store_conversation"])
         files = snapshot_runtime_files(type("Spec", (), {"worktree_path": __import__("pathlib").Path(result.run.sandbox_path)})())
         self.assertIn("generated-implementation.md", files)
         self.assertIn("review-package.md", files)

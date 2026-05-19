@@ -44,6 +44,10 @@ from nemo_coding_platform.core.worktree_runtime import (
     worktree_branch_name,
     write_runtime_file,
 )
+from nemo_coding_platform.core.nemo_learning import (
+    build_project_context,
+    ingest_task_outcome,
+)
 
 
 _CONTEXT_OVERFLOW_MARKERS = (
@@ -494,6 +498,18 @@ def execute_headless_handoff(
     except Exception:  # noqa: BLE001
         pass  # Non-critical — workspace file memory is additive
 
+    # --- NEMO Learning: inject cross-session project context ---
+    try:
+        _learning_ctx = build_project_context(
+            adapter,
+            repo_path=str(request.repo_path),
+            task=task.title,
+        )
+        if _learning_ctx:
+            nemo_context = (nemo_context + "\n\n" + _learning_ctx).strip()
+    except Exception:  # noqa: BLE001
+        pass
+
     # --- GENERATE_TESTS step (TDD red phase) ---
     # Skip LLM call in fake mode — no real engine to drive the TDD cycle.
     emit_event("mutation_created", "Generating tests (TDD red phase)", "plan", {"step": "generate_tests"})
@@ -550,6 +566,20 @@ def execute_headless_handoff(
             )
         except Exception:  # noqa: BLE001
             pass  # Non-critical — workspace memory is additive
+
+    # --- NEMO Learning: store task outcome for cross-session learning ---
+    try:
+        ingest_task_outcome(
+            adapter,
+            objective=request.objective_summary or request.prd[:120],
+            repo_path=str(request.repo_path),
+            files_changed=list(mutation_result.changed_files or mutation_result.applied_files),
+            result_summary="mutation applied; validation pending",
+            success=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     if _should_retry_chunked(request, mutation_result):
         retry_request = MutationRequest(
             _chunked_retry_objective(request),
