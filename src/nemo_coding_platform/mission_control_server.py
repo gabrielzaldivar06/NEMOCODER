@@ -1862,6 +1862,9 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
             m["id"] for m in data.get("data", [])
             if not _SKIP.search(m.get("id", "")) and not _UUID_ONLY.match(m.get("id", ""))
         ]
+        # If the configured default_model is available, prefer it over auto-selection.
+        if default_model and default_model in models:
+            return default_model
         # Prefer named models (contain "/") — NIM public models are "org/name" format
         named = [m for m in models if "/" in m]
         if named:
@@ -6528,7 +6531,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         try:
             _gen_max_tokens = 4096 if lang == "html" else 2048
             _gen_temp = _adaptive_temp(best_score)
-            _gen_timeout = 600 if _is_local_llm else 300
+            _gen_timeout = 600  # generous ceiling for both local thinking models and slow remote APIs
             responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=_gen_max_tokens, timeout=_gen_timeout, temperature=_gen_temp)]
         except Exception as _lm_exc:  # noqa: BLE001
             lm_error = str(_lm_exc)[:300]
@@ -6644,7 +6647,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             f"Code (best artifact so far, score {best_score:.1f}/10):\n{_critique_target[:1500]}"
         )
         try:
-            critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=240 if _is_local_llm else 120, temperature=0.0)
+            critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=240, temperature=0.0)
         except Exception:  # noqa: BLE001
             critique_raw = '{"score":5,"present":[],"missing":[],"improvements":[],"summary":"unavailable"}'
 
@@ -8240,6 +8243,16 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             return
+
+        # Enrich payload with server-side settings so the frontend doesn't need the API key.
+        settings = _load_settings(self.server.config)
+        payload = dict(payload)
+        if not payload.get("model_base_url"):
+            payload["model_base_url"] = str(settings.get("model_base_url") or "http://localhost:1234/v1")
+        if not payload.get("api_key"):
+            payload["api_key"] = str(settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
+        if not payload.get("default_model"):
+            payload["default_model"] = str(settings.get("default_model") or "")
 
         def _send_event(data: dict[str, object]) -> bool:
             try:
