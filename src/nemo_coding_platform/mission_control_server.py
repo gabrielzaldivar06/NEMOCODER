@@ -6466,8 +6466,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             )
         else:
             last = iterations[-1]
-            # Use best known code as base when score regressed
-            base_code = best_code if best_score > last["score"] + 0.5 else last["code"]
+            _refine_mode = last["score"] >= 6.0 and bool(best_code)
             exec_hint = ""
             if not last["exec_ok"] and last["exec_output"]:
                 exec_hint = f"\nEXECUTION ERROR (fix this first): {last['exec_output'][:400]}\n"
@@ -6484,13 +6483,24 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                 " CRITICAL: keep the complete HTML structure — improve without removing sections."
                 if lang == "html" else ""
             )
-            gen_user = (
-                f"Improve this code (best score so far: {best_score:.1f}/10, current: {last['score']:.1f}/10)."
-                f"{exec_hint}{steer_hint}\n"
-                f"Critique: {last['critique_text'][:300]}\n\n"
-                f"Base code:\n{base_code[:2000]}\n\n"
-                f"Return ONLY valid complete {lang_tag} code.{' Under ' + str(line_limit) + ' lines.' if lang != 'html' else ''}{test_reminder}{nemo_hint}"
-            )
+            if _refine_mode:
+                gen_user = (
+                    f"Refine this {lang_tag} code (best score: {best_score:.1f}/10, last attempt: {last['score']:.1f}/10)."
+                    f"{exec_hint}{steer_hint}\n"
+                    f"Critique: {last['critique_text'][:300]}\n\n"
+                    f"Current best code to improve:\n{best_code[:2000]}\n\n"
+                    f"Return ONLY the improved complete {lang_tag}."
+                    f" DO NOT rewrite from scratch — edit and enhance the existing code.{test_reminder}{nemo_hint}"
+                )
+            else:
+                gen_user = (
+                    f"Generate new {lang_tag} code from scratch (previous attempt scored {last['score']:.1f}/10 — too low to refine)."
+                    f"{exec_hint}{steer_hint}\n"
+                    f"Critique of previous attempt: {last['critique_text'][:300]}\n\n"
+                    f"Task: {objective}\n\n"
+                    f"Rules: output ONLY valid complete {lang_tag} code."
+                    f"{' Under ' + str(line_limit) + ' lines.' if lang != 'html' else ''}{test_reminder}{nemo_hint}"
+                )
 
         # --- Brief cooldown: only throttle local inference (Arc iGPU Vulkan contention) ---
         if _is_local_llm:
