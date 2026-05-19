@@ -126,3 +126,8 @@ export function toggleArtifactFavorite(registryId: string, currentRegistry = loa
   saveArtifactRegistry(nextRegistry);
   return nextRegistry;
 }
+
+export function clearArtifactRegistry(): void {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.removeItem(ARTIFACT_REGISTRY_STORAGE_KEY); } catch { /* ignore */ }
+}

@@ -92,6 +92,11 @@ export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGen
     setArtifacts((current) => toggleArtifactFavorite(artifactId, current));
   };
 
+  const clearArtifacts = () => {
+    setArtifacts([]);
+    setActiveArtifactId(null);
+  };
+
   return {
     artifacts,
     activeArtifactId,
@@ -99,5 +104,6 @@ export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGen
     attachArtifactToDraft,
     removeArtifact,
     toggleFavorite,
+    clearArtifacts,
   };
 }

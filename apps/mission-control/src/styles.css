@@ -1045,6 +1045,8 @@ button { font: inherit; }
 }
 .artifact-toolbar-actions button:hover:not(:disabled) { border-color: rgba(0, 214, 232, 0.4); color: #ecfbff; }
 .artifact-toolbar-actions button:disabled { opacity: 0.42; cursor: not-allowed; }
+.artifact-toolbar-actions button.danger { border-color: rgba(220,38,38,0.4); color: #fca5a5; }
+.artifact-toolbar-actions button.danger:hover:not(:disabled) { border-color: #dc2626; background: rgba(220,38,38,0.12); }
 .artifact-index {
   min-width: 0;
   display: grid;

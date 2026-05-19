@@ -15,6 +15,7 @@ import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
 import type { PersistedGeneratedArtifact } from "./services/artifactRegistry";
+import { clearArtifactRegistry } from "./services/artifactRegistry";
 import { usePlanState } from "./hooks/usePlanState";
 import { usePlanNemoSync } from "./hooks/usePlanNemoSync";
 import { ExecutionPlan, ObjectiveState, PlanStep } from "./services/planNemoClient";
@@ -1451,6 +1452,29 @@ export function App() {
           setSelectedRunSource(nextRun?.source_json ?? selectedRunSource);
           setSelectedFile(nextRun?.changed_files[0] ?? selectedFile);
           setStatus(`Job completed: ${payload.job.run_json}`);
+
+          // Inject a handoff-result markdown artifact so the Artifact Studio shows something useful
+          const changedFiles = nextRun?.changed_files ?? [];
+          const completionMsgId = `handoff-done-${job.job_id}`;
+          setAgentMessages((prev) => {
+            if (prev.some((m) => m.id === completionMsgId)) return prev;
+            const objective = String(payload.job.objective || "Handoff task");
+            const fileList = changedFiles.map((f) => `- \`${f}\``).join("\n") || "- (sin archivos modificados)";
+            const pyFiles = changedFiles.filter((f) => f.endsWith(".py"));
+            const runSection = pyFiles.length > 0
+              ? `\n\n## Cómo ejecutar\n\n\`\`\`bash\npython ${pyFiles[0]}\n\`\`\`\n\n> Si necesitas pygame: \`pip install pygame\``
+              : "";
+            const markdownContent = `# Handoff completado ✓\n\n**Objetivo:** ${objective}\n\n## Archivos modificados\n\n${fileList}${runSection}\n\n*Revisa la pestaña **Runs** para ver el diff completo y el reporte de calidad.*`;
+            return [...prev, {
+              id: completionMsgId,
+              role: "assistant" as const,
+              content: `\`\`\`md\n${markdownContent}\n\`\`\``,
+              actions: [],
+              tool_calls: [],
+            }];
+          });
+          setActiveSection("home");
+
           // Fetch public HTML files from the completed job and inject as artifacts
           fetch(`/api/run/${job.job_id}/public-html-files`)
             .then((r) => r.ok ? r.json() : Promise.reject())
@@ -3305,7 +3329,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const [layoutSource, setLayoutSource] = useState<string>("manual");
   const appliedLayoutCommandRef = useRef<string>("");
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
-  const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite } = useGeneratedArtifacts({ messages, draft, onDraftChange });
+  const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite, clearArtifacts } = useGeneratedArtifacts({ messages, draft, onDraftChange });
   const artifacts = useMemo(() => [...browserArtifacts, ...generatedArtifacts], [browserArtifacts, generatedArtifacts]);
   const prevArtifactsLenRef = useRef(artifacts.length);
   useEffect(() => {
@@ -3456,6 +3480,10 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
               onAttachToPrompt={attachArtifactToDraft}
               onRemoveArtifact={removeArtifact}
               onToggleFavorite={toggleFavorite}
+              onClearAll={() => {
+                clearArtifactRegistry();
+                clearArtifacts();
+              }}
               renderMarkdown={(content) => <MessageRichText content={content} animate={false} compact />}
             />
           </>}

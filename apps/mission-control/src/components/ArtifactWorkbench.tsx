@@ -11,6 +11,7 @@ type ArtifactWorkbenchProps = {
   onAttachToPrompt: (artifact: GeneratedArtifact) => void;
   onRemoveArtifact: (id: string) => void;
   onToggleFavorite: (id: string) => void;
+  onClearAll?: () => void;
   renderMarkdown: (content: string) => ReactNode;
 };
 
@@ -448,7 +449,7 @@ function ArtifactStandbyCanvas() {
   );
 }
 
-export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPrompt, onRemoveArtifact, onToggleFavorite, renderMarkdown }: ArtifactWorkbenchProps) {
+export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPrompt, onRemoveArtifact, onToggleFavorite, onClearAll, renderMarkdown }: ArtifactWorkbenchProps) {
   const [libraryQuery, setLibraryQuery] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<ArtifactKindFilter>("all");
   const stageRef = useRef<HTMLDivElement>(null);
@@ -523,6 +524,11 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
           <button onClick={copyArtifact} disabled={!activeArtifact} title="Copiar artifact"><Copy size={13} /><span>{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy?" : "Copy"}</span></button>
           <button onClick={downloadArtifact} disabled={!activeArtifact} title="Descargar artifact"><Download size={13} /><span>Save</span></button>
           <button onClick={() => activeArtifact && onAttachToPrompt(activeArtifact)} disabled={!activeArtifact} title="Adjuntar al siguiente prompt"><Paperclip size={13} /><span>Attach</span></button>
+          {onClearAll && artifacts.length > 0 && (
+            <button className="danger" onClick={() => { if (window.confirm("¿Limpiar todos los artifacts guardados?")) onClearAll(); }} title="Limpiar todos los artifacts">
+              <Trash2 size={13} /><span>Clear all</span>
+            </button>
+          )}
         </div>
       </div>
       {artifacts.length > 0 ? <>

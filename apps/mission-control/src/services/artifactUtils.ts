@@ -70,6 +70,21 @@ function artifactTitle(kind: GeneratedArtifactKind, language: string, content: s
   return `${label}${suffix} ${index + 1}`;
 }
 
+// Only collect artifacts that have visual/semantic value in the Studio.
+// Generic "code" blocks (python, bash, js snippets) are skipped unless they
+// are large enough to be standalone programs (>= 25 lines).
+const RENDERABLE_KINDS: Set<GeneratedArtifactKind> = new Set([
+  "html", "svg", "react", "markdown", "mermaid",
+  "image", "video", "audio", "image_request", "browser",
+]);
+
+function isCollectibleArtifact(kind: GeneratedArtifactKind, content: string): boolean {
+  if (RENDERABLE_KINDS.has(kind)) return true;
+  // For code/json: only keep if it looks like a substantial standalone program
+  if (kind === "code") return content.split(/\r?\n/).length >= 25;
+  return false;
+}
+
 export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): GeneratedArtifact[] {
   const artifacts: GeneratedArtifact[] = [];
   for (const message of messages) {
@@ -81,6 +96,7 @@ export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): Ge
       const content = match[2].trim();
       if (!content) continue;
       const kind = artifactKindFromBlock(language, content);
+      if (!isCollectibleArtifact(kind, content)) continue;
       artifacts.unshift({
         id: `${message.id}-artifact-${localIndex}`,
         messageId: message.id,
