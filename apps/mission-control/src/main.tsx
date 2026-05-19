@@ -1060,6 +1060,19 @@ export function App() {
   useEffect(() => {
     setReviewSubTab(selectedJob?.status === "running" ? "timeline" : "diff");
   }, [selectedJob?.job_id]);
+
+  // Auto-dispatch: execute tool-type actions without requiring user button click.
+  useEffect(() => {
+    const last = agentMessages[agentMessages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    for (const action of last.actions ?? []) {
+      if (AUTO_DISPATCH_KINDS.has(action.kind as AgentAction["kind"]) && !autoDispatchedRef.current.has(action.id)) {
+        autoDispatchedRef.current.add(action.id);
+        runAgentAction(action);
+      }
+    }
+  }, [agentMessages]);
+
   const readyRuns = state.runs.filter((run) => run.review_status === "awaiting_review").length;
   const blockedRuns = state.runs.filter((run) => run.review_status === "blocked").length;
   const activeFile = selectedFile || selectedRun?.changed_files[0] || "";
