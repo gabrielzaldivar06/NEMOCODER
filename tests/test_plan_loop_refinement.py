@@ -69,6 +69,7 @@ def _run_plan(config, scores, max_iter=5, gen="print('hello')",
                 "max_iterations": max_iter,
                 "quality_threshold": 99.0,  # intentionally unreachable — forces new stop logic
                 "model_base_url": model_base_url,
+                "parallel_candidates": False,  # prevent iterator race in _lm_sequence
             },
         ))
     done = next(e for e in events if e["type"] == "done")
