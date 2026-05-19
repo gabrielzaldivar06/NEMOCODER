@@ -1066,11 +1066,12 @@ export function App() {
     const last = agentMessages[agentMessages.length - 1];
     if (!last || last.role !== "assistant") return;
     for (const action of last.actions ?? []) {
-      if (AUTO_DISPATCH_KINDS.has(action.kind as AgentAction["kind"]) && !autoDispatchedRef.current.has(action.id)) {
+      if (action.id && AUTO_DISPATCH_KINDS.has(action.kind as AgentAction["kind"]) && !autoDispatchedRef.current.has(action.id)) {
         autoDispatchedRef.current.add(action.id);
         runAgentAction(action);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runAgentAction reads fresh state at dispatch time; adding it would require useCallback refactor across the entire function
   }, [agentMessages]);
 
   const readyRuns = state.runs.filter((run) => run.review_status === "awaiting_review").length;
