@@ -23,8 +23,22 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+_LITELLM_PROVIDER_PREFIXES = frozenset({
+    "openai/", "anthropic/", "google/", "huggingface/", "cohere/",
+    "mistral/", "ollama/", "groq/", "bedrock/", "vertex_ai/", "azure/",
+    "together_ai/", "replicate/", "perplexity/", "deepseek/",
+})
+
+
 def _runtime_model_name(profile: ModelProfile) -> str:
-    return profile.model if "/" in profile.model else f"openai/{profile.model}"
+    """Prefix with openai/ unless the model already has a recognised litellm provider prefix.
+
+    NIM models like meta/llama-3.3-70b-instruct use org/model naming that contains
+    a slash but is NOT a litellm provider prefix — without openai/ litellm raises
+    "LLM Provider NOT provided".
+    """
+    already_prefixed = any(profile.model.startswith(p) for p in _LITELLM_PROVIDER_PREFIXES)
+    return profile.model if already_prefixed else f"openai/{profile.model}"
 
 
 def render_engine_message(request: MutationRequest) -> str:

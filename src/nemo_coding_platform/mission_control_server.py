@@ -682,9 +682,20 @@ class HandoffJobManager:
         ]
         for item in _string_list(payload, "acceptance_criteria", ("implementation satisfies the objective",)):
             command.extend(("--acceptance", item))
-        for item in _string_list(payload, "validation_commands", ()):
+        _target_files = _string_list(payload, "target_files", ())
+        _raw_validation = _string_list(payload, "validation_commands", ())
+        # Strip npm-based validation when all explicit targets are non-frontend files.
+        # This prevents settings-level npm build commands leaking into Python-only handoffs.
+        _frontend_exts = frozenset({".ts", ".tsx", ".js", ".jsx", ".css", ".scss", ".vue", ".svelte"})
+        _has_frontend_target = any(Path(f).suffix in _frontend_exts for f in _target_files)
+        _effective_validation = (
+            _raw_validation
+            if not _raw_validation or not _target_files or _has_frontend_target
+            else tuple(v for v in _raw_validation if not v.lstrip().startswith("npm"))
+        )
+        for item in _effective_validation:
             command.extend(("--validation", item))
-        for item in _string_list(payload, "target_files", ()):
+        for item in _target_files:
             command.extend(("--target-file", item))
         prd_text = _handoff_prd_text(payload)
         if prd_text:
