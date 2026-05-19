@@ -2402,6 +2402,7 @@ export function App() {
   const clearAgentChat = () => {
     if (confirm("¿Borrar todo el historial del chat del agente?")) {
       setAgentMessages([]);
+      autoDispatchedRef.current.clear();
       setAgentDraft("");
       setHomeAgentDraft("");
       setQueuedAgentPrompts([]);
@@ -2418,6 +2419,7 @@ export function App() {
     const title = firstUserMessage ? firstUserMessage.slice(0, 80) : "Chat archivado";
     archiveChatSession(agentMessages, title);  // writes archive + clears session key
     setAgentMessages([]);
+    autoDispatchedRef.current.clear();
     setAgentDraft("");
     setHomeAgentDraft("");
     setQueuedAgentPrompts([]);
