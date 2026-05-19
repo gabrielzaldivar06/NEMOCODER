@@ -874,6 +874,13 @@ function parsePlanStepsFromMessage(content: string): { steps: PlanStep[]; reason
 declare global { interface Window { _injectedPublicPaths?: Set<string> } }
 if (!window._injectedPublicPaths) window._injectedPublicPaths = new Set<string>();
 
+const AUTO_DISPATCH_KINDS = new Set<AgentAction["kind"]>([
+  "plan_generate",
+  "run",
+  "handoff",
+  "browser_task",
+]);
+
 export function App() {
   const [state, setState] = useState<MissionState>(initialState);
   const [selectedRunSource, setSelectedRunSource] = useState<string>("");
@@ -950,6 +957,7 @@ export function App() {
   const [gitBranchDraft, setGitBranchDraft] = useState<string>("");
   const agentRequestControllerRef = useRef<AbortController | null>(null);
   const queuedAgentPromptsRef = useRef<string[]>([]);
+  const autoDispatchedRef = useRef<Set<string>>(new Set());
   const [handoffDraft, setHandoffDraft] = useState({
     objective: "",
     acceptance: "passes validation",
