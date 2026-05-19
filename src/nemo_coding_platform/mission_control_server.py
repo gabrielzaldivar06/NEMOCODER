@@ -6230,7 +6230,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         raise _bad_request("objective is required for plan mode", error_code="missing_objective")
 
     max_iterations = max(1, min(10, int(payload.get("max_iterations") or 5)))
-    quality_threshold = max(1.0, min(10.0, float(payload.get("quality_threshold") or 7.0)))
+    quality_threshold = max(0.1, float(payload.get("quality_threshold") or 7.0))
     topic = str(payload.get("topic") or "autonomous_plan").strip()
     use_parallel = bool(payload.get("parallel_candidates", True))
     use_visual = bool(payload.get("visual_critique", True))
@@ -6814,11 +6814,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             pass
 
     # Final structured reflexion via reflexion.py
-    completed = final_score >= quality_threshold and best_exec_ok
-    # Preserve the stop_reason set inside the loop (consecutive_perfect / regression / plateau /
-    # quality_threshold). Only fall back to the legacy strings when the loop ended naturally.
-    if stop_reason == "max_iterations":
-        stop_reason = "quality_threshold_reached" if completed else "max_iterations"
+    completed = best_score >= quality_threshold and best_exec_ok
+    # stop_reason was set inside the loop; default is "max_iterations" if loop ran to completion
     tests_broken: tuple[str, ...] = ("pytest_failures",) if harness_total_failed > 0 else ()
     _reflexion_entry = ReflexionEntry(
         task_type="plan_loop",
@@ -6831,7 +6828,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         what_failed=(
             "none — quality threshold reached"
             if completed else
-            f"score={final_score:.1f} never reached {quality_threshold} | last_error={last_exec_output[:150]}"
+            f"best_score={best_score:.1f} never reached {quality_threshold} ({stop_reason}) | last_error={last_exec_output[:150]}"
         ),
         root_cause=(
             "n/a" if completed else
@@ -6851,7 +6848,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         ),
         repair_attempts_used=max(0, len(iterations) - 1),
         stop_reason=stop_reason,
-        confidence=min(0.95, final_score / 10.0),
+        confidence=min(0.95, best_score / 10.0),
         task_id=topic,
         run_id=job_id,
     )
@@ -6865,10 +6862,11 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         "ok": True,
         "objective": objective,
         "iterations_run": len(iterations),
-        "final_score": final_score,
+        "final_score": best_score,       # always the best seen, not the last iteration's score
         "best_score": best_score,
+        "stop_reason": stop_reason,
         "quality_threshold": quality_threshold,
-        "completed": final_score >= quality_threshold,
+        "completed": completed,
         "artifact_file": artifact_file,
         "artifact_html_content": artifact_html_content,
         "iterations": [
