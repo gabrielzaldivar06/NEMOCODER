@@ -30,7 +30,7 @@ def _fake_nemo(config, tool_calls, tool_name, *, lifecycle_phase=None, nemo_mcp_
 def _lm_factory(gen_response: str, score: int):
     """_plan_lm_call side_effect: returns gen_response for generation, JSON score for critique."""
     def _fake(payload, system, user, **kw):
-        if "reviewer" in system.lower():
+        if "evaluator" in system.lower():
             return (
                 f'{{"score":{score},"present":[],"missing":[],'
                 f'"improvements":[],"summary":"test"}}'
@@ -45,7 +45,7 @@ def _lm_sequence(gen_response: str, scores: list):
     _last = scores[-1]
 
     def _fake(payload, system, user, **kw):
-        if "reviewer" in system.lower():
+        if "evaluator" in system.lower():
             return (
                 f'{{"score":{next(_it, _last)},"present":[],"missing":[],'
                 f'"improvements":[],"summary":"test"}}'
