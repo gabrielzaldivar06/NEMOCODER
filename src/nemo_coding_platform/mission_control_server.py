@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
-from hashlib import sha256
+from hashlib import md5, sha256
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -2172,6 +2172,8 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         "temperature": float(payload.get("chat_temperature", payload.get("temperature", 0.2))),
         "max_tokens": _chat_max_tokens(payload),
         "stream": False,
+        "tools": _AGENT_TOOL_SCHEMAS,
+        "tool_choice": "auto",
     }
     if payload.get("enable_thinking"):
         body["enable_thinking"] = True
@@ -2183,8 +2185,8 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {_api_key}"},
         method="POST",
     )
-    # Cap chat timeout at 60s — long enough for slow models but won't block the UI
-    timeout = min(max(_timeout_seconds(payload), 1.0), 60.0)
+    # Cap chat timeout — honour payload timeout_seconds (NIM large models can take >60s)
+    timeout = min(max(_timeout_seconds(payload), 1.0), 180.0)
     primary_base = _chat_base_url(payload)
     _local_fallback_base = "http://127.0.0.1:1234/v1"
     _try_local_fallback = (
@@ -2206,9 +2208,31 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         if not isinstance(first, dict):
             raise ValueError("LM Studio chat failed: invalid choice")
         response_message = first.get("message")
-        if not isinstance(response_message, dict) or not isinstance(response_message.get("content"), str):
+        if not isinstance(response_message, dict):
+            raise ValueError("LM Studio chat failed: response message missing")
+        # Native function calling: serialize tool_calls to text so _parse_llm_tool_calls picks them up
+        native_tool_calls = response_message.get("tool_calls") or []
+        injected: list[str] = []
+        for tc in native_tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            name = str(fn.get("name") or "")
+            args_raw = fn.get("arguments") or "{}"
+            try:
+                args = json.loads(args_raw) if isinstance(args_raw, str) else dict(args_raw)
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+            if name and isinstance(args, dict):
+                injected.append(json.dumps({"tool": name, "params": args}))
+        content = response_message.get("content") or ""
+        content = content.strip() if isinstance(content, str) else ""
+        if injected:
+            prefix = "\n".join(injected)
+            content = f"{prefix}\n{content}".strip() if content else prefix
+        if not content:
             raise ValueError("LM Studio chat failed: response message had no content")
-        return response_message["content"].strip() or "The model returned an empty response."
+        return content
 
     fallback_error: str | None = None
     fallback_model: str | None = None
@@ -2443,13 +2467,15 @@ def api_generate_image(config: MissionControlServerConfig, payload: dict[str, ob
     for backend_name, backend_url in backends_to_try:
         try:
             if backend_name == "nim":
-                return _try_nim(backend_url, _settings_api_key)
-            if backend_name == "pollinations":
-                return _try_pollinations()
-            check_path = "sdapi/v1/sd-models" if backend_name == "a1111" else "system_stats"
-            with urllib.request.urlopen(f"{backend_url.rstrip('/')}/{check_path}", timeout=3):
-                pass
-            return _try_automatic1111(backend_url) if backend_name == "a1111" else _try_comfyui(backend_url)
+                result = _try_nim(backend_url, _settings_api_key)
+            elif backend_name == "pollinations":
+                result = _try_pollinations()
+            else:
+                check_path = "sdapi/v1/sd-models" if backend_name == "a1111" else "system_stats"
+                with urllib.request.urlopen(f"{backend_url.rstrip('/')}/{check_path}", timeout=3):
+                    pass
+                result = _try_automatic1111(backend_url) if backend_name == "a1111" else _try_comfyui(backend_url)
+            return {**result, "backend_used": backend_name}
         except Exception as error:  # noqa: BLE001
             last_error = f"{backend_name} at {backend_url}: {error}"
             continue
@@ -5699,14 +5725,16 @@ def _extract_think_snippet(text: str, max_chars: int = 500) -> str:
     return ""
 
 
-def _extract_code_block(text: str) -> str:
+def _extract_code_block(text: str, lang: str = "python") -> str:
     """Adaptive cascade extractor — model-agnostic, works regardless of which LLM is loaded.
 
     Pipeline:
       1. Strip reasoning blocks (<think>, <|thinking|>)
-      2. Prefer explicitly-tagged ```python fence
-      3. Accept any fenced block (```bash, ```sh, untagged, …)
-      4. Fallback: longest ast-valid substring starting at first Python-looking line
+      2. HTML fast path: if content starts with <!doctype or <html, return directly
+      2.5 HTML search: for HTML lang, find any <!DOCTYPE html>…</html> block anywhere in text
+      3. Prefer explicitly-tagged ```python fence
+      4. Accept any fenced block (```bash, ```sh, untagged, …)
+      5. Fallback: longest ast-valid substring starting at first Python-looking line
       Shell artifacts (fi, then, done, esac, ;;, do as bare lines) are stripped at every stage.
     """
     # Strip reasoning blocks from thinking-model variants
@@ -5714,10 +5742,32 @@ def _extract_code_block(text: str) -> str:
     text = re.sub(r"<\|thinking\|>.*?<\|/thinking\|>", "", text, flags=re.DOTALL)
     text = text.strip()
 
+    # HTML fast path: raw HTML output (no fences) from gen_sys="output only HTML"
+    lower_start = text[:40].lower()
+    if lower_start.startswith("<!doctype") or lower_start.startswith("<html"):
+        return text
+
+    # HTML: search for a full HTML document embedded anywhere (e.g. inside a Python string)
+    if lang == "html":
+        low = text.lower()
+        for marker in ("<!doctype html", "<html"):
+            idx = low.find(marker)
+            if idx >= 0:
+                end_idx = low.rfind("</html>", idx)
+                if end_idx > idx:
+                    return text[idx : end_idx + len("</html>")].strip()
+                # No closing tag found — return from marker to end
+                return text[idx:].strip()
+
     # Explicitly-tagged Python fence
     m = re.search(r"```python\n(.*?)```", text, re.DOTALL)
     if m:
         return _strip_shell_artifacts(m.group(1).strip())
+
+    # HTML inside a fenced block (```html or untagged)
+    m = re.search(r"```html?\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
 
     # Any fenced block regardless of language tag
     m = re.search(r"```\w*\n(.*?)```", text, re.DOTALL)
@@ -5731,36 +5781,96 @@ def _extract_code_block(text: str) -> str:
 _AGENT_TOOL_CATALOG = """\
 ═══════════════════════════════════════════════════════════
 AGENT ACTION TOOLS — THE ONLY 4 TOOLS YOU CAN TRIGGER
-Embed the JSON in your response text to create an action button.
-DO NOT call any NEMO MCP tools (search_memories, context_bootstrap, etc.) here — those are server-only.
+Call these tools using the native function-calling mechanism (preferred), or embed the JSON in your
+response text as a fallback. DO NOT call NEMO MCP tools (search_memories, context_bootstrap, etc.)
+— those are server-only and executed automatically by the backend.
 ═══════════════════════════════════════════════════════════
 
 1. handoff_start — full autonomous coding session (edits files, runs tests, makes commits)
-   {"tool": "handoff_start", "params": {"objective": "...", "acceptance": "...", "target_files": "optional"}}
    Use when the user asks to implement, fix bugs, or change repo source code.
+   params: objective (required), acceptance (required), target_files (optional)
 
-2. plan_generate — iterative PYTHON code generation with scoring (minutes, for Python scripts only)
-   {"tool": "plan_generate", "params": {"objective": "...", "max_iterations": 3, "quality_threshold": 7.0}}
+2. plan_generate — iterative PYTHON code generation with scoring (for Python scripts only)
    Use ONLY for Python scripts, matplotlib charts, data analysis, or Python CLI programs.
    DO NOT use for HTML pages, HTML games, or anything that runs in a browser — use html_artifact instead.
+   params: objective (required), max_iterations (default 3), quality_threshold (default 7.0)
 
 3. job_status — query the status of a running background job
-   {"tool": "job_status", "params": {"job_id": "job-..."}}
    Use when the user asks about the progress of an ongoing operation.
+   params: job_id (required, e.g. "job-abc123")
 
 4. browser_task — autonomous web navigation with visual AI
-   {"tool": "browser_task", "params": {"url": "https://...", "task": "full description", "max_steps": 8}}
    Use when the user asks to navigate, search, scrape, or interact with websites.
-   Only add "credential_alias": "alias_name" when the user explicitly mentions needing to log in.
-   max_steps defaults to 8 (max 20). Never invent a credential_alias.
+   params: url (required), task (required), max_steps (default 8, max 20)
+   Only include credential_alias when the user explicitly mentions needing to log in. Never invent one.
 
-CRITICAL: These 4 are the ONLY tools you can embed in your response. Do NOT embed NEMO tool names
-(search_memories, context_bootstrap, refresh_context_portfolio, cognitive_ingest, etc.) — those
-are executed automatically by the backend and cannot be invoked by you.
-
-Include the JSON in your response when applicable, then explain in text what it will do and why.
-Keep params as flat strings/numbers — no nested objects inside params.
+CRITICAL: These 4 are the ONLY tools available to you. Do NOT embed NEMO tool names in your response.
 """
+
+_AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "plan_generate",
+            "description": "Iteratively generate and score a standalone Python script (matplotlib charts, data analysis, CLI tools). NOT for HTML, React, or source file edits.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "objective": {"type": "string", "description": "What the Python script should do"},
+                    "max_iterations": {"type": "integer", "description": "Max refinement iterations (default 3)"},
+                    "quality_threshold": {"type": "number", "description": "Minimum quality score 0-10 (default 7.0)"},
+                },
+                "required": ["objective"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "handoff_start",
+            "description": "Full autonomous coding session: edits source files (.py/.ts/.js/etc.), runs tests, makes git commits. Use for ANY request to implement, fix, or change repo code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "objective": {"type": "string", "description": "What to implement or fix"},
+                    "acceptance": {"type": "string", "description": "How to verify it's done (tests, behavior)"},
+                    "target_files": {"type": "string", "description": "Specific files to focus on (optional)"},
+                },
+                "required": ["objective", "acceptance"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_task",
+            "description": "Autonomous web navigation: search, scrape, login, fill forms, interact with websites.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Target URL to navigate to"},
+                    "task": {"type": "string", "description": "Full description of what to do on the page"},
+                    "max_steps": {"type": "integer", "description": "Max navigation steps (default 8, max 20)"},
+                },
+                "required": ["url", "task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "job_status",
+            "description": "Query the status of a running background job.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string", "description": "Job ID (e.g., job-abc123)"},
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
+]
 
 _TOOL_KEY_RE = re.compile(r'"tool"\s*:\s*"')
 
@@ -5807,7 +5917,11 @@ _LANG_DETECT: dict[str, re.Pattern[str]] = {
     "html": re.compile(
         r"\b(html\s+game|html\s+page|html\s+app|html\s+dashboard|html\s+canvas|"
         r"web\s+game|canvas\s+game|browser\s+game|html5\s+game|interactive\s+html|"
-        r"html\s+tool|html\s+widget|html\s+animation|html\s+simulation)\b",
+        r"html\s+tool|html\s+widget|html\s+animation|html\s+simulation|"
+        # Spanish patterns: "pagina HTML", "documento HTML", "archivo HTML", "HTML completa/completo"
+        r"p[aá]gina\s+html|documento\s+html|archivo\s+html|html\s+completa?o?|"
+        r"html\s+animad|html\s+interactiv|html\s+colorid|html\s+autocontenid|"
+        r"genera.*html|crea.*html|html.*cuento|html.*historia|html.*juego)\b",
         re.I,
     ),
     "javascript": re.compile(
@@ -6069,6 +6183,43 @@ def _run_pytest_harness(code: str, tmpdir: "Path", timeout: int = 30) -> dict[st
         return {"skipped": True, "reason": str(exc), "passed": 0, "failed": 0, "errors": 0, "output": ""}
 
 
+def _adaptive_temp(best_score: float) -> float:
+    """Return generation temperature based on current best quality score.
+
+    Low score → high temperature (explore broadly — code is too poor to refine).
+    Mid score → balanced temperature (exploit with some variation).
+    High score → low temperature (small precise refinements only).
+    """
+    if best_score >= 9.0:
+        return 0.2
+    if best_score >= 6.0:
+        return 0.5
+    return 0.8
+
+
+def _build_critique_sys(best_score: float) -> str:
+    """Return a mode-specific critique system prompt based on current best score."""
+    base = (
+        "You are a code reviewer. Reply ONLY with a JSON object — no markdown, no prose. "
+        'Format: {"score":<int 1-10>,"present":[<str>],"missing":[<str>],'
+        '"improvements":[<str>],"summary":"<str>"}'
+    )
+    if best_score >= 9.0:
+        return (
+            base + " PERFECTION MODE: this is near-perfect. Identify only micro-optimizations,"
+            " edge cases, and polish. Do NOT lower the score without a concrete specific reason."
+        )
+    if best_score >= 6.0:
+        return (
+            base + " IMPROVEMENT MODE: the structure is sound. Focus on concrete improvements"
+            " that would meaningfully raise quality — missing features, UX issues, robustness gaps."
+        )
+    return (
+        base + " CORRECTION MODE: focus on what is fundamentally broken or missing."
+        " Be direct and specific. List every structural deficiency."
+    )
+
+
 def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, object], job_id: str = ""):  # type: ignore[return]
     """Generator version of the autonomous plan loop. Yields event dicts per iteration then a final 'done' event."""
     settings = _load_settings(config)
@@ -6083,6 +6234,10 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     topic = str(payload.get("topic") or "autonomous_plan").strip()
     use_parallel = bool(payload.get("parallel_candidates", True))
     use_visual = bool(payload.get("visual_critique", True))
+    # Option C: skip cross-task context when caller signals a fully independent task
+    isolate_context = bool(payload.get("isolate_context", False))
+    # Option A: stable per-objective identifier — scopes stored/retrieved pattern memories
+    obj_hash = "obj_" + md5(objective.lower().strip().encode()).hexdigest()[:10]
     nemo_mcp_url = _require_nemo_mcp_url(payload)
     tool_calls: list[dict[str, object]] = []
 
@@ -6097,8 +6252,11 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             lifecycle_phase=phase, nemo_mcp_url=nemo_mcp_url, **kw,
         )
 
-    # Bootstrap NEMO context
-    _nemo("context_bootstrap", "start", task=objective, topic=topic, token_budget=600, limit=6)
+    # Bootstrap NEMO context.
+    # isolate_context=True: skip semantic bootstrap (avoids cross-task contamination);
+    # the per-iteration search_memories with obj_hash still runs and provides objective-scoped hints.
+    if not isolate_context:
+        _nemo("context_bootstrap", "start", task=objective, topic=topic, token_budget=600, limit=6)
 
     # Adapter so nemo_patterns.py functions can use the plan loop's _nemo() callable
     _nemo_adapter = _PlanNemoAdapter(_nemo)
@@ -6179,8 +6337,9 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     elif lang == "html":
         gen_sys = (
             "You are an expert HTML/CSS/JavaScript developer. "
-            "Output ONLY a complete self-contained HTML document — no markdown fences, no explanations, no prose. "
-            "Start directly with <!doctype html> or <html>. "
+            "Output ONLY a complete self-contained HTML document — no Python, no matplotlib, no markdown fences, no explanations, no prose. "
+            "Your ENTIRE response must start with <!doctype html> or <html> — NOTHING before it. "
+            "STRICTLY FORBIDDEN: import statements, Python code, plt., fig., ax., matplotlib, pyplot. "
             "RULES: "
             "(1) Single HTML file with all CSS inside <style> and all JS inside <script> tags. "
             "(2) No localStorage or sessionStorage — use plain JS variables instead. "
@@ -6211,10 +6370,6 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             "(3) Include all necessary imports or dependencies at the top. "
             "(4) If the code produces output, print it to stdout."
         )
-    _repo_summary = build_repo_map(config.repo_path, max_chars=1200)
-    if _repo_summary:
-        gen_sys = "## Repo context\n" + _repo_summary + "\n\n" + gen_sys
-
     critique_sys = (
         "You are a code reviewer. Reply ONLY with a JSON object — no markdown, no prose. "
         'Format: {"score":<int 1-10>,"present":[<str>],"missing":[<str>],'
@@ -6224,6 +6379,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     # SDD phase tracking: SPEC (iter 1 with test mode) → IMPLEMENT → VALIDATE
     _sdd_phase = SDDPhase.SPEC if is_test else SDDPhase.IMPLEMENT
 
+    # Emit start event immediately — plan loop generates standalone code and
+    # doesn't benefit from repo context (that's for handoff tasks).
     yield {"type": "start", "objective": objective, "max_iterations": max_iterations, "quality_threshold": quality_threshold, "job_id": job_id}
 
     for i in range(1, max_iterations + 1):
@@ -6245,11 +6402,19 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             _steer_directive = ""
 
         # --- Retrieve NEMO pattern memory via nemo_patterns.nemo_before_attempt ---
+        # Always search for universal code patterns (cross-task language-level best practices).
+        # Then add objective-scoped memories — previous iterations of THIS specific objective only.
         nemo_hint = nemo_before_attempt(
             _nemo_adapter,
+            query=f"{lang} code generation best practices avoid errors",
+            tags=("code_pattern", lang),
+            limit=3,
+        )
+        nemo_hint += nemo_before_attempt(
+            _nemo_adapter,
             query=f"{topic} {lang} code generation error failure",
-            tags=("plan_loop", lang, topic),
-            limit=4,
+            tags=("plan_loop", lang, obj_hash),
+            limit=3,
         )
 
         # --- Build generation prompt ---
@@ -6271,6 +6436,14 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                     "Keep total code under 100 lines."
                 )
                 lang_tag = "Python"
+            elif lang == "html":
+                extra = (
+                    "Output a COMPLETE self-contained HTML document with all CSS in <style> and all JS in <script>. "
+                    "Start with <!doctype html>. No external URLs, CDN links, or network requests. "
+                    "No alert/confirm/prompt. The page must be fully functional and visually rich. "
+                    "FORBIDDEN: Python, import, matplotlib, pyplot, plt., fig., ax. — output ONLY raw HTML."
+                )
+                lang_tag = "HTML"
             else:
                 extra = "Output must run without errors. Print results to stdout. Keep total code under 75 lines."
                 lang_tag = lang.capitalize()
@@ -6288,18 +6461,22 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             steer_hint = f"\nUSER DIRECTIVE (apply this now): {_steer_directive}\n" if _steer_directive else ""
             line_limit = 60 if is_viz else (100 if is_test else 80)
             lang_tag = "Python" if lang == "python" else lang.capitalize()
+            if lang == "html":
+                lang_tag = "HTML"
             test_reminder = (
                 " CRITICAL: keep all 'def test_*' functions — do NOT remove them or rename to non-test_ prefix."
                 if is_test else
                 " CRITICAL: keep '## FILE:' markers — output must remain multi-file format."
-                if is_complex else ""
+                if is_complex else
+                " CRITICAL: keep the complete HTML structure — improve without removing sections."
+                if lang == "html" else ""
             )
             gen_user = (
                 f"Improve this code (best score so far: {best_score:.1f}/10, current: {last['score']:.1f}/10)."
                 f"{exec_hint}{steer_hint}\n"
                 f"Critique: {last['critique_text'][:300]}\n\n"
-                f"Base code:\n{base_code[:1000]}\n\n"
-                f"Return ONLY valid complete {lang_tag} code. Under {line_limit} lines.{test_reminder}{nemo_hint}"
+                f"Base code:\n{base_code[:2000]}\n\n"
+                f"Return ONLY valid complete {lang_tag} code.{' Under ' + str(line_limit) + ' lines.' if lang != 'html' else ''}{test_reminder}{nemo_hint}"
             )
 
         # --- Brief cooldown: let NEMO embedding (iGPU) drain before LLM inference ---
@@ -6313,7 +6490,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             if use_parallel and i > 1:
                 responses = _generate_candidates(payload, gen_sys, gen_user, n=3)
             else:
-                responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=2048, timeout=300, temperature=0.6)]
+                _gen_max_tokens = 4096 if lang == "html" else 2048
+                responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=_gen_max_tokens, timeout=300, temperature=0.6)]
         except Exception as _lm_exc:  # noqa: BLE001
             lm_error = str(_lm_exc)[:300]
             yield {"type": "error", "error": f"LM call failed at iteration {i}: {lm_error}"}
@@ -6347,7 +6525,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
 
         # Pick best syntactically-valid candidate
         for resp in responses:
-            candidate = _extract_code_block(resp)
+            candidate = _extract_code_block(resp, lang)
             if _ast_ok(candidate):
                 code = candidate
                 code_response = resp
@@ -6355,7 +6533,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         if not code:
             # All candidates invalid — try single fix retry on the longest one
             longest = max(responses, key=len) if responses else ""
-            candidate = _extract_code_block(longest)
+            candidate = _extract_code_block(longest, lang)
             syntax_err_msg = ""
             if _ast_ok(candidate):
                 code = candidate
@@ -6373,7 +6551,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                 )
                 try:
                     fix_resp = _plan_lm_call(payload, gen_sys, fix_user, max_tokens=2048, timeout=120, temperature=0.0)
-                    fixed = _extract_code_block(fix_resp)
+                    fixed = _extract_code_block(fix_resp, lang)
                     if _ast_ok(fixed):
                         code = fixed
                         code_response = fix_resp
@@ -6454,7 +6632,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                 ),
                 task_id=topic,
                 attempt_n=i,
-                tags=("plan_loop", "plan_failure", lang, topic),
+                tags=("plan_loop", "plan_failure", lang, topic, obj_hash),
             )
         elif score >= quality_threshold:
             nemo_after_success(
@@ -6464,8 +6642,21 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                     f"critique={critique_summary}\ncode_preview={code[:400]}"
                 ),
                 task_id=topic,
-                tags=("plan_loop", "plan_success", lang, topic),
+                tags=("plan_loop", "plan_success", lang, topic, obj_hash),
             )
+            # High-quality runs (≥9) also emit a universal code_pattern so future
+            # unrelated objectives benefit from language-level lessons learned.
+            if score >= 9.0 and exec_ok and critique_summary:
+                _nemo(
+                    "cognitive_ingest", "review",
+                    content=(
+                        f"[code_pattern][{lang}] High-quality pattern (score {score:.0f}/10, exec ok):\n"
+                        f"{critique_summary[:400]}"
+                    ),
+                    memory_type="code_pattern",
+                    tags=("code_pattern", lang, topic),
+                    context=f"Extracted from successful plan loop run",
+                )
         else:
             # Partial progress — still ingest as evidence
             _nemo(
@@ -6476,7 +6667,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                     f"critique={critique_summary}"
                 ),
                 memory_type="evidence",
-                tags=("plan", "autonomous", "iteration", topic),
+                tags=("plan", "autonomous", "iteration", topic, obj_hash),
                 context=f"Autonomous plan loop iteration {i}",
             )
 
