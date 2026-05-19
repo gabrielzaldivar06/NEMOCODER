@@ -6492,19 +6492,21 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                 f"Return ONLY valid complete {lang_tag} code.{' Under ' + str(line_limit) + ' lines.' if lang != 'html' else ''}{test_reminder}{nemo_hint}"
             )
 
-        # --- Brief cooldown: let NEMO embedding (iGPU) drain before LLM inference ---
-        time.sleep(2.0)
+        # --- Brief cooldown: only throttle local inference (Arc iGPU Vulkan contention) ---
+        if _is_local_llm:
+            time.sleep(2.0)
 
-        # --- Generate: parallel candidates or single call ---
+        # --- Generate: single call with adaptive temperature ---
+        # parallel_candidates is ignored — _LLM_SEM serializes all LM calls anyway,
+        # making ThreadPoolExecutor useless. Adaptive temperature gives the right
+        # exploration/exploitation balance without tripling wall-clock time.
         code = ""
         code_response = ""
         lm_error: str = ""
         try:
-            if use_parallel and i > 1:
-                responses = _generate_candidates(payload, gen_sys, gen_user, n=3)
-            else:
-                _gen_max_tokens = 4096 if lang == "html" else 2048
-                responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=_gen_max_tokens, timeout=300, temperature=0.6)]
+            _gen_max_tokens = 4096 if lang == "html" else 2048
+            _gen_temp = _adaptive_temp(best_score)
+            responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=_gen_max_tokens, timeout=300, temperature=_gen_temp)]
         except Exception as _lm_exc:  # noqa: BLE001
             lm_error = str(_lm_exc)[:300]
             yield {"type": "error", "error": f"LM call failed at iteration {i}: {lm_error}"}
@@ -6631,8 +6633,9 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         if score > best_score:
             best_score, best_code, best_exec_ok = score, code, exec_ok
 
-        # --- Brief cooldown: let LLM inference (iGPU) drain before NEMO embedding ---
-        time.sleep(2.0)
+        # --- Brief cooldown: only throttle local inference (Arc iGPU Vulkan contention) ---
+        if _is_local_llm:
+            time.sleep(2.0)
 
         # --- NEMO structured checkpoint via nemo_patterns ---
         critique_summary = critique_raw[:300]
