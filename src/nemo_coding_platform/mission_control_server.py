@@ -2149,8 +2149,9 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                 "role": "system",
                 "content": (
                     "ARTIFACT STUDIO OUTPUT CONTRACT:\n"
-                    "When the user asks for a chart, dashboard, visualization, diagram, interface mockup, visual report, image prompt, or other renderable artifact, produce a typed fenced code block so Mission Control can render and version it.\n\n"
-                    "Supported artifact fences (for visual/renderable content ONLY — NOT for source files):\n"
+                    "When the user asks for an HTML chart, interactive dashboard, HTML game, HTML visualization, SVG diagram, Mermaid diagram, React component, interface mockup, visual report, image prompt, or other WEB-RENDERABLE artifact, produce a typed fenced code block so Mission Control can render and version it.\n"
+                    "EXCEPTION: matplotlib charts, Python data analysis scripts, or anything that saves a PNG/JPG/SVG file — those MUST use plan_generate instead of artifact fences.\n\n"
+                    "Supported artifact fences (for visual/renderable content ONLY — NOT for source files, NOT for matplotlib/Python scripts):\n"
                     "- ```html_artifact for complete self-contained HTML documents (games, dashboards, tools) with inline CSS/JS. SANDBOX RULES: no localStorage/sessionStorage (use JS variables instead), no external CDN scripts (embed all JS inline), no alert/confirm/prompt.\n"
                     "- ```svg_artifact for SVG with viewBox and xmlns.\n"
                     "- ```mermaid for diagrams.\n"
@@ -6203,23 +6204,35 @@ def _adaptive_temp(best_score: float) -> float:
 def _build_critique_sys(best_score: float) -> str:
     """Return a mode-specific critique system prompt based on current best score."""
     base = (
-        "You are a code reviewer. Reply ONLY with a JSON object — no markdown, no prose. "
+        "You are a code quality evaluator for automation scripts. "
+        "Reply ONLY with a JSON object — no markdown, no prose. "
         'Format: {"score":<int 1-10>,"present":[<str>],"missing":[<str>],'
-        '"improvements":[<str>],"summary":"<str>"}'
+        '"improvements":[<str>],"summary":"<str>"}\n'
+        "Scoring guide:\n"
+        "  10 = perfect: task fully accomplished, output is excellent, code is clean and complete "
+        "(for charts: has title, labeled axes, tight layout, good styling — nothing missing).\n"
+        "  9 = very good: task accomplished and runs correctly, minor polish missing "
+        "(e.g. missing axis label, no tight_layout, could have better colors).\n"
+        "  7-8 = good: works but has gaps — missing features, suboptimal output, or minor errors.\n"
+        "  5-6 = partial: runs but output is incomplete or partially wrong.\n"
+        "  3-4 = broken: mostly fails or misses the objective.\n"
+        "  1-2 = completely wrong: does not run or produces nothing useful.\n"
+        "Execution success (exit code 0) is the primary signal — do not score below 7 if it runs without errors."
     )
     if best_score >= 9.0:
         return (
-            base + " PERFECTION MODE: this is near-perfect. Identify only micro-optimizations,"
-            " edge cases, and polish. Do NOT lower the score without a concrete specific reason."
+            base + " PERFECTION MODE: push for 10/10. List every specific micro-detail missing: "
+            "title, axis labels, units, legend, grid, color, DPI, tight_layout, edge cases. "
+            "Be concrete — vague praise earns 9, specific completeness earns 10."
         )
     if best_score >= 6.0:
         return (
-            base + " IMPROVEMENT MODE: the structure is sound. Focus on concrete improvements"
-            " that would meaningfully raise quality — missing features, UX issues, robustness gaps."
+            base + " IMPROVEMENT MODE: the code works. Identify concrete improvements that raise quality: "
+            "missing visual polish, output gaps, robustness issues. Be specific."
         )
     return (
-        base + " CORRECTION MODE: focus on what is fundamentally broken or missing."
-        " Be direct and specific. List every structural deficiency."
+        base + " CORRECTION MODE: focus on whether the code accomplishes the stated task. "
+        "If execution succeeded, identify exactly what specific output or behavior is still missing."
     )
 
 
@@ -6313,12 +6326,14 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
 
     if is_viz:
         gen_sys = (
-            "You are a Python code generator. Output ONLY raw Python code — no markdown fences, "
-            "no explanations, no comments. Keep it under 60 lines. "
-            "IMPORTANT rules: (1) always start with 'import matplotlib; matplotlib.use(\"Agg\")' "
-            "before other imports so it runs headless; "
-            "(2) save the figure with plt.savefig('hand.png') and call plt.close() — never plt.show(); "
-            "(3) use simple FancyBboxPatch or Polygon shapes — no deep nested list literals."
+            "You are an expert code generator. Output ONLY raw code — no markdown fences, no explanations, no comments. "
+            "Use whatever language, library, or approach best accomplishes the objective. "
+            "SUBPROCESS CONSTRAINTS (code runs headless, no display attached): "
+            "(1) For any visualization library that needs a display backend (matplotlib, seaborn, plotly static, PIL, etc.), "
+            "configure headless mode before other imports — e.g. 'import matplotlib; matplotlib.use(\"Agg\")' for matplotlib. "
+            "(2) Save output to the EXACT filename(s) the objective specifies. "
+            "(3) Never call plt.show() or open any interactive/blocking GUI. "
+            "(4) Code must be complete and self-contained — no external data files, no placeholders, no user input()."
         )
     elif is_complex:
         gen_sys = (
@@ -6448,7 +6463,12 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         # --- Build generation prompt ---
         if i == 1:
             if is_viz:
-                extra = "Use simple shapes (polygons/patches), no complex list literals. Keep total code under 55 lines."
+                extra = (
+                    "Save all output to the EXACT filename(s) the task specifies. "
+                    "Code must run headless and be fully self-contained. "
+                    "For charts: include a descriptive title, labeled axes, tight_layout(), and save at DPI>=120. "
+                    "Under 80 lines."
+                )
                 lang_tag = "Python"
             elif is_complex:
                 extra = (
@@ -6629,9 +6649,19 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             harness_total_failed += harness_result.get("failed", 0)
 
         # --- Visual critique if image was produced ---
+        # Detect any image generated in the workspace this iteration; fall back to CWD scan.
         visual_raw: str | None = None
         if exec_ok and use_visual:
-            visual_raw = _visual_critique_lm_call(payload, objective)
+            _vis_image: str | None = None
+            for _vext in ("png", "jpg", "jpeg", "svg"):
+                _candidates = (
+                    list(_plan_tmpdir.glob(f"*.{_vext}")) if _plan_tmpdir and _plan_tmpdir.exists() else []
+                ) + list(Path(".").glob(f"*.{_vext}"))
+                if _candidates:
+                    _vis_image = str(_candidates[0])
+                    break
+            if _vis_image:
+                visual_raw = _visual_critique_lm_call(payload, objective, image_path=_vis_image)
 
         # --- Text self-critique (adaptive mode, targeting best artifact seen so far) ---
         exec_note = "Execution: OK" if exec_ok else f"Execution FAILED: {exec_output[:300]}"
@@ -6642,9 +6672,10 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         # Critique the best artifact, not the (possibly regressed) current one.
         # This ensures improvement feedback is always anchored to the highest-quality version.
         _critique_target = best_code if best_code else code
+        _score_ctx = f" (previous best: {best_score:.1f}/10)" if best_score > 0 else ""
         critique_user = (
             f"Task: {objective[:200]}\n{exec_note}\n\n"
-            f"Code (best artifact so far, score {best_score:.1f}/10):\n{_critique_target[:1500]}"
+            f"Code{_score_ctx}:\n{_critique_target[:1500]}"
         )
         try:
             critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=240, temperature=0.0)
@@ -6790,9 +6821,11 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     try:
         artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
-        search_dirs = [Path(".")]
+        # Search workspace first so fresh generated files beat pre-existing repo files.
+        search_dirs = []
         if _plan_tmpdir is not None and _plan_tmpdir.exists():
             search_dirs.append(_plan_tmpdir)
+        search_dirs.append(Path("."))
         for search_dir in search_dirs:
             for ext in ("png", "jpg", "jpeg", "svg"):
                 for img in search_dir.glob(f"*.{ext}"):
@@ -6968,8 +7001,8 @@ def _llm_tool_call_to_action(
             "summary": "Iterative code generation with scoring triggered by the LLM.",
             "payload": {
                 "objective": objective,
-                "max_iterations": int(params.get("max_iterations") or 3),
-                "quality_threshold": float(params.get("quality_threshold") or 7.0),
+                "max_iterations": int(params.get("max_iterations") or 5),
+                "quality_threshold": float(params.get("quality_threshold") or 9.0),
                 "topic": str(params.get("topic") or "llm_generated"),
                 "parallel_candidates": False,
                 "visual_critique": False,
@@ -7536,7 +7569,14 @@ def api_agent_message(
                 "[real-mode fallback] El modelo no está disponible ahora mismo. "
                 "Revisa los tool calls para ver el error específico y qué endpoint se intentó."
             )
-    if _is_artifact_request(message) and not _has_typed_artifact_fence(response):
+    # Parse model tool calls FIRST so we know if it already routed correctly.
+    # If the model emitted plan_generate/handoff_start/etc., skip the artifact fallback.
+    _pre_actions: list[AgentAction] = []
+    for inv in _parse_llm_tool_calls(response):
+        action = _llm_tool_call_to_action(inv, server, payload)
+        if action:
+            _pre_actions.append(action)
+    if _is_artifact_request(message) and not _has_typed_artifact_fence(response) and not _pre_actions:
         response = _artifact_fallback_response(message, tool_calls)
         tool_calls.append(
             {
@@ -7547,11 +7587,13 @@ def api_agent_message(
             }
         )
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    # Detect LLM-driven tool calls and convert to AgentActions
-    for inv in _parse_llm_tool_calls(response):
-        action = _llm_tool_call_to_action(inv, server, payload)
-        if action:
-            actions.append(action)
+        # Re-parse in case fallback response itself has tool calls (unlikely but safe)
+        for inv in _parse_llm_tool_calls(response):
+            action = _llm_tool_call_to_action(inv, server, payload)
+            if action:
+                actions.append(action)
+    else:
+        actions.extend(_pre_actions)
     agent_trace.append(
         _build_agent_trace_event(
             step=trace_step,

@@ -38,7 +38,7 @@ class ReleaseConfidenceE2ETests(unittest.TestCase):
 
             run_json = runtimes / "run.json"
             write_ready_run(run_json, repo, sandbox, ["existing.txt", "created.txt"])
-            config = MissionControlServerConfig.from_paths(repo, runtimes, apply_results, None)
+            config = MissionControlServerConfig.from_paths(repo, runtimes, apply_results, runtimes)
 
             review_payload = api_review(config, {"source_json": str(run_json)})
             self.assertTrue(review_payload["ok"])

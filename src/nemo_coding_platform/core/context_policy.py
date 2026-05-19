@@ -30,10 +30,10 @@ class ContextProfile:
 _PROFILES: dict[ContextMode, ContextProfile] = {
     ContextMode.EXECUTION: ContextProfile(
         mode=ContextMode.EXECUTION,
-        portfolio_budget=8192,
+        portfolio_budget=6144,
         search_limit=10,
         anticipate_limit=8,
-        context_chars=32000,
+        context_chars=20000,
     ),
     ContextMode.RESEARCH: ContextProfile(
         mode=ContextMode.RESEARCH,

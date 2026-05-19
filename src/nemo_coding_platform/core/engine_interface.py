@@ -334,6 +334,9 @@ class SubprocessEngineProvider:
                     "NEMO_ENGINE_MESSAGE_FILE": str(message_file),
                     "NEMO_DB_PATH": db_path,
                     "PYTHONPATH": pythonpath,
+                    # Suppress litellm's "Provider List: https://docs.litellm.ai/docs/providers"
+                    # warning that prints to stdout when a model name isn't in litellm's cost map.
+                    "LITELLM_LOCAL_MODEL_COST_MAP": "True",
                 },
             )
         except subprocess.TimeoutExpired as error:

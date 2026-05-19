@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nemo_coding_platform.core.evals import score_persisted_result
 from nemo_coding_platform.core.model_config import default_model_role_profile
 from nemo_coding_platform.core.persistence import load_headless_result_json, summarize_persisted_result
 from nemo_coding_platform.core.review_gate import build_merge_plan
@@ -37,6 +38,7 @@ class MissionControlRun:
     source_json: str
     timeline: tuple[dict[str, object], ...]
     decision_log: tuple[dict[str, object], ...]
+    readiness: dict[str, object]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -65,6 +67,7 @@ class MissionControlRun:
             "source_json": self.source_json,
             "timeline": list(self.timeline),
             "decision_log": list(self.decision_log),
+            "readiness": self.readiness,
         }
 
 
@@ -173,6 +176,17 @@ def _mission_run_from_payload(path: Path, payload: dict[str, Any]) -> MissionCon
     run = payload["run"]
     grade = str(summary.get("grade") or "unknown")
     sandbox_path = str(run.get("sandbox_path") or "")
+    _rs = score_persisted_result(payload)
+    readiness: dict[str, object] = {
+        "score": round(_rs.score, 3),
+        "grade": _rs.grade,
+        "validation_passed": _rs.validation_passed,
+        "has_checkpoint": _rs.has_checkpoint,
+        "has_review_package": _rs.has_review_package,
+        "memory_writeback_present": _rs.memory_writeback_present,
+        "mutation_present": _rs.mutation_present,
+        "reasons": list(_rs.reasons),
+    }
     return MissionControlRun(
         task_id=str(summary.get("task_id") or task.get("id") or ""),
         run_id=str(summary.get("run_id") or run.get("id") or ""),
@@ -199,6 +213,7 @@ def _mission_run_from_payload(path: Path, payload: dict[str, Any]) -> MissionCon
         source_json=str(path),
         timeline=_timeline_preview(payload),
         decision_log=_load_decision_log(sandbox_path),
+        readiness=readiness,
     )
 
 

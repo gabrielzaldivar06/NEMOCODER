@@ -5,7 +5,7 @@ from nemo_coding_platform.core.product_factory import get_platform_info
 
 class ProductFactoryTests(unittest.TestCase):
     def test_discovers_nemo_code_platform_info(self) -> None:
-        info = get_platform_info("nemo-code")
+        info = get_platform_info("space-code")
 
         self.assertEqual(info["product_base"], "nemo_code")
         self.assertTrue(info["capabilities"]["full_handoff"])

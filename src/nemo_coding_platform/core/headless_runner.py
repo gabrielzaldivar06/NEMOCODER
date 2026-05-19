@@ -225,6 +225,51 @@ def _build_generated_spec(request: HandoffRequest) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def _generate_tests_content(
+    profile: ModelProfile,
+    prd: str,
+    spec_content: str,
+    acceptance_criteria: tuple[str, ...],
+) -> str:
+    """Ask the LLM to generate pytest test stubs for the spec. Returns empty string on LLM failure."""
+    import json
+    import urllib.request
+
+    criteria_str = "\n".join(f"- {c}" for c in acceptance_criteria[:10])
+    system = (
+        "You are a TDD test generator. Given a spec and acceptance criteria, "
+        "write a Python pytest test file. Output ONLY raw Python code — no markdown fences, "
+        "no explanations. Tests must cover the acceptance criteria. "
+        "Use 'def test_' prefix for all test functions. No unittest.TestCase."
+    )
+    user = (
+        f"## Objective\n{prd[:400]}\n\n"
+        f"## Acceptance Criteria\n{criteria_str}\n\n"
+        f"## Spec\n{spec_content[:600]}\n\n"
+        "Write test_generated.py with pytest tests that verify the acceptance criteria. "
+        "Output raw Python only."
+    )
+    base_url = profile.base_url.rstrip("/")
+    payload = {
+        "model": profile.model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "max_tokens": 512,
+        "temperature": 0.2,
+    }
+    try:
+        req = urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as f:
+            data = json.loads(f.read().decode("utf-8"))
+        return str(data["choices"][0]["message"]["content"]).strip()
+    except Exception:
+        return ""
+
+
 def execute_headless_handoff(
     request: HandoffRequest,
     fail_validation: tuple[str, ...] = (),
@@ -428,6 +473,27 @@ def execute_headless_handoff(
         request.repo_path,
         cache_path=Path(request.repo_path) / ".nemo-runtimes" / "repo-map-cache.json",
     )
+
+    # --- GENERATE_TESTS step (TDD red phase) ---
+    # Skip LLM call in fake mode — no real engine to drive the TDD cycle.
+    emit_event("mutation_created", "Generating tests (TDD red phase)", "plan", {"step": "generate_tests"})
+    _generated_test_content = (
+        _generate_tests_content(profile, request.prd, spec_content, request.acceptance_criteria)
+        if provider_mode != "fake"
+        else ""
+    )
+    _generated_test_artifact: Artifact | None = None
+    if _generated_test_content:
+        write_runtime_file(runtime, "test_generated.py", _generated_test_content)
+        _generated_test_artifact = Artifact.from_content(
+            "artifact-generated-tests",
+            run.id,
+            ArtifactType.TEST,
+            "test_generated.py",
+            "LLM-generated pytest tests (TDD red phase)",
+            _generated_test_content,
+        )
+
     mutation_request = MutationRequest(
         request.prd,
         "generated-spec.md",
@@ -867,7 +933,8 @@ def execute_headless_handoff(
         if resume_restore_content
         else ()
     )
-    artifacts = prd_artifacts + resume_artifacts + (
+    _generated_tests_tuple: tuple[Artifact, ...] = ((_generated_test_artifact,) if _generated_test_artifact is not None else ())
+    artifacts = prd_artifacts + resume_artifacts + _generated_tests_tuple + (
         Artifact.from_content("artifact-spec", run.id, ArtifactType.SPEC, "generated-spec.md", "Generated specs", spec_content),
         Artifact.from_content("artifact-test", run.id, ArtifactType.TEST, "generated-test.txt", "Generated tests", "\n".join(request.acceptance_criteria)),
         Artifact.from_content("artifact-patch", run.id, ArtifactType.PATCH, "patch.diff", f"Applied provider mutation files={len(effective_mutation_result.changed_files)}", patch_content),

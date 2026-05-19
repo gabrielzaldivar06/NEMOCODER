@@ -17,23 +17,15 @@ class MockMCPServer(BaseHTTPRequestHandler):
 
     def do_POST(self):
         content_length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(content_length).decode("utf-8"))
-        
-        request_id = body.get("id")
-        method = body.get("method")
-        params = body.get("params", {})
-        
-        if method == "tools/call" and params.get("name") == "prime_context":
-            response = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "content": [{"type": "text", "text": json.dumps({"context": "mocked-context", "topic": "test"})}]
-                }
-            }
+        self.rfile.read(content_length)
+
+        # McpNemoAdapter POSTs to /api/tools/{tool_name} (REST, not jsonrpc)
+        tool_name = self.path.rstrip("/").split("/")[-1]
+        if tool_name == "prime_context":
+            response = {"context": "mocked-context", "topic": "test"}
         else:
-            response = {"jsonrpc": "2.0", "id": request_id, "error": {"message": "Unknown"}}
-            
+            response = {"error": "Unknown tool"}
+
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()

@@ -10,6 +10,7 @@ import { ObjectiveDefinition } from "./components/ObjectiveDefinition";
 import { PlanProgress } from "./components/PlanProgress";
 import { TelemetryColumn } from "./components/TelemetryColumn";
 import { WorktreeDiffPanel } from "./components/WorktreeDiffPanel";
+import { ReadinessScorePanel } from "./components/ReadinessScorePanel";
 import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
@@ -62,6 +63,16 @@ type MissionRun = {
   mergeable: boolean;
   source_json: string;
   timeline: TimelineEvent[];
+  readiness?: {
+    score: number;
+    grade: string;
+    validation_passed: boolean;
+    has_checkpoint: boolean;
+    has_review_package: boolean;
+    memory_writeback_present: boolean;
+    mutation_present: boolean;
+    reasons: string[];
+  };
 };
 
 type MissionState = {
@@ -1841,6 +1852,10 @@ export function App() {
                     const imgData = JSON.stringify({ src: `/api/artifacts/image/${artifactFile}`, alt: objective });
                     finalContent += `\n\`\`\`image\n${imgData}\n\`\`\``;
                   }
+                  const artifactHtmlContent = String((evt as Record<string, unknown>).artifact_html_content || "");
+                  if (artifactHtmlContent) {
+                    finalContent += `\n\`\`\`html_artifact\n${artifactHtmlContent}\n\`\`\``;
+                  }
 
                   setAgentMessages((prev) =>
                     prev.map((m) =>
@@ -2844,9 +2859,33 @@ export function App() {
             <ChevronDown size={14} /> Agent Runs
           </button>
           <div className={`run-tree-body ${runTreeCollapsed ? "collapsed" : "expanded"}`}>
-            {state.runs.length === 0 ? <EmptyState /> : <div className="run-tree-list">{state.runs.map((run) => {
+            {/* Active jobs (in-memory, may not have a persisted run yet) */}
+            {state.jobs.filter((j) => j.status === "running" || j.status === "starting").map((job) => (
+              <article className="tree-run-card tree-run-card--active" key={job.job_id}>
+                <div className="tree-run-active-header">
+                  <span className="tree-run-dot running" />
+                  <div className="tree-run-copy">
+                    <strong>{job.objective || job.job_id.slice(0, 16)}</strong>
+                    <small>{job.status} · {job.job_id.slice(0, 12)}</small>
+                  </div>
+                  <button
+                    className="tree-run-kill-btn"
+                    title="Cancelar este job"
+                    onClick={() => postJson("/api/job/cancel", { job_id: job.job_id }).then(refreshState).catch(() => {})}
+                  >
+                    <Square size={11} /> Stop
+                  </button>
+                </div>
+              </article>
+            ))}
+            {state.runs.length === 0 && state.jobs.filter((j) => j.status === "running" || j.status === "starting").length === 0 ? <EmptyState /> : <div className="run-tree-list">{state.runs.map((run) => {
               const isSelected = selectedRun?.source_json === run.source_json;
               const isExpanded = expandedRunSources[run.source_json] ?? isSelected;
+              const matchingJob = state.jobs.find((j) => j.task_id === run.task_id && j.run_id === run.run_id);
+              const isRunning = matchingJob?.status === "running" || matchingJob?.status === "starting";
+              const blockedReason = run.review_status === "blocked" && run.risk_flags.length > 0
+                ? run.risk_flags.join(", ")
+                : undefined;
               return (
                 <article className={`tree-run-card ${isSelected ? "selected" : ""}`} key={run.source_json}>
                   <button className="tree-run-button" onClick={() => { selectRun(run); setActiveSection("runs"); }}>
@@ -2855,13 +2894,31 @@ export function App() {
                       <strong>{run.objective}</strong>
                       <small>{describeRun(run)}</small>
                     </div>
-                    <span className={`pill ${statusTone(run.review_status)}`}>{statusLabel(run.review_status)}</span>
+                    <span className={`pill ${statusTone(run.review_status)}`} title={blockedReason}>{statusLabel(run.review_status)}</span>
                   </button>
+                  <div className="tree-run-actions">
+                    {isRunning && (
+                      <button
+                        className="tree-run-kill-btn"
+                        title="Cancelar job en ejecución"
+                        onClick={(e) => { e.stopPropagation(); postJson("/api/job/cancel", { job_id: matchingJob!.job_id }).then(refreshState).catch(() => {}); }}
+                      >
+                        <Square size={11} /> Stop
+                      </button>
+                    )}
+                    <button
+                      className="tree-run-delete-btn"
+                      title="Ocultar este run"
+                      onClick={(e) => { e.stopPropagation(); postJson("/api/runs/delete-one", { source_json: run.source_json }).then((d) => { if (d && (d as MissionState).runs) setState(d as MissionState); else refreshState(); }).catch(() => {}); }}
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
                   <div className="tree-run-meta">
                     <span>Decision: {reviewDecisionLabel(run)}</span>
                     <span>Fase: {summarizePhase(run)}</span>
                     <span>{run.changed_files.length} archivo(s)</span>
-                    <span>{run.risk_flags.length} riesgo(s)</span>
+                    {run.risk_flags.length > 0 && <span className="tree-run-risks" title={run.risk_flags.join(", ")}>{run.risk_flags.length} riesgo(s): {run.risk_flags[0]}{run.risk_flags.length > 1 ? ` +${run.risk_flags.length - 1}` : ""}</span>}
                     <button className={`tree-expand-toggle ${isExpanded ? "open" : ""}`} onClick={() => setExpandedRunSources((current) => ({ ...current, [run.source_json]: !isExpanded }))}>
                       <ChevronDown size={12} /> {isExpanded ? "Ocultar archivos" : "Abrir archivos"}
                     </button>
@@ -2968,7 +3025,7 @@ export function App() {
               onApplySelected={applySelectedDiff}
             />}
             {runsWorkbenchTab === "review" && (
-              <div style={{ padding: "12px 16px" }}>
+              <div className="review-tab-body">
                 <div className="review-seg-tabs">
                   <button
                     type="button"
@@ -3001,17 +3058,20 @@ export function App() {
                     </div>
                   )}
                   {reviewSubTab === "diff" && (
-                    <WorktreeDiffPanel
-                      jobId={selectedJob?.job_id ?? ""}
-                      onMerged={() => {
-                        if (selectedJob?.job_id) setReviewedJobIds((prev) => new Set([...prev, selectedJob.job_id]));
-                        refreshState();
-                      }}
-                      onRejected={() => {
-                        if (selectedJob?.job_id) setReviewedJobIds((prev) => new Set([...prev, selectedJob.job_id]));
-                        refreshState();
-                      }}
-                    />
+                    <div className="review-diff-row">
+                      <WorktreeDiffPanel
+                        jobId={selectedJob?.job_id ?? ""}
+                        onMerged={() => {
+                          if (selectedJob?.job_id) setReviewedJobIds((prev) => new Set([...prev, selectedJob.job_id]));
+                          refreshState();
+                        }}
+                        onRejected={() => {
+                          if (selectedJob?.job_id) setReviewedJobIds((prev) => new Set([...prev, selectedJob.job_id]));
+                          refreshState();
+                        }}
+                      />
+                      <ReadinessScorePanel readiness={selectedRun?.readiness} />
+                    </div>
                   )}
                 </div>
               </div>

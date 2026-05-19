@@ -43,7 +43,7 @@ function formatTs(ts: string) {
 export function TimelinePanel({ jobId, isLive, onStreamEnd }: Props) {
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [live, setLive] = useState(isLive);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setEvents([]);
@@ -84,9 +84,10 @@ export function TimelinePanel({ jobId, isLive, onStreamEnd }: Props) {
     }
   }, [jobId, isLive]);
 
-  // auto-scroll to bottom when events arrive
+  // auto-scroll to bottom within the events container (never scrolls the page)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [events.length]);
 
   return (
@@ -95,7 +96,7 @@ export function TimelinePanel({ jobId, isLive, onStreamEnd }: Props) {
         <span>Timeline</span>
         {live && <span className="timeline-live-dot" title="Live" />}
       </div>
-      <div className="timeline-events">
+      <div className="timeline-events" ref={scrollRef}>
         {events.length === 0 && (
           <div className="timeline-empty">
             {live ? "Esperando eventos…" : "Sin eventos registrados."}
@@ -113,7 +114,6 @@ export function TimelinePanel({ jobId, isLive, onStreamEnd }: Props) {
             </div>
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
     </div>
   );

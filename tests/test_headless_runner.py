@@ -7,7 +7,7 @@ from unittest.mock import patch
 from nemo_coding_platform.core.engine_interface import FakeEngineProvider
 from nemo_coding_platform.core.evals import score_headless_result
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
-from nemo_coding_platform.core.headless_runner import _bounded_nemo_context, execute_headless_handoff
+from nemo_coding_platform.core.headless_runner import _bounded_nemo_context, _generate_tests_content, execute_headless_handoff
 from nemo_coding_platform.core.memory import MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan
@@ -166,7 +166,7 @@ class HeadlessRunnerTests(unittest.TestCase):
 
                 return MutationPlan(writes=())
 
-        result = execute_headless_handoff(
+        result = _execute_fake_handoff(
             HandoffRequest("Build feature", ".", ("passes tests",), (f"{sys.executable} --version",), repair_budget=0),
             real_validation=True,
             mutation_provider=NoopProvider(),
@@ -402,6 +402,64 @@ class HeadlessRunnerTests(unittest.TestCase):
         prime_payload = second.nemo_results[0].payload
         self.assertEqual(prime_payload["source"], "persistent_store")
         self.assertIn("reuse-run-1", prime_payload["context"])
+
+
+    def test_generate_tests_content_returns_empty_on_network_failure(self) -> None:
+        from nemo_coding_platform.core.model_config import ModelProfile
+        profile = ModelProfile(model="test-model", base_url="http://127.0.0.1:19999/v1")
+        result = _generate_tests_content(profile, "Build a parser", "## Spec\n- parse JSON", ("parses correctly",))
+        self.assertEqual(result, "")
+
+    def test_generate_tests_content_parses_lm_response(self) -> None:
+        import json
+        from unittest.mock import MagicMock
+        from nemo_coding_platform.core.model_config import ModelProfile
+
+        profile = ModelProfile(model="test-model", base_url="http://127.0.0.1:1234/v1")
+        fake_body = json.dumps({"choices": [{"message": {"content": "def test_parser():\n    assert True"}}]}).encode()
+        fake_response = MagicMock()
+        fake_response.read.return_value = fake_body
+        fake_response.__enter__ = lambda s: s
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=fake_response):
+            result = _generate_tests_content(profile, "Build a parser", "## Spec", ("parses correctly",))
+
+        self.assertIn("def test_parser", result)
+
+    def test_headless_run_completes_gracefully_when_lm_unavailable_for_tests(self) -> None:
+        result = _execute_fake_handoff(
+            HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
+            task_id="gen-tests-task",
+            run_id="gen-tests-run",
+        )
+        # LLM is unavailable in test env → no generated-test artifact, but run completes
+        self.assertTrue(result.timeline.has_event_kind(EventKind.MUTATION_CREATED))
+        self.assertTrue(result.timeline.has_event_kind(EventKind.REVIEW_PACKAGE_CREATED))
+
+    def test_headless_run_includes_generated_test_artifact_when_lm_succeeds(self) -> None:
+        import json
+        from unittest.mock import MagicMock
+
+        fake_body = json.dumps({"choices": [{"message": {"content": "def test_feature():\n    assert True"}}]}).encode()
+        fake_response = MagicMock()
+        fake_response.read.return_value = fake_body
+        fake_response.__enter__ = lambda s: s
+        fake_response.__exit__ = MagicMock(return_value=False)
+
+        # Use explicit mutation_provider (not provider_mode="fake") so the GENERATE_TESTS
+        # LLM call is not skipped — fake mode skips the call because there is no real engine.
+        with patch("urllib.request.urlopen", return_value=fake_response):
+            result = execute_headless_handoff(
+                HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
+                mutation_provider=FakeEngineProvider(),
+                task_id="gen-tests-artifact-task",
+                run_id="gen-tests-artifact-run",
+            )
+
+        gen_test_artifacts = [a for a in result.artifacts if a.path == "test_generated.py"]
+        self.assertEqual(len(gen_test_artifacts), 1)
+        self.assertEqual(gen_test_artifacts[0].artifact_type, ArtifactType.TEST)
 
 
 if __name__ == "__main__":

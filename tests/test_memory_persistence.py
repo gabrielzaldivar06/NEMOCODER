@@ -19,7 +19,7 @@ class PersistentMemoryStoreTests(unittest.TestCase):
         self.assertEqual([item.id for item in atoms], [correction_id, decision_id])
         self.assertNotIn(low_id, [item.id for item in atoms])
         self.assertEqual(atoms[0].atom.atom_type, MemoryAtomType.CORRECTION)
-        self.assertEqual(atoms[0].tags, ("nemo-code", "handoff"))
+        self.assertEqual(atoms[0].tags, ("space-code", "handoff"))
 
     def test_prime_atoms_prefers_corrections_preferences_and_decisions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

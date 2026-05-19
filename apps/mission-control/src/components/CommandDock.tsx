@@ -3,7 +3,7 @@ import { ArrowUp, Brain, ChevronDown, Clock3, Database, Files, Hand, Plus, Serve
 
 export type CommandDockMode = "send" | "queue" | "steer" | "plan";
 
-export type ModelCaps = { thinking: boolean; temperature: boolean; reasoning_effort: boolean };
+export type ModelCaps = { thinking: boolean; temperature: boolean; reasoning_effort: boolean; vision: boolean; tools: boolean };
 export type ModelEntry = { id: string; type: string; state?: string; caps: ModelCaps };
 export type ProviderEntry = { id: string; label: string; base_url: string; models: ModelEntry[]; available: boolean };
 export type ChatParams = { model: string; baseUrl: string; temperature: number; enableThinking: boolean };
@@ -27,7 +27,7 @@ type CommandDockProps = {
 };
 
 const TEMP_STEPS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
-const DEFAULT_CAPS: ModelCaps = { thinking: false, temperature: true, reasoning_effort: false };
+const DEFAULT_CAPS: ModelCaps = { thinking: false, temperature: true, reasoning_effort: false, vision: false, tools: true };
 
 function loadTemp(): number {
   const stored = parseFloat(localStorage.getItem("mc_temperature") ?? "");
@@ -37,6 +37,21 @@ function loadTemp(): number {
 function shortName(id: string): string {
   const slash = id.lastIndexOf("/");
   return slash >= 0 ? id.slice(slash + 1) : id;
+}
+
+function modelSize(id: string): string | null {
+  const hits = [...id.matchAll(/(\d+\.?\d*)\s*b(?=[^a-zA-Z]|$)/gi)];
+  const sizes = hits.map((m) => parseFloat(m[1])).filter((n) => n >= 1 && n <= 2000);
+  if (!sizes.length) return null;
+  const n = Math.max(...sizes);
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}T` : `${n}B`;
+}
+
+function sizeTier(label: string): "small" | "medium" | "large" {
+  const n = parseFloat(label);
+  if (label.endsWith("T") || n > 70) return "large";
+  if (n > 13) return "medium";
+  return "small";
 }
 
 export function CommandDock({ draft, provider, endpointLabel, currentModel, running, queuedPrompt, queuedPrompts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory }: CommandDockProps) {
@@ -91,14 +106,10 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
   };
 
   const selectModel = (modelId: string, baseUrl: string) => {
-    const entry = allModels.find((m) => m.id === modelId);
-    const newCaps = entry?.caps ?? DEFAULT_CAPS;
-    const nextThinking = enableThinking && newCaps.thinking;
     onModelChange(modelId);
     setSelectedBaseUrl(baseUrl);
     setModelPickerOpen(false);
-    if (nextThinking !== enableThinking) setEnableThinking(nextThinking);
-    notifyParams(modelId, baseUrl, temperature, nextThinking);
+    notifyParams(modelId, baseUrl, temperature, enableThinking);
   };
 
   const cycleTemperature = () => {
@@ -211,8 +222,11 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
                       {m.id === currentModel && <span className="model-active-dot">●</span>}
                       <span className="model-option-name">{shortName(m.id)}</span>
                       <span className="model-option-badges">
-                        {m.state === "loaded" && <span className="model-badge loaded">▲</span>}
-                        {m.caps.thinking && <span className="model-badge thinking">💭</span>}
+                        {m.state === "loaded" && <span className="model-badge loaded" title="Cargado en memoria">▲</span>}
+                        {(() => { const sz = modelSize(m.id); return sz ? <span className={`model-badge size ${sizeTier(sz)}`} title={`Parámetros del modelo: ~${sz}`}>{sz}</span> : null; })()}
+                        {m.caps.thinking && <span className="model-badge thinking" title="Thinking / razonamiento extendido">💭</span>}
+                        {m.caps.vision && <span className="model-badge vision" title="Visión / multimodal">👁</span>}
+                        {m.caps.tools && <span className="model-badge tools" title="Function calling / herramientas">🔧</span>}
                       </span>
                     </button>
                   ))}
@@ -227,28 +241,28 @@ export function CommandDock({ draft, provider, endpointLabel, currentModel, runn
           {isNvidiaProvider ? "NIM" : "Local"}
         </span>
 
-        {/* Thinking toggle — only for capable models */}
-        {caps.thinking && (
-          <button
-            className={`context-chip thinking-chip${enableThinking ? " on" : ""}`}
-            onClick={toggleThinking}
-            title={enableThinking ? "Thinking activado — click para desactivar" : "Activar thinking"}
-          >
-            <Brain size={11} />
-            <span>{enableThinking ? "Thinking" : "Think"}</span>
-          </button>
-        )}
+        {/* Thinking toggle — always available; dimmed when model doesn't declare thinking support */}
+        <button
+          className={`context-chip thinking-chip${enableThinking ? " on" : ""}${!caps.thinking ? " uncertain" : ""}`}
+          onClick={toggleThinking}
+          title={caps.thinking
+            ? (enableThinking ? "Thinking activado — click para desactivar" : "Activar thinking")
+            : (enableThinking ? "Thinking activado (experimental para este modelo) — click para desactivar" : "Activar thinking (experimental para este modelo)")}
+        >
+          <Brain size={11} />
+          <span>{enableThinking ? "Thinking" : "Think"}</span>
+        </button>
 
-        {/* Temperature chip — shown when model supports it (hidden while thinking is on for models that lock temp) */}
+        {/* Temperature chip — shown when model supports it (locked while thinking is on) */}
         {caps.temperature && (
           <button
-            className={`context-chip temp-chip${enableThinking && caps.thinking ? " dimmed" : ""}`}
+            className={`context-chip temp-chip${enableThinking ? " dimmed" : ""}`}
             onClick={cycleTemperature}
-            disabled={enableThinking && caps.thinking}
-            title={enableThinking && caps.thinking ? "Temperatura fija en modo thinking" : `Temperatura: ${temperature} — click para cambiar`}
+            disabled={enableThinking}
+            title={enableThinking ? "Temperatura fija en modo thinking" : `Temperatura: ${temperature} — click para cambiar`}
           >
             <Thermometer size={11} />
-            <span>{enableThinking && caps.thinking ? "T:auto" : temperature.toFixed(1)}</span>
+            <span>{enableThinking ? "T:auto" : temperature.toFixed(1)}</span>
           </button>
         )}
 

@@ -16,11 +16,21 @@ type ArtifactWorkbenchProps = {
 
 type ArtifactKindFilter = "all" | GeneratedArtifactKind;
 
+// In-memory storage polyfill injected into html_artifact iframes.
+// sandbox="allow-scripts" gives the iframe a null origin, making localStorage throw SecurityError.
+const _STORAGE_POLYFILL = `<script>(function(){var _s={};var P={getItem:function(k){return Object.prototype.hasOwnProperty.call(_s,k)?_s[k]:null},setItem:function(k,v){_s[String(k)]=String(v)},removeItem:function(k){delete _s[String(k)]},clear:function(){_s={}},get length(){return Object.keys(_s).length},key:function(i){return Object.keys(_s)[i]??null}};try{localStorage.getItem('__p')}catch(e){try{Object.defineProperty(window,'localStorage',{value:P,writable:false,configurable:true})}catch(_){}try{Object.defineProperty(window,'sessionStorage',{value:P,writable:false,configurable:true})}catch(_){}}}());<\/script>`;
+
+function injectPolyfill(html: string): string {
+  if (html.includes("</head>")) return html.replace("</head>", _STORAGE_POLYFILL + "</head>");
+  if (html.includes("<body")) return html.replace("<body", _STORAGE_POLYFILL + "<body");
+  return _STORAGE_POLYFILL + html;
+}
+
 function artifactSrcDoc(artifact: GeneratedArtifact): string {
   if (artifact.kind === "svg") {
     return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;min-height:100%;display:grid;place-items:center;background:#07101f;color:#e5edf8}svg{max-width:100%;max-height:100%;}</style></head><body>${artifact.content}</body></html>`;
   }
-  if (artifact.kind === "html") return artifact.content;
+  if (artifact.kind === "html") return injectPolyfill(artifact.content);
   if (artifact.kind === "react") {
     return `<!doctype html><html><head><meta charset="utf-8"><script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script><script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script><script src="https://unpkg.com/@babel/standalone/babel.min.js"></script><style>html,body,#root{margin:0;min-height:100%;background:#07101f;color:#e5edf8;font-family:Inter,system-ui,sans-serif}</style></head><body><div id="root"></div><script type="text/babel">${artifact.content}\nReactDOM.render(React.createElement(App), document.getElementById("root"));</script></body></html>`;
   }
