@@ -11,11 +11,11 @@ All functions skip InMemoryNemoAdapter (test stub) and None. Never raise.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import textwrap
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING
 
 from nemo_coding_platform.core.nemo_adapter import InMemoryNemoAdapter
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase
@@ -42,10 +42,12 @@ def _lm_extract(system_prompt: str, user_prompt: str, base_url: str, model: str)
     """Make a minimal LLM call for text extraction. Returns empty string on any error."""
     if not base_url:
         return ""
+    if not model:
+        return ""
     try:
         endpoint = base_url.rstrip("/") + "/chat/completions"
         body = json.dumps({
-            "model": model or "auto",
+            "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -72,7 +74,6 @@ def _skip(adapter: object) -> bool:
 
 def _tag_repo(repo_path: str) -> str:
     """Stable short tag derived from the repo path."""
-    import hashlib
     return "repo_" + hashlib.md5(repo_path.encode()).hexdigest()[:8]
 
 
@@ -178,11 +179,11 @@ def build_project_context(
     parts: list[str] = []
     repo_tag = _tag_repo(repo_path)
 
-    _queries = [
+    queries = [
         (f"project architecture conventions patterns {repo_path}", [_ARCH_MEMORY_TYPE, repo_tag], "Project context"),
         (f"task outcome completed {repo_path} {task[:60]}", [_OUTCOME_MEMORY_TYPE, repo_tag], "Recent work"),
     ]
-    for query, tags, label in _queries:
+    for query, tags, label in queries:
         try:
             _, result = adapter.call(
                 NemoLifecyclePhase.BUILD,
