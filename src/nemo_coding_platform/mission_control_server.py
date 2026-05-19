@@ -785,6 +785,11 @@ class HandoffJobManager:
         pythonpath = str(source_root) if not existing_pythonpath else f"{source_root};{existing_pythonpath}"
         env = {**os.environ, "PYTHONPATH": pythonpath, "PYTHONUNBUFFERED": "1"}
         _nemo_settings = _load_settings(config) if config.memory_db else {}
+        # Propagate the API key from settings so nemo_code_runtime subprocess can authenticate
+        # against non-local endpoints (e.g. NVIDIA NIM) where LMSTUDIO_API_KEY is not set.
+        _settings_api_key = str(_nemo_settings.get("api_key") or job.payload.get("api_key") or "")
+        if _settings_api_key and _settings_api_key != "lm-studio":
+            env.setdefault("LMSTUDIO_API_KEY", _settings_api_key)
         _nemo_url = str(_nemo_settings.get("nemo_mcp_url") or "")
         _nemo_db = str(config.memory_db) if config.memory_db else ""
         if _nemo_db and _nemo_url:
