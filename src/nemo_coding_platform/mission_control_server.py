@@ -6425,6 +6425,23 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             limit=3,
         )
 
+        # Reflexion: store an episodic lesson from the previous iteration so the current
+        # iteration's search_memories can find it and avoid repeating the same mistakes.
+        if i > 1 and iterations:
+            _prev = iterations[-1]
+            _lesson = (
+                f"[intra-job {job_id[:12] if job_id else 'nojob'}] iter {i - 1}/{max_iterations}: "
+                f"score {_prev['score']:.1f}/10 exec={'OK' if _prev['exec_ok'] else 'FAIL'}. "
+                f"Insight: {_prev['critique_text'][:200]}"
+            )
+            _nemo(
+                "cognitive_ingest", "review",
+                content=_lesson,
+                memory_type="episodic",
+                tags=("intra_job", lang, topic, obj_hash),
+                context=f"Plan loop intra-job reflexion after iteration {i - 1}",
+            )
+
         # --- Build generation prompt ---
         if i == 1:
             if is_viz:
@@ -6733,7 +6750,33 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             "sdd_phase": str(_sdd_phase),
         }
 
+        # --- Progressive refinement: update quality tracking counters ---
+        _delta = score - prev_score
+        if score >= 9.5:
+            consecutive_perfect += 1
+        else:
+            consecutive_perfect = 0
+
+        if i > 1 and abs(_delta) < 0.5 and best_score >= 6.0:
+            plateau_count += 1
+        else:
+            plateau_count = 0
+
+        prev_score = score
+
+        # --- Stop conditions (evaluated in priority order) ---
+        if consecutive_perfect >= 2:
+            stop_reason = "consecutive_perfect"
+            break
+        if i > 1 and score < best_score - 2.0:
+            stop_reason = "regression"
+            break
+        if plateau_count >= 2:
+            stop_reason = "plateau"
+            break
+        # Legacy threshold: still honoured for backwards compat (e.g. quality_threshold=7.0 in old tests)
         if score >= quality_threshold:
+            stop_reason = "quality_threshold"
             break
 
     # Copy any generated image artifacts to the served artifacts folder.
@@ -6772,7 +6815,10 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
 
     # Final structured reflexion via reflexion.py
     completed = final_score >= quality_threshold and best_exec_ok
-    stop_reason = "quality_threshold_reached" if completed else "max_iterations_reached"
+    # Preserve the stop_reason set inside the loop (consecutive_perfect / regression / plateau /
+    # quality_threshold). Only fall back to the legacy strings when the loop ended naturally.
+    if stop_reason == "max_iterations":
+        stop_reason = "quality_threshold_reached" if completed else "max_iterations"
     tests_broken: tuple[str, ...] = ("pytest_failures",) if harness_total_failed > 0 else ()
     _reflexion_entry = ReflexionEntry(
         task_type="plan_loop",
