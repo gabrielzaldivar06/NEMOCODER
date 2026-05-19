@@ -41,6 +41,7 @@ from nemo_coding_platform.core.mission_control import build_mission_control_stat
 from nemo_coding_platform.core.model_config import MODEL_ROLES, default_model_role_profile
 from nemo_coding_platform.core.nemo_adapter import McpNemoAdapter, NemoCallResult, NemoCall, PersistentNemoAdapter
 from nemo_coding_platform.core.nemo_patterns import nemo_before_attempt, nemo_after_failure, nemo_after_success
+from nemo_coding_platform.core.nemo_learning import build_project_context, ingest_task_outcome
 from nemo_coding_platform.core.reflexion import ReflexionEntry, persist_reflexion
 from nemo_coding_platform.core.sdd import SDDPhase
 from nemo_coding_platform.core.nemo_lifecycle import NemoLifecyclePhase, lifecycle_contract, tool_allowed_in_lifecycle
@@ -6441,6 +6442,16 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     # SDD phase tracking: SPEC (iter 1 with test mode) → IMPLEMENT → VALIDATE
     _sdd_phase = SDDPhase.SPEC if is_test else SDDPhase.IMPLEMENT
 
+    # --- NEMO Learning: cross-session project context ---
+    _plan_repo = str(getattr(config, "repo_path", "") or "")
+    if _plan_repo and _nemo_adapter:
+        try:
+            _learning_ctx = build_project_context(_nemo_adapter, repo_path=_plan_repo, task=objective)
+            if _learning_ctx:
+                gen_sys = _learning_ctx + "\n\n" + gen_sys
+        except Exception:
+            pass
+
     # Emit start event immediately — plan loop generates standalone code and
     # doesn't benefit from repo context (that's for handoff tasks).
     yield {"type": "start", "objective": objective, "max_iterations": max_iterations, "quality_threshold": quality_threshold, "job_id": job_id}
@@ -6929,6 +6940,23 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         persist_reflexion(_nemo_adapter, _reflexion_entry)
     except Exception:  # noqa: BLE001
         pass
+
+    # --- NEMO Learning: persist plan loop outcome ---
+    if iterations and best_score >= 7.0:
+        try:
+            ingest_task_outcome(
+                _nemo_adapter,
+                objective=objective,
+                repo_path=_plan_repo if _plan_repo else "",
+                files_changed=[],
+                result_summary=(
+                    f"plan_loop score={best_score:.1f}/10 "
+                    f"iterations={len(iterations)} lang={lang} stop_reason={stop_reason}"
+                ),
+                success=completed,
+            )
+        except Exception:
+            pass
 
     yield {
         "type": "done",
