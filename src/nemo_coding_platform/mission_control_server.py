@@ -5811,9 +5811,10 @@ response text as a fallback. DO NOT call NEMO MCP tools (search_memories, contex
    params: objective (required), acceptance (required), target_files (optional)
 
 2. plan_generate — iterative PYTHON code generation with scoring (for Python scripts only)
-   Use ONLY for Python scripts, matplotlib charts, data analysis, or Python CLI programs.
-   DO NOT use for HTML pages, HTML games, or anything that runs in a browser — use html_artifact instead.
-   params: objective (required), max_iterations (default 3), quality_threshold (default 7.0)
+   Use ONLY for Python scripts, matplotlib charts, data analysis, or Python CLI programs that run HEADLESS (no display).
+   DO NOT use for: HTML pages, HTML games, browser apps, pygame games, tkinter apps, desktop GUIs, or anything needing a screen.
+   For pygame / desktop games → use handoff_start instead (it creates the file on disk and runs with a real display).
+   params: objective (required), max_iterations (default 5), quality_threshold (default 10.0 — runs until perfect or plateau)
 
 3. job_status — query the status of a running background job
    Use when the user asks about the progress of an ongoing operation.
@@ -5837,8 +5838,8 @@ _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
                 "type": "object",
                 "properties": {
                     "objective": {"type": "string", "description": "What the Python script should do"},
-                    "max_iterations": {"type": "integer", "description": "Max refinement iterations (default 3)"},
-                    "quality_threshold": {"type": "number", "description": "Minimum quality score 0-10 (default 7.0)"},
+                    "max_iterations": {"type": "integer", "description": "Max refinement iterations (default 5)"},
+                    "quality_threshold": {"type": "number", "description": "Stop early if score reaches this (default 10.0 = never stop early, always exhaust iterations)"},
                 },
                 "required": ["objective"],
             },
@@ -6262,7 +6263,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         raise _bad_request("objective is required for plan mode", error_code="missing_objective")
 
     max_iterations = max(1, min(10, int(payload.get("max_iterations") or 5)))
-    quality_threshold = max(0.1, float(payload.get("quality_threshold") or 7.0))
+    quality_threshold = max(0.1, float(payload.get("quality_threshold") or 10.0))
     topic = str(payload.get("topic") or "autonomous_plan").strip()
     use_parallel = bool(payload.get("parallel_candidates", True))
     use_visual = bool(payload.get("visual_critique", True))
@@ -6401,9 +6402,10 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             "no explanations, no comments. Keep it under 80 lines. "
             "IMPORTANT rules: "
             "(1) The code must be self-contained and runnable with no missing imports. "
-            "(2) Do NOT use input(), GUI libraries (tkinter, pygame, wx), or any blocking calls. "
-            "(3) Print meaningful output to stdout so results are visible. "
-            "(4) Handle all edge cases — the code will be executed and the output verified."
+            "(2) Do NOT use input(), GUI libraries (tkinter, pygame, wx, SDL), or any blocking calls — this runs HEADLESS with no display. "
+            "(3) If the objective requires a package not in stdlib, add 'import subprocess, sys; subprocess.check_call([sys.executable, \"-m\", \"pip\", \"install\", \"<pkg>\"], stdout=subprocess.DEVNULL)' at the top. "
+            "(4) Print meaningful output to stdout so results are visible. "
+            "(5) Handle all edge cases — the code will be executed and the output verified."
         )
     else:
         lang_display = lang.capitalize()
