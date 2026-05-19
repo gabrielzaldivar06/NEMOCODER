@@ -2427,6 +2427,7 @@ export function App() {
   const startNewChat = () => {
     if (confirm("¿Iniciar un nuevo chat? El historial actual se cerrará sin borrar los archivos del proyecto.")) {
       setAgentMessages([]);
+      autoDispatchedRef.current.clear();
       setAgentDraft("");
       setHomeAgentDraft("");
       setQueuedAgentPrompts([]);
