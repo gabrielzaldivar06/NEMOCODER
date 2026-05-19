@@ -133,6 +133,8 @@ def build_git_engine_command(profile: ModelProfile, message_file: str | Path) ->
         "--yes-always",
         "--no-show-model-warnings",
         "--no-analytics",
+        "--map-tokens",
+        "0",  # Disable Aider's repo map — we inject our own via the message file
         # --no-git / --no-auto-commits intentionally absent: Aider commits in the worktree branch
     )
 
