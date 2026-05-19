@@ -14,6 +14,7 @@ import threading
 import time
 import webbrowser
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
@@ -5797,6 +5798,152 @@ def _extract_code_block(text: str, lang: str = "python") -> str:
 
     # Last resort: find the longest syntactically-valid Python substring
     return _strip_shell_artifacts(_extract_ast_valid(text))
+
+
+# ── Pollinations media tools ──────────────────────────────────────────────────
+
+POLLINATIONS_TOOLS: frozenset[str] = frozenset(
+    {"generate_image", "generate_audio", "generate_video", "generate_text"}
+)
+
+
+def _pollinations_image(params: dict[str, object], config: "MissionControlServerConfig") -> dict[str, object]:
+    prompt = str(params.get("prompt") or "")
+    if not prompt:
+        return {"error": "prompt is required"}
+    model = str(params.get("model") or "flux")
+    width = int(params.get("width") or 1024)
+    height = int(params.get("height") or 1024)
+    enhance = "true" if params.get("enhance", True) else "false"
+    encoded = urllib.parse.quote(prompt, safe="")
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?model={model}&width={width}&height={height}&enhance={enhance}"
+    )
+    if params.get("seed") is not None:
+        url += f"&seed={int(params['seed'])}"  # type: ignore[arg-type]
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            image_bytes = resp.read()
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.jpg"
+        dest.write_bytes(image_bytes)
+        return {"artifact_path": str(dest), "url": url, "model_used": model}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def _pollinations_audio(params: dict[str, object], config: "MissionControlServerConfig") -> dict[str, object]:
+    text = str(params.get("text") or "")
+    if not text:
+        return {"error": "text is required"}
+    voice = str(params.get("voice") or "nova")
+    model = str(params.get("model") or "openai-audio")
+    encoded = urllib.parse.quote(text, safe="")
+    url = f"https://audio.pollinations.ai/{encoded}?voice={voice}&model={model}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            audio_bytes = resp.read()
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "audio"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.mp3"
+        dest.write_bytes(audio_bytes)
+        return {"artifact_path": str(dest), "url": url, "voice_used": voice}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def _pollinations_video(params: dict[str, object], config: "MissionControlServerConfig") -> dict[str, object]:
+    prompt = str(params.get("prompt") or "")
+    if not prompt:
+        return {"error": "prompt is required"}
+    model = str(params.get("model") or "seedance-1-lite")
+    duration = int(params.get("duration") or 5)
+    body: dict[str, object] = {"prompt": prompt, "model": model, "duration": duration}
+    if params.get("keyframe_image"):
+        body["image"] = str(params["keyframe_image"])
+    post_data = json.dumps(body).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            "https://video.pollinations.ai/",
+            data=post_data,
+            headers={"Content-Type": "application/json", "User-Agent": "SpaceCode/1.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            init_result = json.loads(resp.read().decode("utf-8"))
+        video_url = str(init_result.get("url") or init_result.get("video_url") or "")
+        if not video_url:
+            return {"error": f"no video URL in response: {str(init_result)[:200]}"}
+        # Poll until the video is ready (max 120s, 5s interval)
+        for _ in range(24):
+            time.sleep(5)
+            poll_req = urllib.request.Request(video_url, headers={"User-Agent": "SpaceCode/1.0"})
+            with urllib.request.urlopen(poll_req, timeout=30) as poll_resp:
+                content_type = poll_resp.headers.get("Content-Type", "")
+                raw = poll_resp.read()
+            if "video" in content_type or "mp4" in content_type:
+                artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "video"
+                artifacts_dir.mkdir(parents=True, exist_ok=True)
+                dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.mp4"
+                dest.write_bytes(raw)
+                return {"artifact_path": str(dest), "url": video_url, "model_used": model}
+            try:
+                poll_data = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if poll_data.get("status") == "done":
+                final_url = str(poll_data.get("url") or video_url)
+                dl_req = urllib.request.Request(final_url, headers={"User-Agent": "SpaceCode/1.0"})
+                with urllib.request.urlopen(dl_req, timeout=60) as dl_resp:
+                    video_bytes = dl_resp.read()
+                artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "video"
+                artifacts_dir.mkdir(parents=True, exist_ok=True)
+                dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.mp4"
+                dest.write_bytes(video_bytes)
+                return {"artifact_path": str(dest), "url": final_url, "model_used": model}
+        return {"error": "video generation timed out after 120s"}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def _pollinations_text(params: dict[str, object]) -> dict[str, object]:
+    prompt = str(params.get("prompt") or "")
+    if not prompt:
+        return {"error": "prompt is required"}
+    model = str(params.get("model") or "openai")
+    encoded = urllib.parse.quote(prompt, safe="")
+    url = f"https://text.pollinations.ai/{encoded}?model={model}"
+    if params.get("system"):
+        url += f"&system={urllib.parse.quote(str(params['system']), safe='')}"
+    if params.get("seed") is not None:
+        url += f"&seed={int(params['seed'])}"  # type: ignore[arg-type]
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            text_result = resp.read().decode("utf-8")
+        return {"text": text_result, "model_used": model}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def _execute_pollinations_tool(
+    inv: dict[str, object], config: "MissionControlServerConfig"
+) -> dict[str, object]:
+    tool = str(inv.get("tool") or "")
+    params: dict[str, object] = dict(inv.get("params") or {})
+    if tool == "generate_image":
+        return _pollinations_image(params, config)
+    if tool == "generate_audio":
+        return _pollinations_audio(params, config)
+    if tool == "generate_video":
+        return _pollinations_video(params, config)
+    if tool == "generate_text":
+        return _pollinations_text(params)
+    return {"error": f"unknown pollinations tool: {tool}"}
 
 
 _AGENT_TOOL_CATALOG = """\
