@@ -42,8 +42,8 @@ NEMO MCP SSE corre en puerto **8765** (PID 28048 en 2026-05-13). Es el VS Code e
 ### ❌ NUNCA abrir instancias extra del servidor o frontend
 Si el puerto ya responde, el proceso YA ESTÁ corriendo. No abrir instancias duplicadas.
 
-### ❌ NUNCA intentar arrancar el backend Python desde Claude
-`Start-Process` mata el proceso hijo inmediatamente (sin consola). El usuario lo arranca con `start-mvp-local.ps1`.
+### ✅ PUEDO  arrancar el backend Python desde Claude
+`Start-Process` mata el proceso hijo inmediatamente (sin consola). arranca con `start-mvp-local.ps1`.
 
 ### ✅ PUEDO arrancar el frontend Vite desde Claude
 `npm run dev` en `apps/mission-control/` SÍ funciona como proceso background desde Claude (Bash con `run_in_background`). Validado 2026-05-13.
