@@ -6271,6 +6271,19 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     last_exec_output = ""  # last failure output — used for reflexion root_cause
     harness_total_failed = 0  # aggregate pytest failures across all iterations
 
+    # Progressive refinement tracking
+    consecutive_perfect = 0   # iters in a row with score >= 9.5
+    plateau_count = 0          # iters in a row with |delta| < 0.5 AND best_score >= 6.0
+    prev_score = 0.0           # score from the previous iteration
+    stop_reason = "max_iterations"  # updated when an early-stop condition fires
+
+    # Sleep gating: only throttle LLM calls on local inference (Arc iGPU Vulkan contention)
+    try:
+        _base_url_str = _chat_base_url(payload)
+    except Exception:
+        _base_url_str = "http://localhost:1234/v1"
+    _is_local_llm = "localhost" in _base_url_str or "127.0.0.1" in _base_url_str
+
     _VIZ_KWS = re.compile(
         r"\b(plot|chart|graph|visuali[sz]|draw|diagr|spiral|matplotlib|pyplot|figure|bar|pie|"
         r"scatter|histogram|heatmap|contour|3d|surface|render|image|pixel)\b",
