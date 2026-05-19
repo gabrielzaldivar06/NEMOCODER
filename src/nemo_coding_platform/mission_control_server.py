@@ -6383,11 +6383,6 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             "(3) Include all necessary imports or dependencies at the top. "
             "(4) If the code produces output, print it to stdout."
         )
-    critique_sys = (
-        "You are a code reviewer. Reply ONLY with a JSON object — no markdown, no prose. "
-        'Format: {"score":<int 1-10>,"present":[<str>],"missing":[<str>],'
-        '"improvements":[<str>],"summary":"<str>"}'
-    )
 
     # SDD phase tracking: SPEC (iter 1 with test mode) → IMPLEMENT → VALIDATE
     _sdd_phase = SDDPhase.SPEC if is_test else SDDPhase.IMPLEMENT
@@ -6617,11 +6612,19 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         if exec_ok and use_visual:
             visual_raw = _visual_critique_lm_call(payload, objective)
 
-        # --- Text self-critique ---
+        # --- Text self-critique (adaptive mode, targeting best artifact seen so far) ---
         exec_note = "Execution: OK" if exec_ok else f"Execution FAILED: {exec_output[:300]}"
         if harness_result and not harness_result.get("skipped"):
             exec_note += f" | Tests: {harness_result.get('passed',0)} passed, {harness_result.get('failed',0)} failed"
-        critique_user = f"Task: {objective[:200]}\n{exec_note}\n\nCode:\n{code[:1500]}"
+        # Build mode-specific critique prompt based on current best score
+        critique_sys = _build_critique_sys(best_score)
+        # Critique the best artifact, not the (possibly regressed) current one.
+        # This ensures improvement feedback is always anchored to the highest-quality version.
+        _critique_target = best_code if best_code else code
+        critique_user = (
+            f"Task: {objective[:200]}\n{exec_note}\n\n"
+            f"Code (best artifact so far, score {best_score:.1f}/10):\n{_critique_target[:1500]}"
+        )
         try:
             critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=120, temperature=0.0)
         except Exception:  # noqa: BLE001
