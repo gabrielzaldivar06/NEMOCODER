@@ -2680,7 +2680,8 @@ button { font: inherit; }
 .agent-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .agent-actions button { border: 1px solid #3d444d; background: #252b32; color: #d4d8dd; border-radius: 5px; min-height: 28px; padding: 5px 8px; display: inline-flex; align-items: center; gap: 6px; }
 .agent-actions button.apply { border-color: #2f6f3e; background: #173820; color: #b8f3e6; }
-.agent-actions button:hover { border-color: #58a6ff; }
+.agent-actions button:hover:not(:disabled) { border-color: #58a6ff; }
+.agent-actions button.auto-dispatched { border-color: #2f6f3e; background: #0f2820; color: #56d364; opacity: 0.7; cursor: default; }
 .mission-event-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .mission-action-btn { border: 1px solid #3d444d; background: #1a2030; color: #c9d1d9; border-radius: 5px; min-height: 28px; padding: 5px 10px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; transition: border-color 0.15s, background 0.15s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
 .mission-action-btn:hover { border-color: #58a6ff; background: #1e2d40; color: #e6edf3; }

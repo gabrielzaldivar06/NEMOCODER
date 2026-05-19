@@ -202,6 +202,7 @@ type AgentAction = {
   label: string;
   summary: string;
   payload: Record<string, unknown>;
+  autoDispatched?: boolean;
 };
 type AgentMessage = {
   id: string;
@@ -1065,12 +1066,23 @@ export function App() {
   useEffect(() => {
     const last = agentMessages[agentMessages.length - 1];
     if (!last || last.role !== "assistant") return;
-    for (const action of last.actions ?? []) {
-      if (action.id && AUTO_DISPATCH_KINDS.has(action.kind as AgentAction["kind"]) && !autoDispatchedRef.current.has(action.id)) {
-        autoDispatchedRef.current.add(action.id);
-        runAgentAction(action);
-      }
+    const toDispatch = (last.actions ?? []).filter(
+      (a) => a.id && AUTO_DISPATCH_KINDS.has(a.kind as AgentAction["kind"]) && !autoDispatchedRef.current.has(a.id),
+    );
+    if (toDispatch.length === 0) return;
+    for (const action of toDispatch) {
+      autoDispatchedRef.current.add(action.id);
+      runAgentAction(action);
     }
+    // Mark dispatched actions in message state so buttons render as disabled badges.
+    const dispatchedIds = new Set(toDispatch.map((a) => a.id));
+    setAgentMessages((prev) =>
+      prev.map((m) =>
+        m.id !== last.id
+          ? m
+          : { ...m, actions: m.actions?.map((a) => (dispatchedIds.has(a.id) ? { ...a, autoDispatched: true } : a)) },
+      ),
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runAgentAction reads fresh state at dispatch time; adding it would require useCallback refactor across the entire function
   }, [agentMessages]);
 
@@ -5162,9 +5174,15 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
       </div>}
       {message.actions && message.actions.length > 0 && <div className="agent-actions">
         {message.actions.map((action) => (
-          <button className={action.kind} onClick={() => onRunAction(action)} title={action.summary} key={action.id}>
-            {action.kind === "apply" ? <CheckCircle2 size={14} /> : action.kind === "layout" ? <PanelBottom size={14} /> : <Play size={14} />}
-            {action.label}
+          <button
+            className={`${action.kind}${action.autoDispatched ? " auto-dispatched" : ""}`}
+            onClick={() => !action.autoDispatched && onRunAction(action)}
+            disabled={action.autoDispatched}
+            title={action.autoDispatched ? `✓ launched automatically` : action.summary}
+            key={action.id}
+          >
+            {action.autoDispatched ? <CheckCircle2 size={14} /> : action.kind === "apply" ? <CheckCircle2 size={14} /> : action.kind === "layout" ? <PanelBottom size={14} /> : <Play size={14} />}
+            {action.autoDispatched ? `✓ ${action.label}` : action.label}
           </button>
         ))}
       </div>}
