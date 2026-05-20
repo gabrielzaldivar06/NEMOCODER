@@ -224,5 +224,22 @@ class TestPollinationsVideo(unittest.TestCase):
         self.assertIn("suspiciously small", result["error"])
 
 
+class TestPollinationsToolCatalog(unittest.TestCase):
+    def test_catalog_contains_all_four_tool_names(self):
+        for tool in ("generate_image", "generate_audio", "generate_video", "generate_text"):
+            self.assertIn(tool, mcs._AGENT_TOOL_CATALOG, f"Tool '{tool}' not in catalog")
+
+    def test_schemas_contain_all_four_tool_names(self):
+        schema_names = {s["function"]["name"] for s in mcs._AGENT_TOOL_SCHEMAS}
+        for tool in ("generate_image", "generate_audio", "generate_video", "generate_text"):
+            self.assertIn(tool, schema_names, f"Tool '{tool}' not in schemas")
+
+    def test_pollinations_tools_constant_has_all_four(self):
+        self.assertEqual(
+            mcs.POLLINATIONS_TOOLS,
+            frozenset({"generate_image", "generate_audio", "generate_video", "generate_text"}),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

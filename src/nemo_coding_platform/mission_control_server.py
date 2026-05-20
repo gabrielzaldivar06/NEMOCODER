@@ -5949,7 +5949,7 @@ def _execute_pollinations_tool(
 
 _AGENT_TOOL_CATALOG = """\
 ═══════════════════════════════════════════════════════════
-AGENT ACTION TOOLS — THE ONLY 5 TOOLS YOU CAN TRIGGER
+AGENT ACTION TOOLS — THE ONLY 9 TOOLS YOU CAN TRIGGER
 Call these tools using the native function-calling mechanism (preferred), or embed the JSON in your
 response text as a fallback. DO NOT call NEMO MCP tools (search_memories, context_bootstrap, etc.)
 — those are server-only and executed automatically by the backend.
@@ -5978,7 +5978,27 @@ response text as a fallback. DO NOT call NEMO MCP tools (search_memories, contex
    Use when the user asks to open a different folder, project, or workspace.
    params: path (required — absolute path to the directory to open)
 
-CRITICAL: These 5 are the ONLY tools available to you. Do NOT embed NEMO tool names in your response.
+6. generate_image — generate a static image via Pollinations AI
+   Use when the user asks to draw, visualize, create an image, or generate artwork.
+   params: prompt (required), model (default "flux", options: flux|flux-realism|flux-anime|gpt-image-1|seedream-3|kontext),
+           width (default 1024), height (default 1024), seed (optional), enhance (default true)
+
+7. generate_audio — synthesize speech or voice audio via Pollinations AI
+   Use when the user asks to narrate text, create audio, or generate a voiceover.
+   params: text (required), voice (default "nova", options: alloy|echo|fable|onyx|nova|shimmer|heart|aria|adam|bill|brian),
+           model (default "openai-audio")
+
+8. generate_video — generate a short video clip via Pollinations AI
+   Use when the user asks to animate, create a video, or produce a clip.
+   params: prompt (required), model (default "seedance-1-lite", options: seedance-1-lite|wan-fast|veo-2),
+           duration (default 5, seconds), keyframe_image (optional — path to an image artifact for the first frame)
+
+9. generate_text — delegate a text subtask to a Pollinations text model (sub-agent pattern)
+   Use when you need a specific text generation done by a different model (translation, code, creative writing).
+   params: prompt (required), model (default "openai", options: openai|qwen-coder|deepseek|mistral|claude-hybridspace|gemini-2.0),
+           system (optional — system instruction for the sub-agent), seed (optional)
+
+CRITICAL: These 9 are the ONLY tools available to you. Do NOT embed NEMO tool names in your response.
 """
 
 _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
@@ -6055,6 +6075,75 @@ _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
                     "path": {"type": "string", "description": "Absolute path to the directory to open as the new workspace"},
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "Generate a static image via Pollinations AI. Use when the user asks to draw, visualize, create an image, or generate artwork.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Detailed image description"},
+                    "model": {"type": "string", "description": "Model: flux (default), flux-realism, flux-anime, gpt-image-1, seedream-3, kontext"},
+                    "width": {"type": "integer", "description": "Width in pixels (default 1024)"},
+                    "height": {"type": "integer", "description": "Height in pixels (default 1024)"},
+                    "seed": {"type": "integer", "description": "Optional random seed for reproducibility"},
+                    "enhance": {"type": "boolean", "description": "Pollinations prompt enhancement (default true)"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_audio",
+            "description": "Synthesize speech via Pollinations AI. Use when the user asks to narrate text, create a voiceover, or generate audio.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to synthesize"},
+                    "voice": {"type": "string", "description": "Voice: nova (default), alloy, echo, fable, onyx, shimmer, heart, aria, adam, bill, brian"},
+                    "model": {"type": "string", "description": "TTS model (default: openai-audio)"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_video",
+            "description": "Generate a short video clip via Pollinations AI. Use when the user asks to animate, create a video, or produce a clip.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Video description"},
+                    "model": {"type": "string", "description": "Model: seedance-1-lite (default), wan-fast, veo-2"},
+                    "duration": {"type": "integer", "description": "Duration in seconds (default 5)"},
+                    "keyframe_image": {"type": "string", "description": "Optional path to an existing image artifact to use as first frame"},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_text",
+            "description": "Delegate a text subtask to a Pollinations text model. Use to generate text with a different model (translation, creative writing, code).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Task or prompt for the text sub-agent"},
+                    "model": {"type": "string", "description": "Model: openai (default), qwen-coder, deepseek, mistral, claude-hybridspace, gemini-2.0"},
+                    "system": {"type": "string", "description": "Optional system instruction for the sub-agent"},
+                    "seed": {"type": "integer", "description": "Optional random seed"},
+                },
+                "required": ["prompt"],
             },
         },
     },
