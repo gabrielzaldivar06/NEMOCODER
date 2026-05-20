@@ -5842,7 +5842,7 @@ def _pollinations_audio(params: dict[str, object], config: "MissionControlServer
     voice = str(params.get("voice") or "nova")
     model = str(params.get("model") or "openai-audio")
     encoded = urllib.parse.quote(text, safe="")
-    url = f"https://audio.pollinations.ai/{encoded}?{urllib.parse.urlencode({'voice': voice, 'model': model})}"
+    url = f"https://text.pollinations.ai/{encoded}?{urllib.parse.urlencode({'model': model, 'voice': voice})}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -5860,54 +5860,16 @@ def _pollinations_video(params: dict[str, object], config: "MissionControlServer
     prompt = str(params.get("prompt") or "")
     if not prompt:
         return {"error": "prompt is required"}
-    model = str(params.get("model") or "seedance-1-lite")
-    duration = int(params.get("duration") or 5)
-    body: dict[str, object] = {"prompt": prompt, "model": model, "duration": duration}
-    if params.get("keyframe_image"):
-        body["image"] = str(params["keyframe_image"])
-    post_data = json.dumps(body).encode("utf-8")
-    try:
-        req = urllib.request.Request(
-            "https://video.pollinations.ai/",
-            data=post_data,
-            headers={"Content-Type": "application/json", "User-Agent": "SpaceCode/1.0"},
-            method="POST",
+    # Pollinations does not currently expose a public video generation REST API.
+    # The video.pollinations.ai subdomain does not resolve. Return a clear error so
+    # the model can communicate this to the user instead of hanging or crashing.
+    return {
+        "error": (
+            "Video generation is not available: Pollinations AI does not currently expose a public "
+            "video API endpoint. Try generate_image for static visuals, or use handoff_start to "
+            "write a Python script that creates an animation."
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            init_result = json.loads(resp.read().decode("utf-8"))
-        video_url = str(init_result.get("url") or init_result.get("video_url") or "")
-        if not video_url:
-            return {"error": f"no video URL in response: {str(init_result)[:200]}"}
-        # Poll until the video is ready (max 120s, 5s interval)
-        for _ in range(24):
-            time.sleep(5)
-            poll_req = urllib.request.Request(video_url, headers={"User-Agent": "SpaceCode/1.0"})
-            with urllib.request.urlopen(poll_req, timeout=30) as poll_resp:
-                content_type = poll_resp.headers.get("Content-Type", "")
-                raw = poll_resp.read()
-            if "video" in content_type or "mp4" in content_type:
-                artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "video"
-                artifacts_dir.mkdir(parents=True, exist_ok=True)
-                dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.mp4"
-                dest.write_bytes(raw)
-                return {"artifact_path": str(dest), "url": video_url, "model_used": model}
-            try:
-                poll_data = json.loads(raw.decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            if poll_data.get("status") == "done":
-                final_url = str(poll_data.get("url") or video_url)
-                dl_req = urllib.request.Request(final_url, headers={"User-Agent": "SpaceCode/1.0"})
-                with urllib.request.urlopen(dl_req, timeout=60) as dl_resp:
-                    video_bytes = dl_resp.read()
-                artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "video"
-                artifacts_dir.mkdir(parents=True, exist_ok=True)
-                dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.mp4"
-                dest.write_bytes(video_bytes)
-                return {"artifact_path": str(dest), "url": final_url, "model_used": model}
-        return {"error": "video generation timed out after 120s"}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)}
+    }
 
 
 def _pollinations_text(params: dict[str, object]) -> dict[str, object]:
@@ -5955,15 +5917,26 @@ response text as a fallback. DO NOT call NEMO MCP tools (search_memories, contex
 — those are server-only and executed automatically by the backend.
 ═══════════════════════════════════════════════════════════
 
+ROUTING RULES — read before choosing a tool:
+  • User wants an IMAGE / ARTWORK / PICTURE     → generate_image  (NEVER plan_generate)
+  • User wants SPEECH / AUDIO / VOICEOVER       → generate_audio  (NEVER plan_generate)
+  • User wants a VIDEO / ANIMATION / CLIP        → generate_video  (NEVER plan_generate)
+  • User wants TEXT from another AI model        → generate_text   (sub-agent delegation)
+  • User wants to EDIT CODE / FIX A BUG in repo → handoff_start
+  • User wants a PYTHON SCRIPT (data, charts)    → plan_generate   (Python/headless ONLY)
+  • User wants to BROWSE / SCRAPE a website      → browser_task
+  plan_generate writes Python code. It does NOT call image/audio/video APIs.
+  generate_image/audio/video call Pollinations AI directly and return real media files.
+
 1. handoff_start — full autonomous coding session (edits files, runs tests, makes commits)
    Use when the user asks to implement, fix bugs, or change repo source code.
    params: objective (required), acceptance (required), target_files (optional)
 
-2. plan_generate — iterative PYTHON code generation with scoring (for Python scripts only)
-   Use ONLY for Python scripts, matplotlib charts, data analysis, or Python CLI programs that run HEADLESS (no display).
-   DO NOT use for: HTML pages, HTML games, browser apps, pygame games, tkinter apps, desktop GUIs, or anything needing a screen.
-   For pygame / desktop games → use handoff_start instead (it creates the file on disk and runs with a real display).
-   params: objective (required), max_iterations (default 5), quality_threshold (default 10.0 — runs until perfect or plateau)
+2. plan_generate — iterative PYTHON script generation (headless scripts ONLY — no images/audio/video)
+   Use ONLY for Python scripts, matplotlib charts, data analysis, or Python CLI programs that run HEADLESS.
+   DO NOT use for: image generation, audio synthesis, video creation, HTML, browser apps, desktop GUIs.
+   For images → generate_image. For audio → generate_audio. For video → generate_video.
+   params: objective (required), max_iterations (default 5), quality_threshold (default 10.0)
 
 3. job_status — query the status of a running background job
    Use when the user asks about the progress of an ongoing operation.
@@ -5978,18 +5951,21 @@ response text as a fallback. DO NOT call NEMO MCP tools (search_memories, contex
    Use when the user asks to open a different folder, project, or workspace.
    params: path (required — absolute path to the directory to open)
 
-6. generate_image — generate a static image via Pollinations AI
-   Use when the user asks to draw, visualize, create an image, or generate artwork.
+6. generate_image — generate a real image file via Pollinations AI (instant, no code needed)
+   Use IMMEDIATELY when the user asks to draw, create, visualize, or generate any image or artwork.
+   Calls the Pollinations image API directly and saves a JPG artifact. Do NOT use plan_generate instead.
    params: prompt (required), model (default "flux", options: flux|flux-realism|flux-anime|gpt-image-1|seedream-3|kontext),
            width (default 1024), height (default 1024), seed (optional), enhance (default true)
 
-7. generate_audio — synthesize speech or voice audio via Pollinations AI
-   Use when the user asks to narrate text, create audio, or generate a voiceover.
+7. generate_audio — synthesize real speech audio via Pollinations AI (instant, no code needed)
+   Use IMMEDIATELY when the user asks to narrate, read aloud, create a voiceover, or generate audio.
+   Calls the Pollinations TTS API directly and saves an MP3 artifact. Do NOT use plan_generate instead.
    params: text (required), voice (default "nova", options: alloy|echo|fable|onyx|nova|shimmer|heart|aria|adam|bill|brian),
            model (default "openai-audio")
 
-8. generate_video — generate a short video clip via Pollinations AI
-   Use when the user asks to animate, create a video, or produce a clip.
+8. generate_video — generate a video clip via Pollinations AI (instant, no code needed)
+   Use IMMEDIATELY when the user asks to animate, produce a clip, or create a video.
+   Calls the Pollinations video API directly and saves an MP4 artifact. Do NOT use plan_generate instead.
    params: prompt (required), model (default "seedance-1-lite", options: seedance-1-lite|wan-fast|veo-2),
            duration (default 5, seconds), keyframe_image (optional — path to an image artifact for the first frame)
 
@@ -6006,7 +5982,7 @@ _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
         "type": "function",
         "function": {
             "name": "plan_generate",
-            "description": "Iteratively generate and score a standalone Python script (matplotlib charts, data analysis, CLI tools). NOT for HTML, React, or source file edits.",
+            "description": "Iteratively generate and score a standalone Python script (matplotlib charts, data analysis, CLI tools). NOT for image/audio/video generation — use generate_image, generate_audio, or generate_video for media. NOT for HTML, React, or source file edits.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -77,6 +77,8 @@ class TestPollinationsAudio(unittest.TestCase):
                 mcs._pollinations_audio({"text": "hi", "voice": "heart"}, config)
             call_url = str(mock_open.call_args[0][0].full_url)
         self.assertIn("voice=heart", call_url)
+        self.assertIn("text.pollinations.ai", call_url)
+        self.assertIn("openai-audio", call_url)
 
     def test_missing_text_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -163,32 +165,19 @@ class TestExecutePollinationsTool(unittest.TestCase):
 
 
 class TestPollinationsVideo(unittest.TestCase):
-    def test_saves_mp4_when_content_type_is_video(self):
+    def test_returns_not_available_error(self):
+        """Video endpoint is not available — function returns descriptive error immediately."""
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
-            init_resp = _mock_urlopen(b'{"url": "https://video.pollinations.ai/result/abc"}')
-            video_resp = MagicMock()
-            video_resp.read.return_value = b"fake_mp4_bytes"
-            video_resp.headers.get.return_value = "video/mp4"
-            video_resp.__enter__ = lambda s: s
-            video_resp.__exit__ = MagicMock(return_value=False)
-            with patch("urllib.request.urlopen", side_effect=[init_resp, video_resp]), \
-                 patch("time.sleep"):
-                result = mcs._pollinations_video({"prompt": "a cat running"}, config)
-        self.assertIn("artifact_path", result)
-        self.assertTrue(result["artifact_path"].endswith(".mp4"))
-        self.assertEqual(result["model_used"], "seedance-1-lite")
+            result = mcs._pollinations_video({"prompt": "a cat running"}, config)
+        self.assertIn("error", result)
+        self.assertIn("not available", result["error"])
 
-    def test_saves_mp4_when_status_done_in_json(self):
+    def test_returns_not_available_error_with_any_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
-            init_resp = _mock_urlopen(b'{"url": "https://video.pollinations.ai/result/abc"}')
-            poll_resp = _mock_urlopen(b'{"status": "done", "url": "https://video.pollinations.ai/result/abc.mp4"}')
-            dl_resp = _mock_urlopen(b"final_mp4_bytes")
-            with patch("urllib.request.urlopen", side_effect=[init_resp, poll_resp, dl_resp]), \
-                 patch("time.sleep"):
-                result = mcs._pollinations_video({"prompt": "a dog jumping"}, config)
-        self.assertIn("artifact_path", result)
+            result = mcs._pollinations_video({"prompt": "a dog jumping"}, config)
+        self.assertIn("error", result)
 
     def test_missing_prompt_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,24 +239,19 @@ class TestApiAgentMessagePollinationsIntegration(unittest.TestCase):
         response_text = result.get("message", {}).get("content", "")
         self.assertNotIn("[Media artifacts generated]", response_text)
 
-    def test_no_video_url_in_response_returns_error(self):
+    def test_video_returns_not_available_error(self):
+        """Video endpoint is not publicly available — returns descriptive error without HTTP calls."""
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
-            with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"{}")):
-                result = mcs._pollinations_video({"prompt": "test"}, config)
+            result = mcs._pollinations_video({"prompt": "test"}, config)
         self.assertIn("error", result)
-        self.assertIn("no video URL", result["error"])
+        self.assertIn("not available", result["error"])
 
-    def test_timeout_returns_error(self):
+    def test_video_error_suggests_alternatives(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
-            init_resp = _mock_urlopen(b'{"url": "https://video.pollinations.ai/result/abc"}')
-            poll_resp = _mock_urlopen(b'{"status": "pending"}')
-            with patch("urllib.request.urlopen", side_effect=[init_resp] + [poll_resp] * 24), \
-                 patch("time.sleep"):
-                result = mcs._pollinations_video({"prompt": "test"}, config)
-        self.assertIn("error", result)
-        self.assertIn("timed out", result["error"])
+            result = mcs._pollinations_video({"prompt": "test"}, config)
+        self.assertIn("generate_image", result["error"])
 
     def test_image_size_guard_rejects_small_response(self):
         with tempfile.TemporaryDirectory() as tmp:
