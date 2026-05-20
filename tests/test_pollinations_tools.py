@@ -31,7 +31,7 @@ class TestPollinationsImage(unittest.TestCase):
     def test_saves_artifact_and_returns_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
-            with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"\xff\xd8\xff")):
+            with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"\xff\xd8\xff" + b"x" * 1100)):
                 result = mcs._pollinations_image({"prompt": "a sunset"}, config)
             self.assertIn("artifact_path", result)
             self.assertEqual(result["model_used"], "flux")
@@ -40,7 +40,7 @@ class TestPollinationsImage(unittest.TestCase):
     def test_custom_model_and_dimensions(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
-            with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"\xff\xd8\xff")) as mock_open:
+            with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"\xff\xd8\xff" + b"x" * 1100)) as mock_open:
                 mcs._pollinations_image({"prompt": "city", "model": "flux-realism", "width": 512, "height": 512}, config)
             call_url = str(mock_open.call_args[0][0].full_url)
         self.assertIn("flux-realism", call_url)
@@ -145,11 +145,83 @@ class TestExecutePollinationsTool(unittest.TestCase):
                 )
         mock_txt.assert_called_once()
 
+    def test_dispatches_to_video(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            with patch("nemo_coding_platform.mission_control_server._pollinations_video",
+                       return_value={"artifact_path": "/fake/video.mp4"}) as mock_vid:
+                mcs._execute_pollinations_tool(
+                    {"tool": "generate_video", "params": {"prompt": "a cat"}}, config
+                )
+        mock_vid.assert_called_once()
+
     def test_unknown_tool_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
             result = mcs._execute_pollinations_tool({"tool": "unknown_tool", "params": {}}, config)
         self.assertIn("error", result)
+
+
+class TestPollinationsVideo(unittest.TestCase):
+    def test_saves_mp4_when_content_type_is_video(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            init_resp = _mock_urlopen(b'{"url": "https://video.pollinations.ai/result/abc"}')
+            video_resp = MagicMock()
+            video_resp.read.return_value = b"fake_mp4_bytes"
+            video_resp.headers.get.return_value = "video/mp4"
+            video_resp.__enter__ = lambda s: s
+            video_resp.__exit__ = MagicMock(return_value=False)
+            with patch("urllib.request.urlopen", side_effect=[init_resp, video_resp]), \
+                 patch("time.sleep"):
+                result = mcs._pollinations_video({"prompt": "a cat running"}, config)
+        self.assertIn("artifact_path", result)
+        self.assertTrue(result["artifact_path"].endswith(".mp4"))
+        self.assertEqual(result["model_used"], "seedance-1-lite")
+
+    def test_saves_mp4_when_status_done_in_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            init_resp = _mock_urlopen(b'{"url": "https://video.pollinations.ai/result/abc"}')
+            poll_resp = _mock_urlopen(b'{"status": "done", "url": "https://video.pollinations.ai/result/abc.mp4"}')
+            dl_resp = _mock_urlopen(b"final_mp4_bytes")
+            with patch("urllib.request.urlopen", side_effect=[init_resp, poll_resp, dl_resp]), \
+                 patch("time.sleep"):
+                result = mcs._pollinations_video({"prompt": "a dog jumping"}, config)
+        self.assertIn("artifact_path", result)
+
+    def test_missing_prompt_returns_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            result = mcs._pollinations_video({}, config)
+        self.assertIn("error", result)
+
+    def test_no_video_url_in_response_returns_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"{}")):
+                result = mcs._pollinations_video({"prompt": "test"}, config)
+        self.assertIn("error", result)
+        self.assertIn("no video URL", result["error"])
+
+    def test_timeout_returns_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            init_resp = _mock_urlopen(b'{"url": "https://video.pollinations.ai/result/abc"}')
+            poll_resp = _mock_urlopen(b'{"status": "pending"}')
+            with patch("urllib.request.urlopen", side_effect=[init_resp] + [poll_resp] * 24), \
+                 patch("time.sleep"):
+                result = mcs._pollinations_video({"prompt": "test"}, config)
+        self.assertIn("error", result)
+        self.assertIn("timed out", result["error"])
+
+    def test_image_size_guard_rejects_small_response(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"tiny")):
+                result = mcs._pollinations_image({"prompt": "test"}, config)
+        self.assertIn("error", result)
+        self.assertIn("suspiciously small", result["error"])
 
 
 if __name__ == "__main__":

@@ -5816,16 +5816,16 @@ def _pollinations_image(params: dict[str, object], config: "MissionControlServer
     height = int(params.get("height") or 1024)
     enhance = "true" if params.get("enhance", True) else "false"
     encoded = urllib.parse.quote(prompt, safe="")
-    url = (
-        f"https://image.pollinations.ai/prompt/{encoded}"
-        f"?model={model}&width={width}&height={height}&enhance={enhance}"
-    )
+    qs: dict[str, object] = {"model": model, "width": width, "height": height, "enhance": enhance}
     if params.get("seed") is not None:
-        url += f"&seed={int(params['seed'])}"  # type: ignore[arg-type]
+        qs["seed"] = int(params["seed"])  # type: ignore[arg-type]
+    url = f"https://image.pollinations.ai/prompt/{encoded}?{urllib.parse.urlencode(qs)}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
         with urllib.request.urlopen(req, timeout=60) as resp:
             image_bytes = resp.read()
+        if len(image_bytes) < 1000:
+            return {"error": f"Pollinations returned suspiciously small image ({len(image_bytes)} bytes)"}
         artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.jpg"
@@ -5842,7 +5842,7 @@ def _pollinations_audio(params: dict[str, object], config: "MissionControlServer
     voice = str(params.get("voice") or "nova")
     model = str(params.get("model") or "openai-audio")
     encoded = urllib.parse.quote(text, safe="")
-    url = f"https://audio.pollinations.ai/{encoded}?voice={voice}&model={model}"
+    url = f"https://audio.pollinations.ai/{encoded}?{urllib.parse.urlencode({'voice': voice, 'model': model})}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -5916,11 +5916,12 @@ def _pollinations_text(params: dict[str, object]) -> dict[str, object]:
         return {"error": "prompt is required"}
     model = str(params.get("model") or "openai")
     encoded = urllib.parse.quote(prompt, safe="")
-    url = f"https://text.pollinations.ai/{encoded}?model={model}"
+    qs_txt: dict[str, object] = {"model": model}
     if params.get("system"):
-        url += f"&system={urllib.parse.quote(str(params['system']), safe='')}"
+        qs_txt["system"] = str(params["system"])
     if params.get("seed") is not None:
-        url += f"&seed={int(params['seed'])}"  # type: ignore[arg-type]
+        qs_txt["seed"] = int(params["seed"])  # type: ignore[arg-type]
+    url = f"https://text.pollinations.ai/{encoded}?{urllib.parse.urlencode(qs_txt)}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
         with urllib.request.urlopen(req, timeout=60) as resp:
