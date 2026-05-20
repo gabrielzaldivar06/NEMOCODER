@@ -7886,6 +7886,34 @@ def api_agent_message(
                 "[real-mode fallback] El modelo no está disponible ahora mismo. "
                 "Revisa los tool calls para ver el error específico y qué endpoint se intentó."
             )
+    # --- Pollinations media tools: detect, execute in parallel, annotate response ---
+    _media_invocations = [
+        inv for inv in _parse_llm_tool_calls(response)
+        if str(inv.get("tool")) in POLLINATIONS_TOOLS
+    ]
+    if _media_invocations:
+        _media_results: dict[str, dict[str, object]] = {}
+        with ThreadPoolExecutor(max_workers=len(_media_invocations)) as _media_pool:
+            _media_futures = {
+                _media_pool.submit(_execute_pollinations_tool, inv, config): inv
+                for inv in _media_invocations
+            }
+            for _media_fut in as_completed(_media_futures):
+                _media_inv = _media_futures[_media_fut]
+                _media_results[str(_media_inv.get("tool"))] = _media_fut.result()
+        _annotation_lines: list[str] = []
+        for inv in _media_invocations:
+            tool_name = str(inv.get("tool"))
+            res = _media_results.get(tool_name, {})
+            if "error" in res:
+                _annotation_lines.append(f"- {tool_name}: ERROR — {res['error']}")
+            elif "artifact_path" in res:
+                _annotation_lines.append(f"- {tool_name}: saved to `{res['artifact_path']}`")
+            elif "text" in res:
+                _annotation_lines.append(f"- {tool_name} (sub-agent): {str(res['text'])[:200]}")
+        if _annotation_lines:
+            response += "\n\n[Media artifacts generated]\n" + "\n".join(_annotation_lines)
+
     # Parse model tool calls FIRST so we know if it already routed correctly.
     # If the model emitted plan_generate/handoff_start/etc., skip the artifact fallback.
     _pre_actions: list[AgentAction] = []

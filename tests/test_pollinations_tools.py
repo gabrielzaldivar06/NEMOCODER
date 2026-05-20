@@ -196,6 +196,60 @@ class TestPollinationsVideo(unittest.TestCase):
             result = mcs._pollinations_video({}, config)
         self.assertIn("error", result)
 
+
+class TestApiAgentMessagePollinationsIntegration(unittest.TestCase):
+    def _make_config_and_payload(self, tmp: str) -> tuple:
+        config = _make_config(tmp)
+        payload = {
+            "message": "generate an image of a sunset",
+            "model_base_url": "http://localhost:1234/v1",
+            "history": [],
+            "nemo_mcp_url": "",
+        }
+        return config, payload
+
+    def _base_patches(self):
+        """Return a list of context managers for common patches."""
+        return [
+            patch("nemo_coding_platform.mission_control_server._require_nemo_mcp_url",
+                  return_value="http://127.0.0.1:8765/mcp/sse"),
+            patch("nemo_coding_platform.mission_control_server._nemo_chat_tool_call",
+                  return_value={"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}),
+        ]
+
+    def test_pollinations_image_result_appended_to_response(self):
+        """When model response contains generate_image JSON, result annotation appears in output."""
+        fake_model_response = '{"tool": "generate_image", "params": {"prompt": "a sunset over the ocean"}}'
+        with tempfile.TemporaryDirectory() as tmp:
+            config, payload = self._make_config_and_payload(tmp)
+            with patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion",
+                       return_value=(fake_model_response, None, "flux")), \
+                 patch("nemo_coding_platform.mission_control_server._require_nemo_mcp_url",
+                       return_value="http://127.0.0.1:8765/mcp/sse"), \
+                 patch("nemo_coding_platform.mission_control_server._nemo_chat_tool_call",
+                       return_value={"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}), \
+                 patch("nemo_coding_platform.mission_control_server._pollinations_image",
+                       return_value={"artifact_path": "/fake/sunset.jpg", "url": "https://img", "model_used": "flux"}):
+                result = mcs.api_agent_message(config, payload, server=None)
+        response_text = result.get("message", {}).get("content", "")
+        self.assertIn("sunset.jpg", response_text)
+        self.assertIn("[Media artifacts generated]", response_text)
+
+    def test_no_pollinations_call_leaves_response_unchanged(self):
+        """When model response has no Pollinations tool call, no annotation is added."""
+        fake_model_response = "Here is a poem about the ocean."
+        with tempfile.TemporaryDirectory() as tmp:
+            config, payload = self._make_config_and_payload(tmp)
+            with patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion",
+                       return_value=(fake_model_response, None, "flux")), \
+                 patch("nemo_coding_platform.mission_control_server._require_nemo_mcp_url",
+                       return_value="http://127.0.0.1:8765/mcp/sse"), \
+                 patch("nemo_coding_platform.mission_control_server._nemo_chat_tool_call",
+                       return_value={"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}):
+                result = mcs.api_agent_message(config, payload, server=None)
+        response_text = result.get("message", {}).get("content", "")
+        self.assertNotIn("[Media artifacts generated]", response_text)
+
     def test_no_video_url_in_response_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = _make_config(tmp)
