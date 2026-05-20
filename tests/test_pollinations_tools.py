@@ -93,7 +93,7 @@ class TestPollinationsText(unittest.TestCase):
             result = mcs._pollinations_text({"prompt": "tell me a story"})
         self.assertIn("text", result)
         self.assertEqual(result["text"], "Once upon a time")
-        self.assertEqual(result["model_used"], "openai")
+        self.assertEqual(result["model_used"], "openai-fast")
 
     def test_custom_model(self):
         with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"code here")) as mock_open:

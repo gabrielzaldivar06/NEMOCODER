@@ -5903,7 +5903,7 @@ def _pollinations_text(params: dict[str, object]) -> dict[str, object]:
     prompt = str(params.get("prompt") or "")
     if not prompt:
         return {"error": "prompt is required"}
-    model = str(params.get("model") or "openai")
+    model = str(params.get("model") or "openai-fast")
     encoded = urllib.parse.quote(prompt, safe="")
     qs_txt: dict[str, object] = {"model": model}
     if params.get("system"):
@@ -5998,7 +5998,7 @@ ROUTING RULES — read before choosing a tool:
 
 9. generate_text — delegate a text subtask to a Pollinations text model (sub-agent pattern)
    Use when you need a specific text generation done by a different model (translation, code, creative writing).
-   params: prompt (required), model (default "openai", options: openai|qwen-coder|deepseek|mistral|claude-hybridspace|gemini-2.0),
+   params: prompt (required), model (default "openai-fast", options: openai-fast|openai-large|mistral|claude-hybridspace|gemini-2.0),
            system (optional — system instruction for the sub-agent), seed (optional)
 
 CRITICAL: These 9 are the ONLY tools available to you. Do NOT embed NEMO tool names in your response.
@@ -6142,7 +6142,7 @@ _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "Task or prompt for the text sub-agent"},
-                    "model": {"type": "string", "description": "Model: openai (default), qwen-coder, deepseek, mistral, claude-hybridspace, gemini-2.0"},
+                    "model": {"type": "string", "description": "Model: openai-fast (default), openai-large, mistral, claude-hybridspace, gemini-2.0"},
                     "system": {"type": "string", "description": "Optional system instruction for the sub-agent"},
                     "seed": {"type": "integer", "description": "Optional random seed"},
                 },
