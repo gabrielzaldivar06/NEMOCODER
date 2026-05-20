@@ -295,5 +295,38 @@ class TestPollinationsToolCatalog(unittest.TestCase):
         )
 
 
+class TestPlanLoopPollinationsIntegration(unittest.TestCase):
+    def _fake_nemo(self, config, tool_calls, tool_name, **kw):
+        return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
+
+    def test_generate_image_artifact_path_in_critique_prompt(self):
+        """When code_response contains generate_image, the artifact path appears in the critique."""
+        captured_critique_users = []
+
+        def _lm_side(payload, system, user, **kw):
+            if "evaluator" in system.lower():
+                captured_critique_users.append(user)
+                return '{"score":7,"present":[],"missing":[],"improvements":[],"summary":"ok"}'
+            return '{"tool": "generate_image", "params": {"prompt": "chart"}}\nprint("hello")'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _make_config(tmp)
+            with patch("nemo_coding_platform.mission_control_server._plan_lm_call",
+                       side_effect=_lm_side), \
+                 patch("nemo_coding_platform.mission_control_server._nemo_chat_tool_call",
+                       side_effect=self._fake_nemo), \
+                 patch("nemo_coding_platform.mission_control_server._pollinations_image",
+                       return_value={"artifact_path": "/fake/chart.jpg", "url": "https://img", "model_used": "flux"}), \
+                 patch("time.sleep"):
+                list(mcs.api_agent_plan_gen(config, {
+                    "objective": "print hello",
+                    "max_iterations": 1,
+                    "quality_threshold": 99.0,
+                    "model_base_url": "http://localhost:1234/v1",
+                }))
+        self.assertTrue(any("chart.jpg" in u for u in captured_critique_users),
+                        f"artifact path not found in critique prompts: {captured_critique_users}")
+
+
 if __name__ == "__main__":
     unittest.main()

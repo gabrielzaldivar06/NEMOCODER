@@ -6957,9 +6957,37 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         # This ensures improvement feedback is always anchored to the highest-quality version.
         _critique_target = best_code if best_code else code
         _score_ctx = f" (previous best: {best_score:.1f}/10)" if best_score > 0 else ""
+        # Detect and execute any Pollinations tool calls emitted alongside the code
+        _plan_media_calls = [
+            inv for inv in _parse_llm_tool_calls(code_response)
+            if str(inv.get("tool")) in POLLINATIONS_TOOLS
+        ]
+        _plan_artifact_note = ""
+        if _plan_media_calls:
+            _plan_media_results: dict[str, dict[str, object]] = {}
+            with ThreadPoolExecutor(max_workers=len(_plan_media_calls)) as _plan_pool:
+                _plan_futs = {
+                    _plan_pool.submit(_execute_pollinations_tool, inv, config): inv
+                    for inv in _plan_media_calls
+                }
+                for _plan_fut in as_completed(_plan_futs):
+                    _plan_inv = _plan_futs[_plan_fut]
+                    _plan_media_results[str(_plan_inv.get("tool"))] = _plan_fut.result()
+            _artifact_lines: list[str] = []
+            for inv in _plan_media_calls:
+                tool_name = str(inv.get("tool"))
+                res = _plan_media_results.get(tool_name, {})
+                if "artifact_path" in res:
+                    _artifact_lines.append(f"- {tool_name}: {res['artifact_path']}")
+                elif "text" in res:
+                    _artifact_lines.append(f"- {tool_name} result: {str(res['text'])[:200]}")
+            if _artifact_lines:
+                _plan_artifact_note = "\n\n[Media artifacts generated this iteration]\n" + "\n".join(_artifact_lines)
+
         critique_user = (
             f"Task: {objective[:200]}\n{exec_note}\n\n"
             f"Code{_score_ctx}:\n{_critique_target[:1500]}"
+            f"{_plan_artifact_note}"
         )
         try:
             critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=240, temperature=0.0)
