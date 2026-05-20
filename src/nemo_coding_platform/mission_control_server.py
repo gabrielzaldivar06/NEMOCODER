@@ -5806,6 +5806,33 @@ POLLINATIONS_TOOLS: frozenset[str] = frozenset(
     {"generate_image", "generate_audio", "generate_video", "generate_text"}
 )
 
+# Models sometimes invent their own tool names instead of the exact catalog names.
+# Map common aliases so the detection filter and dispatcher still route correctly.
+_POLLINATIONS_TOOL_ALIASES: dict[str, str] = {
+    "image_request": "generate_image",
+    "create_image": "generate_image",
+    "draw_image": "generate_image",
+    "make_image": "generate_image",
+    "text_to_image": "generate_image",
+    "image_generation": "generate_image",
+    "generate_picture": "generate_image",
+    "create_audio": "generate_audio",
+    "text_to_speech": "generate_audio",
+    "generate_speech": "generate_audio",
+    "tts": "generate_audio",
+    "speech_synthesis": "generate_audio",
+    "create_video": "generate_video",
+    "make_video": "generate_video",
+    "text_to_video": "generate_video",
+    "video_generation": "generate_video",
+    "generate_content": "generate_image",  # generic fallback — prefers image
+}
+
+
+def _resolve_pollinations_tool(name: str) -> str:
+    """Normalize an LLM-invented tool name to the canonical Pollinations tool name."""
+    return _POLLINATIONS_TOOL_ALIASES.get(name, name)
+
 
 def _pollinations_image(params: dict[str, object], config: "MissionControlServerConfig") -> dict[str, object]:
     prompt = str(params.get("prompt") or "")
@@ -5896,7 +5923,7 @@ def _pollinations_text(params: dict[str, object]) -> dict[str, object]:
 def _execute_pollinations_tool(
     inv: dict[str, object], config: "MissionControlServerConfig"
 ) -> dict[str, object]:
-    tool = str(inv.get("tool") or "")
+    tool = _resolve_pollinations_tool(str(inv.get("tool") or ""))
     params: dict[str, object] = dict(inv.get("params") or {})
     if tool == "generate_image":
         return _pollinations_image(params, config)
@@ -6936,7 +6963,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         # Detect and execute any Pollinations tool calls emitted alongside the code
         _plan_media_calls = [
             inv for inv in _parse_llm_tool_calls(code_response)
-            if str(inv.get("tool")) in POLLINATIONS_TOOLS
+            if _resolve_pollinations_tool(str(inv.get("tool"))) in POLLINATIONS_TOOLS
         ]
         _plan_artifact_note = ""
         if _plan_media_calls:
