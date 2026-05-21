@@ -12,6 +12,7 @@ import { TelemetryColumn } from "./components/TelemetryColumn";
 import { TelemetryStrip } from "./components/TelemetryStrip";
 import { JobsFeed } from "./components/JobsFeed";
 import { JobDetailPanel } from "./components/JobDetailPanel";
+import { JobResultCard } from "./components/JobResultCard";
 import { WorktreeDiffPanel } from "./components/WorktreeDiffPanel";
 import { ReadinessScorePanel } from "./components/ReadinessScorePanel";
 import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
@@ -4134,6 +4135,7 @@ function InsightSection({
 
 function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonomyModeChange, applyJson, onReview, onApply, onAutoApply, onRollback, messages, draft, busy, queuedPrompt, queuedPrompts, onDraftChange, onSend, onStop, onRemoveQueued, onPrioritizeQueued, onRunAction, nemoState, mcpWatcher, selfInsights, reviewPlan, applyHistory, riskMap, onRefreshRiskMap, onSendGuidedPrompt, onClearChat, onStartNewChat, onArchiveOldRuns, onClearAllRuns, planObjective, currentPlan, activeStepId, planProgress, onOpenObjectiveModal, onGeneratePlan, onSelectPlanStep, permissionJob, onGrantPermission, onDenyPermission, runningJob }: AgentPaneProps) {
   const [tab, setTab] = useState<"chat" | "run" | "insights">("chat");
+  const [detailJobId, setDetailJobId] = useState<string | null>(null);
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
   const chatMenuRef = React.useRef<HTMLDivElement>(null);
   const riskCount = run?.risk_flags.length ?? 0;
@@ -4224,9 +4226,60 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
               />
             )}
             <div className="chat-thread">
-              {messages.map((message) => (
-                <AgentChatMessage message={message} onRunAction={onRunAction} key={message.id} />
-              ))}
+              {messages.map((message) => {
+                const matchedJob = findJobForMessage(message, state.jobs);
+                const matchedRun = matchedJob
+                  ? state.runs.find((r) => r.task_id === matchedJob.task_id && r.run_id === matchedJob.run_id)
+                  : undefined;
+
+                const needsApproval =
+                  (matchedJob?.permission_request?.requires_user_approval?.length ?? 0) > 0 &&
+                  !matchedJob?.permission_request?.decision;
+
+                const cardKind: "success" | "blocked" | "error" | null =
+                  matchedJob == null ? null
+                  : needsApproval ? "blocked"
+                  : matchedJob.status === "completed" && (matchedJob.returncode === 0 || matchedJob.returncode === null) ? "success"
+                  : matchedJob.status === "completed" ? "error"
+                  : null;
+
+                return (
+                  <React.Fragment key={message.id}>
+                    <AgentChatMessage message={message} onRunAction={onRunAction} />
+                    {cardKind && matchedJob && (
+                      <JobResultCard
+                        kind={cardKind}
+                        jobId={matchedJob.job_id}
+                        objective={matchedJob.objective ?? matchedRun?.objective ?? matchedJob.job_id}
+                        changedFiles={matchedRun?.changed_files}
+                        branch={matchedRun?.runtime_id ? matchedRun.runtime_id.slice(0, 12) : undefined}
+                        permissionCategories={matchedJob.permission_request?.categories}
+                        onViewDetail={setDetailJobId}
+                        onMerge={
+                          cardKind === "success" && matchedRun?.review_status === "awaiting_review" && matchedRun
+                            ? () => {
+                                fetch(`/api/run/${matchedJob.job_id}/worktree-merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+                                  .catch(() =>
+                                    fetch("/api/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_json: matchedRun!.source_json, approve_review: true }) })
+                                  );
+                              }
+                            : undefined
+                        }
+                        onApprove={
+                          cardKind === "blocked"
+                            ? () => fetch(`/api/run/${matchedJob.job_id}/permission-grant`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+                            : undefined
+                        }
+                        onDeny={
+                          cardKind === "blocked"
+                            ? () => fetch(`/api/run/${matchedJob.job_id}/permission-deny`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+                            : undefined
+                        }
+                      />
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </div>
           </div>
 
@@ -4398,6 +4451,29 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
         </div>
       )}
 
+      {detailJobId && (
+        <JobDetailPanel
+          jobId={detailJobId}
+          jobs={state.jobs}
+          runs={state.runs}
+          onClose={() => setDetailJobId(null)}
+          onMerge={(job, run) => {
+            fetch(`/api/run/${job.job_id}/worktree-merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+              .catch(() =>
+                fetch("/api/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_json: run.source_json, approve_review: true }) })
+              )
+              .then(() => setDetailJobId(null));
+          }}
+          onApprove={(jobId) => {
+            fetch(`/api/run/${jobId}/permission-grant`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+              .then(() => setDetailJobId(null));
+          }}
+          onDeny={(jobId) => {
+            fetch(`/api/run/${jobId}/permission-deny`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+              .then(() => setDetailJobId(null));
+          }}
+        />
+      )}
     </aside>
   );
 }
@@ -5434,6 +5510,21 @@ function routeChatMode(content: string, hasSelectedRun: boolean): "chat" | "deep
   if (executionPattern.test(normalized)) return "execution";
   if (researchPattern.test(normalized)) return "deep-research";
   return "chat";
+}
+
+function findJobForMessage(
+  message: AgentMessage,
+  jobs: Array<{ job_id: string; task_id: string; run_id: string; status: string; returncode: number | null; objective?: string | null; permission_request?: { requires_user_approval: string[]; categories: string[]; decision?: unknown } | null }>,
+): typeof jobs[number] | null {
+  if (message.role !== "assistant") return null;
+  for (const action of message.actions ?? []) {
+    if (action.kind !== "run" && action.kind !== "handoff") continue;
+    const jobId = String(action.payload?.job_id ?? "");
+    if (!jobId) continue;
+    const job = jobs.find((j) => j.job_id === jobId);
+    if (job) return job;
+  }
+  return null;
 }
 
 function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onRunAction: (action: AgentAction) => void }) {
