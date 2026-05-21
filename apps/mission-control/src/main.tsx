@@ -206,7 +206,7 @@ type RenderedToolCall = AgentToolCall & {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel" | "workspace_open" | "generate_image";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel" | "workspace_open" | "generate_image" | "terminal_run";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -900,7 +900,7 @@ function deriveEscalationActions(
   modelBaseUrl: string,
   nemoMcpUrl: string,
 ): AgentAction[] {
-  const primaryKinds = new Set<string>(["plan_generate", "handoff", "generate_image", "browser_task", "workspace_open", "run"]);
+  const primaryKinds = new Set<string>(["plan_generate", "handoff", "generate_image", "browser_task", "workspace_open", "run", "terminal_run"]);
   if ((message.actions ?? []).some((a) => primaryKinds.has(a.kind))) return [];
   if ((message.content ?? "").length < 80) return [];
   const content = message.content ?? "";
@@ -2059,6 +2059,40 @@ export function App() {
           }
         })
         .catch((err: Error) => setStatus(`Error abriendo workspace: ${err.message}`));
+      return;
+    }
+    if (action.kind === "terminal_run") {
+      const command = String(action.payload.command || "");
+      if (!command) return;
+      const termMsgId = `term-${Date.now()}`;
+      setAgentMessages((prev) => [
+        ...prev,
+        { id: termMsgId, role: "assistant" as const, content: `\`\`\`\n$ ${command}\n\`\`\`\nEjecutando…`, tool_calls: [], actions: [] },
+      ]);
+      setStatus(`Ejecutando: ${command.slice(0, 60)}`);
+      postJson<{ ok: boolean; stdout: string; stderr: string; exit_code: number; duration_ms: number }>(
+        "/api/terminal/run",
+        { command, timeout_seconds: Number(action.payload.timeout_seconds || 30) },
+      )
+        .then((res) => {
+          const out = [res.stdout, res.stderr].filter(Boolean).join("\n").trim();
+          const summary = res.ok ? `✓ exit 0 · ${res.duration_ms}ms` : `✗ exit ${res.exit_code} · ${res.duration_ms}ms`;
+          setAgentMessages((prev) =>
+            prev.map((m) =>
+              m.id === termMsgId
+                ? { ...m, content: `\`\`\`\n$ ${command}\n${out || "(sin salida)"}\n\`\`\`\n${summary}` }
+                : m,
+            ),
+          );
+          setStatus(summary);
+        })
+        .catch((err: Error) => {
+          setAgentMessages((prev) =>
+            prev.map((m) =>
+              m.id === termMsgId ? { ...m, content: `\`\`\`\n$ ${command}\n\`\`\`\nError: ${err.message}` } : m,
+            ),
+          );
+        });
       return;
     }
     if (action.kind === "browser_cancel") {

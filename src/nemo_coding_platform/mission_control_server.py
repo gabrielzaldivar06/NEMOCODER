@@ -342,6 +342,119 @@ class HandoffJobManager:
         self._append_log(job, f"permission denied: {note or '(no note)'}")
         return job
 
+    def continue_job(self, config: "MissionControlServerConfig", source_job_id: str, payload: dict[str, object]) -> "HandoffJob":
+        """Start a continuation of a completed handoff job.
+
+        Merges the source worktree to main (if it exists and has not been merged yet),
+        then starts a brand-new long-handoff-run on the same repo so the agent sees
+        all code from the previous run. long-handoff-continue is only for paused/resume-
+        token runs; a completed run simply needs a new job with updated context.
+        """
+        import json as _json
+
+        source = self.get(source_job_id)
+
+        # Recover the original repo_path from the source job's run JSON.
+        # source.payload is empty after server restart so we cannot rely on it.
+        source_repo_path: str | None = None
+        if source.run_json:
+            try:
+                src_data = _json.loads(Path(source.run_json).read_text(encoding="utf-8"))
+                source_repo_path = src_data.get("task", {}).get("repo_path")
+            except Exception:
+                pass
+        effective_repo = Path(source_repo_path) if source_repo_path else Path(config.repo_path)
+
+        # Merge existing worktree so the new run starts from an up-to-date main branch.
+        try:
+            from nemo_coding_platform.core.worktree_runtime import (
+                merge_worktree_to_main, cleanup_git_worktree, worktree_branch_name,
+            )
+            runtime_id = f"{source.task_id}-{source.run_id}"
+            branch = worktree_branch_name(runtime_id)
+            wt_path = effective_repo / ".worktrees" / runtime_id
+            if wt_path.exists():
+                merged = merge_worktree_to_main(effective_repo, branch, f"continue: merge {source_job_id}")
+                if merged:
+                    cleanup_git_worktree(effective_repo, wt_path, branch)
+        except Exception:
+            pass  # merge failure is non-fatal — new run will still see worktree code via repo_map
+
+        settings = _load_settings(config)
+        continuation_payload = {
+            **settings,
+            **source.payload,
+            **payload,
+            # Ensure SSE MCP URL so subprocess can reach NEMO
+            "nemo_mcp_url": LEGACY_NEMO_SSE_URL,
+            "nemo_mcp_prefix": "nemo.",
+        }
+        # Override repo_path with the source job's repo — settings always points to the
+        # Mission Control repo (C:\dev\dev4) which is wrong for external projects.
+        if source_repo_path:
+            continuation_payload["repo_path"] = source_repo_path
+            # Also reset validation to none so Mission Control build commands don't apply.
+            continuation_payload.setdefault("validation_policy", "none")
+            continuation_payload["validation_commands"] = ["validation skipped by policy:none"]
+        return self.start(config, continuation_payload)
+
+    def _build_continue_command(
+        self,
+        config: "MissionControlServerConfig",
+        payload: dict[str, object],
+        source_run_json: "Path",
+        objective: str,
+        provider: str,
+        timeout: float,
+        task_id: str,
+        run_id: str,
+        run_json: "Path",
+    ) -> tuple[str, ...]:
+        command: list[str] = [
+            sys.executable, "-u", "-m", "nemo_coding_platform",
+            "long-handoff-continue",
+            str(source_run_json),
+            "--objective", objective,
+            "--provider", provider,
+            "--timeout", str(timeout),
+            "--max-runtime-minutes", str(payload.get("max_runtime_minutes") or 120),
+            "--heartbeat-minutes", str(payload.get("heartbeat_minutes") or 15),
+            "--max-heartbeats", str(payload.get("max_heartbeats") or 4),
+            "--token-budget", str(payload.get("token_budget") or 128000),
+            "--plan-minutes", str(payload.get("plan_minutes") or 30),
+            "--execute-minutes", str(payload.get("execute_minutes") or 60),
+            "--review-minutes", str(payload.get("review_minutes") or 30),
+            "--validation-policy", str(payload.get("validation_policy") or "smoke"),
+            "--save-json", str(run_json),
+            "--json",
+        ]
+        for item in _string_list(payload, "acceptance_criteria", ("implementation satisfies the objective",)):
+            command.extend(("--acceptance", item))
+        for item in _string_list(payload, "validation_commands", ()):
+            command.extend(("--validation", item))
+        for item in _string_list(payload, "target_files", ()):
+            command.extend(("--target-file", item))
+        if config.memory_db is None:
+            command.append("--no-memory-db")
+        else:
+            command.extend(("--memory-db", str(config.memory_db)))
+            mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
+            if mcp_url.lower() == VSCODE_STDIO_NEMO_URL:
+                mcp_url = LEGACY_NEMO_SSE_URL
+            if not mcp_url:
+                mcp_url = LEGACY_NEMO_SSE_URL  # continuation subprocesses always need SSE, not stdio
+            command.extend(("--mcp-url", mcp_url))
+            command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
+        base_url = str(payload.get("base_url") or payload.get("model_base_url") or "http://127.0.0.1:1234/v1")
+        model = str(payload.get("model") or payload.get("default_model") or "").strip() or _resolve_lmstudio_model(base_url)
+        command.extend(("--model-profile", model))
+        command.extend(("--lmstudio-base-url", base_url))
+        if bool(payload.get("use_git_worktree", True)):
+            command.append("--use-git-worktree")
+        if bool(payload.get("real_validation", True)):
+            command.append("--real-validation")
+        return tuple(command)
+
     def list(self) -> list[dict[str, object]]:
         with self._lock:
             return [job.to_dict(include_logs=False) for job in sorted(self._jobs.values(), key=lambda item: item.job_id, reverse=True)]
@@ -641,6 +754,7 @@ class HandoffJobManager:
         run_id: str,
         run_json: Path,
     ) -> tuple[str, ...]:
+        effective_repo = str(payload.get("repo_path") or config.repo_path)
         command: list[str] = [
             sys.executable,
             "-u",
@@ -649,7 +763,7 @@ class HandoffJobManager:
             "long-handoff-run",
             objective,
             "--repo",
-            str(config.repo_path),
+            effective_repo,
             "--provider",
             provider,
             "--timeout",
@@ -729,7 +843,7 @@ class HandoffJobManager:
             command.append("--validation-escalation-mode")
         if bool(payload.get("real_validation", True)):
             command.append("--real-validation")
-        if bool(payload.get("use_git_worktree")):
+        if bool(payload.get("use_git_worktree", True)):  # default True — git worktree gives agent full repo access
             command.append("--use-git-worktree")
         return tuple(command)
 
@@ -2346,7 +2460,7 @@ def api_generate_image(config: MissionControlServerConfig, payload: dict[str, ob
     _settings_api_key = str(settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
 
     def _write_generated_image(image_bytes: bytes) -> dict[str, object]:
-        artifacts_dir = Path(config.repo_path) / ".nemo-runtimes" / "mission-control" / "artifacts" / "images"
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images" / "plans"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         image_name = f"gen-{uuid4().hex[:8]}.png"
         image_path = artifacts_dir / image_name
@@ -3338,14 +3452,13 @@ def api_repo_open(server: "MissionControlHttpServer", payload: dict[str, object]
     repo = Path(repo_path).resolve()
     if not repo.exists() or not repo.is_dir():
         raise FileNotFoundError(str(repo))
-    if not _is_git_repo(repo):
-        raise ValueError("selected path is not a git repository")
+    is_git = _is_git_repo(repo)
     settings = _load_settings(server.config)
     settings["recent_repos"] = _recent_repos(tuple(str(item) for item in settings.get("recent_repos", [])), str(repo))
     next_config = server.config.with_runtime_settings({**settings, "repo_path": str(repo)})
     _save_settings(next_config, {**settings, "repo_path": str(repo), "runtime_path": str(next_config.runtimes_path), "memory_db": str(next_config.memory_db) if next_config.memory_db else ""})
     server.config = next_config
-    return {"ok": True, "repo": {"path": str(repo), "is_git_repo": True}, "state": api_state(server.config, server.jobs)}
+    return {"ok": True, "repo": {"path": str(repo), "is_git_repo": is_git}, "state": api_state(server.config, server.jobs)}
 
 
 def api_repo_clone(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
@@ -3641,6 +3754,30 @@ def api_extensions_update(server: "MissionControlHttpServer", payload: dict[str,
 def _ensure_git_repo(config: MissionControlServerConfig) -> None:
     if not _is_git_repo(config.repo_path):
         raise _bad_request("current workspace is not a git repository", error_code="not_git_repo")
+
+
+def api_git_init(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
+    repo = server.config.repo_path
+    if _is_git_repo(repo):
+        return {"ok": True, "already_git": True, "state": api_state(server.config, server.jobs)}
+    completed = subprocess.run(
+        ["git", "init"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        raise ValueError(completed.stderr.strip() or completed.stdout.strip() or "git init failed")
+    # Optional: create initial commit if requested
+    if payload.get("initial_commit"):
+        subprocess.run(["git", "add", "-A"], cwd=repo, text=True, capture_output=True, timeout=30)
+        msg = str(payload.get("message") or "Initial commit")
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", msg],
+            cwd=repo, text=True, capture_output=True, timeout=30,
+        )
+    return {"ok": True, "already_git": False, "state": api_state(server.config, server.jobs)}
 
 
 def _run_git(config: MissionControlServerConfig, args: list[str], *, timeout: int = 60, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -4817,6 +4954,14 @@ def api_handoff_start(server: "MissionControlHttpServer", payload: dict[str, obj
     return {"ok": True, "job": job.to_dict()}
 
 
+def api_handoff_continue(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
+    source_job_id = str(payload.get("job_id") or "").strip()
+    if not source_job_id:
+        raise ApiRequestError("job_id is required", error_code="missing_job_id")
+    job = server.jobs.continue_job(server.config, source_job_id, payload)
+    return {"ok": True, "job": job.to_dict()}
+
+
 def api_jobs(server: "MissionControlHttpServer") -> dict[str, object]:
     return {"ok": True, "jobs": server.jobs.list()}
 
@@ -4835,6 +4980,47 @@ def api_job_pause(server: "MissionControlHttpServer", payload: dict[str, object]
 
 def api_job_resume(server: "MissionControlHttpServer", payload: dict[str, object]) -> dict[str, object]:
     return {"ok": True, "job": server.jobs.resume(server.config, _job_id(payload)).to_dict()}
+
+
+def api_job_log(server: "MissionControlHttpServer", job_id: str, offset: int = 0) -> dict[str, object]:
+    job = server.jobs.get(job_id)
+    logs = list(job.logs)
+    return {
+        "job_id": job_id,
+        "status": job.status,
+        "total": len(logs),
+        "offset": offset,
+        "lines": logs[offset:],
+    }
+
+
+def api_files(config: "MissionControlServerConfig", rel_path: str = ".") -> dict[str, object]:
+    base = Path(config.repo_path).resolve()
+    target = (base / rel_path).resolve()
+    if not str(target).startswith(str(base)):
+        raise _bad_request("path outside workspace", error_code="path_traversal")
+    if not target.exists():
+        raise _bad_request("path does not exist", error_code="not_found")
+    if target.is_file():
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            text = None
+        return {"kind": "file", "path": rel_path, "content": text, "size": target.stat().st_size}
+    entries = []
+    try:
+        for child in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+            if child.name.startswith(".") and child.name not in (".gitignore",):
+                continue
+            entries.append({
+                "name": child.name,
+                "type": "dir" if child.is_dir() else "file",
+                "size": child.stat().st_size if child.is_file() else None,
+                "path": str(child.relative_to(base)).replace("\\", "/"),
+            })
+    except PermissionError:
+        pass
+    return {"kind": "dir", "path": rel_path, "entries": entries}
 
 
 def _signals_from_job(job: HandoffJob, since: int = 0) -> list[dict[str, object]]:
@@ -5600,15 +5786,17 @@ def _run_or_handoff_actions(message: str, payload: dict[str, object], selected_o
             {
                 "id": "start-run-from-chat",
                 "kind": "run",
-                "label": "Run",
-                "summary": "Start a new async run from this chat request.",
+                "label": f"Run: {(message or selected_objective)[:60]}",
+                "summary": "Plan loop — iterative Python script generation with quality scoring.",
                 "payload": {
-                    "objective": f"Run: {message}",
-                    "acceptance_criteria": "run objective completed with explicit output",
-                    "validation_commands": "python -m unittest",
-                    "target_files": target_files,
-                    "provider": provider,
-                    "timeout_seconds": timeout_value,
+                    "objective": message or selected_objective,
+                    "max_iterations": 4,
+                    "quality_threshold": 7.0,
+                    "topic": "chat_run",
+                    "parallel_candidates": False,
+                    "visual_critique": False,
+                    "model_base_url": str(payload.get("model_base_url") or "http://localhost:1234/v1"),
+                    "nemo_mcp_url": str(payload.get("nemo_mcp_url") or "http://127.0.0.1:8765/mcp/sse"),
                 },
             }
         )
@@ -5802,13 +5990,31 @@ def _extract_code_block(text: str, lang: str = "python") -> str:
 
 # ── Pollinations media tools ──────────────────────────────────────────────────
 
-POLLINATIONS_TOOLS: frozenset[str] = frozenset(
-    {"generate_image", "generate_audio", "generate_video", "generate_text"}
-)
+POLLINATIONS_TOOLS: frozenset[str] = frozenset({"generate_image"})
 
-# Models sometimes invent their own tool names instead of the exact catalog names.
-# Map common aliases so the detection filter and dispatcher still route correctly.
-_POLLINATIONS_TOOL_ALIASES: dict[str, str] = {
+_IMAGE_OBJECTIVE_TERMS: frozenset[str] = frozenset({
+    "image", "imagen", "picture", "foto", "photo", "artwork", "draw", "paint",
+    "photograph", "portrait", "landscape", "illustration", "poster", "wallpaper",
+    "painting", "pintura", "dibujo", "dibujar", "fotografía", "retrato", "cuadro",
+    "render", "visualización", "visualization", "art", "arte",
+})
+_IMAGE_OBJECTIVE_CODE_TERMS: frozenset[str] = frozenset({
+    "python", "script", "matplotlib", "seaborn", "chart", "plot", "graph",
+    "código", "code", "pandas", "numpy", "csv",
+})
+
+def _is_image_objective(text: str) -> bool:
+    """Return True when a plan_generate objective is really asking for an image, not a Python script."""
+    low = text.lower()
+    return (
+        any(t in low for t in _IMAGE_OBJECTIVE_TERMS)
+        and not any(t in low for t in _IMAGE_OBJECTIVE_CODE_TERMS)
+    )
+
+# Canonical aliases for ALL catalog tools — covers model-invented names for every tool.
+# Used by _normalize_tool_invocation so every format variant resolves to the right tool.
+_ALL_TOOL_ALIASES: dict[str, str] = {
+    # generate_image
     "image_request": "generate_image",
     "create_image": "generate_image",
     "draw_image": "generate_image",
@@ -5816,22 +6022,44 @@ _POLLINATIONS_TOOL_ALIASES: dict[str, str] = {
     "text_to_image": "generate_image",
     "image_generation": "generate_image",
     "generate_picture": "generate_image",
-    "create_audio": "generate_audio",
-    "text_to_speech": "generate_audio",
-    "generate_speech": "generate_audio",
-    "tts": "generate_audio",
-    "speech_synthesis": "generate_audio",
-    "create_video": "generate_video",
-    "make_video": "generate_video",
-    "text_to_video": "generate_video",
-    "video_generation": "generate_video",
-    "generate_content": "generate_image",  # generic fallback — prefers image
+    "generate_content": "generate_image",
+    "create_picture": "generate_image",
+    # plan_generate
+    "generate_code": "plan_generate",
+    "code_generate": "plan_generate",
+    "run_code": "plan_generate",
+    "create_script": "plan_generate",
+    "generate_python": "plan_generate",
+    "python_script": "plan_generate",
+    "code_generation": "plan_generate",
+    "generate_script": "plan_generate",
+    # handoff_start
+    "start_handoff": "handoff_start",
+    "handoff": "handoff_start",
+    "code_edit": "handoff_start",
+    "edit_code": "handoff_start",
+    "implement_feature": "handoff_start",
+    "fix_bug": "handoff_start",
+    "implement": "handoff_start",
+    # browser_task
+    "browse": "browser_task",
+    "web_search": "browser_task",
+    "search_web": "browser_task",
+    "navigate": "browser_task",
+    "open_url": "browser_task",
+    "web_browse": "browser_task",
+    "scrape_web": "browser_task",
+    "browser": "browser_task",
+    # workspace_open
+    "open_workspace": "workspace_open",
+    "switch_workspace": "workspace_open",
+    "open_project": "workspace_open",
+    "open_folder": "workspace_open",
+    # job_status
+    "get_job_status": "job_status",
+    "check_job": "job_status",
+    "job_query": "job_status",
 }
-
-
-def _resolve_pollinations_tool(name: str) -> str:
-    """Normalize an LLM-invented tool name to the canonical Pollinations tool name."""
-    return _POLLINATIONS_TOOL_ALIASES.get(name, name)
 
 
 def _pollinations_image(params: dict[str, object], config: "MissionControlServerConfig") -> dict[str, object]:
@@ -5853,7 +6081,7 @@ def _pollinations_image(params: dict[str, object], config: "MissionControlServer
             image_bytes = resp.read()
         if len(image_bytes) < 1000:
             return {"error": f"Pollinations returned suspiciously small image ({len(image_bytes)} bytes)"}
-        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images" / "plans"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.jpg"
         dest.write_bytes(image_bytes)
@@ -5862,108 +6090,45 @@ def _pollinations_image(params: dict[str, object], config: "MissionControlServer
         return {"error": str(exc)}
 
 
-def _pollinations_audio(params: dict[str, object], config: "MissionControlServerConfig") -> dict[str, object]:
-    text = str(params.get("text") or "")
-    if not text:
-        return {"error": "text is required"}
-    voice = str(params.get("voice") or "nova")
-    model = str(params.get("model") or "openai-audio")
-    encoded = urllib.parse.quote(text, safe="")
-    url = f"https://text.pollinations.ai/{encoded}?{urllib.parse.urlencode({'model': model, 'voice': voice})}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            audio_bytes = resp.read()
-        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "audio"
-        artifacts_dir.mkdir(parents=True, exist_ok=True)
-        dest = artifacts_dir / f"pollinations-{uuid4().hex[:8]}.mp3"
-        dest.write_bytes(audio_bytes)
-        return {"artifact_path": str(dest), "url": url, "voice_used": voice}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)}
-
-
-def _pollinations_video(params: dict[str, object], config: "MissionControlServerConfig") -> dict[str, object]:
-    prompt = str(params.get("prompt") or "")
-    if not prompt:
-        return {"error": "prompt is required"}
-    # Pollinations does not currently expose a public video generation REST API.
-    # The video.pollinations.ai subdomain does not resolve. Return a clear error so
-    # the model can communicate this to the user instead of hanging or crashing.
-    return {
-        "error": (
-            "Video generation is not available: Pollinations AI does not currently expose a public "
-            "video API endpoint. Try generate_image for static visuals, or use handoff_start to "
-            "write a Python script that creates an animation."
-        )
-    }
-
-
-def _pollinations_text(params: dict[str, object]) -> dict[str, object]:
-    prompt = str(params.get("prompt") or "")
-    if not prompt:
-        return {"error": "prompt is required"}
-    model = str(params.get("model") or "openai-fast")
-    encoded = urllib.parse.quote(prompt, safe="")
-    qs_txt: dict[str, object] = {"model": model}
-    if params.get("system"):
-        qs_txt["system"] = str(params["system"])
-    if params.get("seed") is not None:
-        qs_txt["seed"] = int(params["seed"])  # type: ignore[arg-type]
-    url = f"https://text.pollinations.ai/{encoded}?{urllib.parse.urlencode(qs_txt)}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "SpaceCode/1.0"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            text_result = resp.read().decode("utf-8")
-        return {"text": text_result, "model_used": model}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": str(exc)}
-
-
 def _execute_pollinations_tool(
     inv: dict[str, object], config: "MissionControlServerConfig"
 ) -> dict[str, object]:
-    tool = _resolve_pollinations_tool(str(inv.get("tool") or ""))
+    tool = str(inv.get("tool") or "")
     params: dict[str, object] = dict(inv.get("params") or {})
     if tool == "generate_image":
         return _pollinations_image(params, config)
-    if tool == "generate_audio":
-        return _pollinations_audio(params, config)
-    if tool == "generate_video":
-        return _pollinations_video(params, config)
-    if tool == "generate_text":
-        return _pollinations_text(params)
     return {"error": f"unknown pollinations tool: {tool}"}
 
 
 _AGENT_TOOL_CATALOG = """\
 ═══════════════════════════════════════════════════════════
-AGENT ACTION TOOLS — THE ONLY 9 TOOLS YOU CAN TRIGGER
+AGENT ACTION TOOLS — THE ONLY 6 TOOLS YOU CAN TRIGGER
 Call these tools using the native function-calling mechanism (preferred), or embed the JSON in your
 response text as a fallback. DO NOT call NEMO MCP tools (search_memories, context_bootstrap, etc.)
 — those are server-only and executed automatically by the backend.
 ═══════════════════════════════════════════════════════════
 
 ROUTING RULES — read before choosing a tool:
+  • User asks a QUESTION (what is, explain, describe, de que trata, cómo funciona…) → NO TOOL — answer in text
   • User wants an IMAGE / ARTWORK / PICTURE     → generate_image  (NEVER plan_generate)
-  • User wants SPEECH / AUDIO / VOICEOVER       → generate_audio  (NEVER plan_generate)
-  • User wants a VIDEO / ANIMATION / CLIP        → generate_video  (NEVER plan_generate)
-  • User wants TEXT from another AI model        → generate_text   (sub-agent delegation)
   • User wants to EDIT CODE / FIX A BUG in repo → handoff_start
   • User wants a PYTHON SCRIPT (data, charts)    → plan_generate   (Python/headless ONLY)
   • User wants to BROWSE / SCRAPE a website      → browser_task
-  plan_generate writes Python code. It does NOT call image/audio/video APIs.
-  generate_image/audio/video call Pollinations AI directly and return real media files.
+  plan_generate writes Python code. It does NOT call image APIs.
+  generate_image calls Pollinations AI directly and returns a real image file.
+
+  NEVER call a tool just because a question mentions code or a repo.
+  Questions about code → answer in text. Tools are ONLY for CREATE / MODIFY / RUN actions.
 
 1. handoff_start — full autonomous coding session (edits files, runs tests, makes commits)
    Use when the user asks to implement, fix bugs, or change repo source code.
    params: objective (required), acceptance (required), target_files (optional)
 
-2. plan_generate — iterative PYTHON script generation (headless scripts ONLY — no images/audio/video)
+2. plan_generate — iterative PYTHON script generation (headless scripts ONLY — no images)
    Use ONLY for Python scripts, matplotlib charts, data analysis, or Python CLI programs that run HEADLESS.
-   DO NOT use for: image generation, audio synthesis, video creation, HTML, browser apps, desktop GUIs.
-   For images → generate_image. For audio → generate_audio. For video → generate_video.
-   params: objective (required), max_iterations (default 5), quality_threshold (default 10.0)
+   DO NOT use for: image generation, HTML, browser apps, desktop GUIs.
+   For images → generate_image.
+   params: objective (required), max_iterations (default 5), quality_threshold (default 7.5)
 
 3. job_status — query the status of a running background job
    Use when the user asks about the progress of an ongoing operation.
@@ -5984,24 +6149,15 @@ ROUTING RULES — read before choosing a tool:
    params: prompt (required), model (default "flux", options: flux|flux-realism|flux-anime|gpt-image-1|seedream-3|kontext),
            width (default 1024), height (default 1024), seed (optional), enhance (default true)
 
-7. generate_audio — synthesize real speech audio via Pollinations AI (instant, no code needed)
-   Use IMMEDIATELY when the user asks to narrate, read aloud, create a voiceover, or generate audio.
-   Calls the Pollinations TTS API directly and saves an MP3 artifact. Do NOT use plan_generate instead.
-   params: text (required), voice (default "nova", options: alloy|echo|fable|onyx|nova|shimmer|heart|aria|adam|bill|brian),
-           model (default "openai-audio")
+7. terminal_run — execute a shell command in the current repo directory
+   Use when the user asks to run a command, start a dev server, run tests, build, install dependencies, etc.
+   The command runs with shell=True in the repo root. Output is shown inline.
+   params: command (required, e.g. "npm run dev", "python -m pytest", "cargo build"),
+           timeout_seconds (optional, default 30, max 300)
 
-8. generate_video — generate a video clip via Pollinations AI (instant, no code needed)
-   Use IMMEDIATELY when the user asks to animate, produce a clip, or create a video.
-   Calls the Pollinations video API directly and saves an MP4 artifact. Do NOT use plan_generate instead.
-   params: prompt (required), model (default "seedance-1-lite", options: seedance-1-lite|wan-fast|veo-2),
-           duration (default 5, seconds), keyframe_image (optional — path to an image artifact for the first frame)
-
-9. generate_text — delegate a text subtask to a Pollinations text model (sub-agent pattern)
-   Use when you need a specific text generation done by a different model (translation, code, creative writing).
-   params: prompt (required), model (default "openai-fast", options: openai-fast|openai-large|mistral|claude-hybridspace|gemini-2.0),
-           system (optional — system instruction for the sub-agent), seed (optional)
-
-CRITICAL: These 9 are the ONLY tools available to you. Do NOT embed NEMO tool names in your response.
+CRITICAL: These 7 are the ONLY tools available to you. Do NOT embed NEMO tool names in your response.
+If native function calling is unavailable, use exactly this text fallback:
+  {"tool": "tool_name", "params": {"key": "value"}}
 """
 
 _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
@@ -6015,7 +6171,7 @@ _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
                 "properties": {
                     "objective": {"type": "string", "description": "What the Python script should do"},
                     "max_iterations": {"type": "integer", "description": "Max refinement iterations (default 5)"},
-                    "quality_threshold": {"type": "number", "description": "Stop early if score reaches this (default 10.0 = never stop early, always exhaust iterations)"},
+                    "quality_threshold": {"type": "number", "description": "Stop early if score reaches this (default 7.5)"},
                 },
                 "required": ["objective"],
             },
@@ -6103,77 +6259,125 @@ _AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
     {
         "type": "function",
         "function": {
-            "name": "generate_audio",
-            "description": "Synthesize speech via Pollinations AI. Use when the user asks to narrate text, create a voiceover, or generate audio.",
+            "name": "terminal_run",
+            "description": "Execute a shell command in the current repo directory. Use for npm run dev, cargo build, pytest, git commands, installing deps, starting dev servers, etc.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Text to synthesize"},
-                    "voice": {"type": "string", "description": "Voice: nova (default), alloy, echo, fable, onyx, shimmer, heart, aria, adam, bill, brian"},
-                    "model": {"type": "string", "description": "TTS model (default: openai-audio)"},
+                    "command": {"type": "string", "description": "Shell command to execute (runs with shell=True in repo root)"},
+                    "timeout_seconds": {"type": "integer", "description": "Seconds to wait before timeout (default 30, max 300)"},
                 },
-                "required": ["text"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_video",
-            "description": "Generate a short video clip via Pollinations AI. Use when the user asks to animate, create a video, or produce a clip.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "Video description"},
-                    "model": {"type": "string", "description": "Model: seedance-1-lite (default), wan-fast, veo-2"},
-                    "duration": {"type": "integer", "description": "Duration in seconds (default 5)"},
-                    "keyframe_image": {"type": "string", "description": "Optional path to an existing image artifact to use as first frame"},
-                },
-                "required": ["prompt"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_text",
-            "description": "Delegate a text subtask to a Pollinations text model. Use to generate text with a different model (translation, creative writing, code).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "Task or prompt for the text sub-agent"},
-                    "model": {"type": "string", "description": "Model: openai-fast (default), openai-large, mistral, claude-hybridspace, gemini-2.0"},
-                    "system": {"type": "string", "description": "Optional system instruction for the sub-agent"},
-                    "seed": {"type": "integer", "description": "Optional random seed"},
-                },
-                "required": ["prompt"],
+                "required": ["command"],
             },
         },
     },
 ]
 
-_TOOL_KEY_RE = re.compile(r'"tool"\s*:\s*"')
+# Matches <tool_call>...</tool_call> XML blocks used by Qwen, Hermes, Mistral, etc.
+_TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*([\s\S]*?)\s*</tool_call>", re.S)
+# Matches the start of any recognized key pattern so balanced-brace scanning can follow.
+_MULTI_KEY_RE = re.compile(r'"(?:tool|name|action|function_call)"\s*:\s*["{]')
+# Strip model thinking blocks before scanning — reasoning is not output.
+_THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.S)
+
+
+def _normalize_tool_invocation(obj: object) -> "dict[str, object] | None":
+    """Normalize any LLM tool-call JSON variant to canonical {\"tool\": name, \"params\": {}}."""
+    if not isinstance(obj, dict):
+        return None
+    tool_name: str | None = None
+    params: dict[str, object] = {}
+
+    if "tool" in obj:
+        # Canonical format: {"tool": "name", "params": {...}}
+        tool_name = str(obj["tool"])
+        raw = obj.get("params")
+        params = dict(raw) if isinstance(raw, dict) else {}
+
+    elif "name" in obj and (obj.get("arguments") is not None or obj.get("parameters") is not None):
+        # OpenAI / Hermes: {"name": "name", "arguments": {...}}
+        tool_name = str(obj["name"])
+        raw = obj["arguments"] if obj.get("arguments") is not None else obj.get("parameters")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                raw = {}
+        params = dict(raw) if isinstance(raw, dict) else {}
+
+    elif "action" in obj:
+        # ReAct: {"action": "name", "action_input": {...}}
+        tool_name = str(obj["action"])
+        raw = obj.get("action_input") or {}
+        params = dict(raw) if isinstance(raw, dict) else {}
+
+    elif isinstance(obj.get("function_call"), dict):
+        # Some models: {"function_call": {"name": ..., "arguments": ...}}
+        fc: dict[str, object] = dict(obj["function_call"])  # type: ignore[arg-type]
+        tool_name = str(fc.get("name") or "")
+        raw = fc.get("arguments") or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                raw = {}
+        params = dict(raw) if isinstance(raw, dict) else {}
+
+    elif isinstance(obj.get("function"), dict):
+        # Alternate: {"function": {"name": ..., "arguments": ...}}
+        fc = dict(obj["function"])  # type: ignore[arg-type]
+        tool_name = str(fc.get("name") or "")
+        raw = fc.get("arguments") or fc.get("parameters") or {}
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                raw = {}
+        params = dict(raw) if isinstance(raw, dict) else {}
+
+    if not tool_name:
+        return None
+    tool_name = _ALL_TOOL_ALIASES.get(tool_name, tool_name)
+    return {"tool": tool_name, "params": params}
 
 
 def _parse_llm_tool_calls(text: str) -> list[dict[str, object]]:
-    """Extract {\"tool\": \"...\", \"params\": {...}} objects from LLM response text.
+    """Extract tool invocations from LLM response text, handling multiple JSON formats.
 
-    Uses balanced-brace scanning so nested params dicts are handled correctly.
+    Stage 1 — <tool_call>...</tool_call> XML blocks (Qwen / Hermes / Mistral style).
+    Stage 2 — balanced-brace scan for "tool" / "name" / "action" / "function_call" key patterns.
+    Each candidate is normalized via _normalize_tool_invocation; duplicates by tool name are dropped.
     """
+    clean = _THINK_RE.sub("", text)
     results: list[dict[str, object]] = []
     seen: set[str] = set()
-    for m in _TOOL_KEY_RE.finditer(text):
-        # Walk back to find the opening brace of this JSON object
-        start = text.rfind("{", 0, m.start())
+
+    def _add(raw_obj: object) -> None:
+        norm = _normalize_tool_invocation(raw_obj)
+        if norm is None:
+            return
+        tool = str(norm["tool"])
+        if tool and tool not in seen:
+            seen.add(tool)
+            results.append(norm)
+
+    # Stage 1: <tool_call> XML blocks
+    for m in _TOOL_CALL_TAG_RE.finditer(clean):
+        try:
+            _add(json.loads(m.group(1)))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Stage 2: balanced-brace scan
+    for m in _MULTI_KEY_RE.finditer(clean):
+        start = clean.rfind("{", 0, m.start())
         if start == -1:
             continue
-        # Walk forward counting brace depth to find the matching closing brace
-        depth = 0
-        end = -1
-        for i in range(start, len(text)):
-            if text[i] == "{":
+        depth, end = 0, -1
+        for i in range(start, len(clean)):
+            if clean[i] == "{":
                 depth += 1
-            elif text[i] == "}":
+            elif clean[i] == "}":
                 depth -= 1
                 if depth == 0:
                     end = i + 1
@@ -6181,15 +6385,10 @@ def _parse_llm_tool_calls(text: str) -> list[dict[str, object]]:
         if end == -1:
             continue
         try:
-            obj = json.loads(text[start:end])
-            if not (isinstance(obj, dict) and isinstance(obj.get("params"), dict)):
-                continue
-            tool = str(obj.get("tool") or "")
-            if tool and tool not in seen:
-                seen.add(tool)
-                results.append(obj)
+            _add(json.loads(clean[start:end]))
         except (json.JSONDecodeError, ValueError):
             pass
+
     return results
 
 
@@ -6522,7 +6721,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         raise _bad_request("objective is required for plan mode", error_code="missing_objective")
 
     max_iterations = max(1, min(10, int(payload.get("max_iterations") or 5)))
-    quality_threshold = max(0.1, float(payload.get("quality_threshold") or 10.0))
+    quality_threshold = max(0.1, float(payload.get("quality_threshold") or 7.5))
     topic = str(payload.get("topic") or "autonomous_plan").strip()
     use_parallel = bool(payload.get("parallel_candidates", True))
     use_visual = bool(payload.get("visual_critique", True))
@@ -6682,18 +6881,31 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     # SDD phase tracking: SPEC (iter 1 with test mode) → IMPLEMENT → VALIDATE
     _sdd_phase = SDDPhase.SPEC if is_test else SDDPhase.IMPLEMENT
 
-    # --- NEMO Learning: cross-session project context ---
+    # --- Project context: repo file map + NEMO cross-session memories ---
     _plan_repo = str(getattr(config, "repo_path", "") or "")
-    if _plan_repo and _nemo_adapter:
+    if _plan_repo:
         try:
-            _learning_ctx = build_project_context(_nemo_adapter, repo_path=_plan_repo, task=objective)
-            if _learning_ctx:
-                gen_sys = _learning_ctx + "\n\n" + gen_sys
+            _repo_map = build_repo_map(
+                _plan_repo,
+                cache_path=Path(_plan_repo) / ".spacecode-runtimes" / "mission-control" / ".repo_map_cache.json",
+                max_chars=2000,
+            )
+            if _repo_map:
+                gen_sys = (
+                    f"## Project file structure\n{_repo_map}\n\n"
+                    "Use the above to understand which modules already exist and what imports are available.\n\n"
+                ) + gen_sys
         except Exception:
             pass
+        if _nemo_adapter:
+            try:
+                _learning_ctx = build_project_context(_nemo_adapter, repo_path=_plan_repo, task=objective)
+                if _learning_ctx:
+                    gen_sys = _learning_ctx + "\n\n" + gen_sys
+            except Exception:
+                pass
 
-    # Emit start event immediately — plan loop generates standalone code and
-    # doesn't benefit from repo context (that's for handoff tasks).
+    # Emit start event immediately.
     yield {"type": "start", "objective": objective, "max_iterations": max_iterations, "quality_threshold": quality_threshold, "job_id": job_id}
 
     for i in range(1, max_iterations + 1):
@@ -6963,7 +7175,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         # Detect and execute any Pollinations tool calls emitted alongside the code
         _plan_media_calls = [
             inv for inv in _parse_llm_tool_calls(code_response)
-            if _resolve_pollinations_tool(str(inv.get("tool"))) in POLLINATIONS_TOOLS
+            if str(inv.get("tool")) in POLLINATIONS_TOOLS
         ]
         _plan_artifact_note = ""
         if _plan_media_calls:
@@ -7095,6 +7307,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             "critique_summary": critique_raw[:300],
             "visual_critique": visual_raw[:200] if visual_raw else None,
             "code_chars": len(code),
+            "code": code,
             "think_snippet": think_snippet[:400],
             "harness": harness_result if not harness_result.get("skipped") else None,
             "sdd_phase": str(_sdd_phase),
@@ -7134,7 +7347,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     artifact_file: str | None = None
     artifact_html_content: str | None = None
     try:
-        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images" / "plans"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         # Search workspace first so fresh generated files beat pre-existing repo files.
         search_dirs = []
@@ -7226,6 +7439,23 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         except Exception:
             pass
 
+    # Store working code pattern with high importance so future runs can retrieve it
+    if completed and best_code and best_score >= 7.0:
+        try:
+            _nemo_adapter.call(
+                "REVIEW",
+                "create_memory",
+                content=(
+                    f"[plan_loop_success][{lang}] objective={objective!r} score={best_score:.1f}\n"
+                    f"```{lang}\n{best_code[:800]}\n```"
+                ),
+                memory_type="plan_loop_success",
+                importance_level=9,
+                tags=["plan_loop_success", lang, "code_pattern"],
+            )
+        except Exception:
+            pass
+
     yield {
         "type": "done",
         "ok": True,
@@ -7313,8 +7543,8 @@ def _llm_tool_call_to_action(
         )
         return {
             "id": f"llm-handoff-{uuid4().hex[:8]}",
-            "kind": "run",
-            "label": f"Start Handoff: {objective[:60]}",
+            "kind": "handoff",
+            "label": f"Handoff: {objective[:60]}",
             "summary": "Full autonomous coding session triggered by the LLM.",
             "payload": {
                 "objective": objective,
@@ -7338,7 +7568,7 @@ def _llm_tool_call_to_action(
             "payload": {
                 "objective": objective,
                 "max_iterations": int(params.get("max_iterations") or 5),
-                "quality_threshold": float(params.get("quality_threshold") or 10.0),
+                "quality_threshold": float(params.get("quality_threshold") or 7.5),
                 "topic": str(params.get("topic") or "llm_generated"),
                 "parallel_candidates": False,
                 "visual_critique": False,
@@ -7392,6 +7622,21 @@ def _llm_tool_call_to_action(
             "label": f"Open: {path[:60]}",
             "summary": "Switch active workspace to a different project folder.",
             "payload": {"path": path},
+        }
+
+    if tool == "terminal_run":
+        command = str(params.get("command") or "").strip()
+        if not command:
+            return None
+        return {
+            "id": f"llm-term-{uuid4().hex[:8]}",
+            "kind": "terminal_run",
+            "label": f"Run: {command[:60]}",
+            "summary": "Execute a shell command in the repo directory.",
+            "payload": {
+                "command": command,
+                "timeout_seconds": int(params.get("timeout_seconds") or 30),
+            },
         }
 
     return None
@@ -7770,6 +8015,13 @@ def api_agent_message(
     risk_note = f" Risks: {', '.join(risk_flags)}." if risk_flags else ""
     # --- Cognitive preload: merge anticipate results + self-mod continuity ---
     _cognitive_parts: list[str] = []
+    # Live repo file map — gives the agent awareness of what files exist right now
+    try:
+        _repo_map_text = build_repo_map(config.repo_path, max_chars=1200)
+        if _repo_map_text:
+            _cognitive_parts.append(f"Active workspace file structure:\n{_repo_map_text}")
+    except Exception:  # noqa: BLE001
+        pass
     _anticipated = anticipate_payload.get("memories") or anticipate_payload.get("anticipated") or []
     if _anticipated:
         _cog_items = "; ".join(
@@ -7918,10 +8170,17 @@ def api_agent_message(
                 "Revisa los tool calls para ver el error específico y qué endpoint se intentó."
             )
     # --- Pollinations media tools: detect, execute in parallel, annotate response ---
-    _media_invocations = [
-        inv for inv in _parse_llm_tool_calls(response)
-        if str(inv.get("tool")) in POLLINATIONS_TOOLS
-    ]
+    # Also intercept plan_generate calls whose objective is clearly an image request
+    # (model routing error: should have used generate_image).
+    _media_invocations: list[dict[str, object]] = []
+    for _inv in _parse_llm_tool_calls(response):
+        _tool = str(_inv.get("tool") or "")
+        if _tool in POLLINATIONS_TOOLS:
+            _media_invocations.append(_inv)
+        elif _tool == "plan_generate":
+            _obj = str((_inv.get("params") or {}).get("objective") or "")
+            if _is_image_objective(_obj):
+                _media_invocations.append({"tool": "generate_image", "params": {"prompt": _obj}})
     if _media_invocations:
         _media_results: dict[str, dict[str, object]] = {}
         with ThreadPoolExecutor(max_workers=len(_media_invocations)) as _media_pool:
@@ -7969,6 +8228,17 @@ def api_agent_message(
             if action:
                 actions.append(action)
     else:
+        # Guard: if the model already gave a substantial prose answer (>50 words) AND the only
+        # pending actions are plan_generate / handoff_start, they are likely false positives from
+        # tool_choice:"auto" on a simple question. Drop them so the text answer stands alone.
+        _ACTION_KINDS_NEEDING_GUARD = {"plan_generate", "handoff_start"}  # terminal_run intentionally excluded
+        if all(a.kind in _ACTION_KINDS_NEEDING_GUARD for a in _pre_actions) and _pre_actions:
+            _prose = _THINK_RE.sub("", response)
+            # Injected tool-call JSONs are prepended one-per-line; skip those lines
+            _prose_lines = [ln for ln in _prose.splitlines() if not ln.strip().startswith("{")]
+            _prose = " ".join(_prose_lines)
+            if len(_prose.split()) > 50:
+                _pre_actions = []
         actions.extend(_pre_actions)
     agent_trace.append(
         _build_agent_trace_event(
@@ -8440,6 +8710,34 @@ def api_replay_gen(config: "MissionControlServerConfig", run_id: str):  # type: 
     }
 
 
+def api_mcp_audit(config: "MissionControlServerConfig", limit: int = 30) -> dict[str, object]:
+    """Return the last N entries from the MCP tool audit log."""
+    import os as _os
+    audit_path = Path(
+        _os.environ.get("SPACE_CODE_MCP_AUDIT_LOG", ".spacecode-runtimes/mcp/tool-audit.jsonl")
+    )
+    if not audit_path.is_absolute():
+        audit_path = Path(config.repo_path) / audit_path
+    if not audit_path.exists():
+        return {"entries": [], "count": 0, "path": str(audit_path)}
+    try:
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+        entries: list[dict] = []
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+            if len(entries) >= limit:
+                break
+        entries.reverse()
+        return {"entries": entries, "count": len(entries), "path": str(audit_path)}
+    except OSError:
+        return {"entries": [], "count": 0, "path": str(audit_path)}
+
+
 def api_run_timeline(
     config: "MissionControlServerConfig",
     job_id: str,
@@ -8529,6 +8827,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         "/api/self-mod/insights",
         "/api/nemo/risk-map",
         "/api/nemo/cognitive-stats",
+        "/api/mcp/audit",
     })
     _RATE_LIMIT_EXEMPT_PREFIXES = (
         "/api/run/",   # worktree-diff, worktree-merge, worktree-cleanup, permission-*
@@ -8582,10 +8881,25 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/kpis":
             self._handle(lambda _: api_kpis(self.server.config), {})
             return
+        if route == "/api/artifacts/images":
+            plans_dir = self.server.config.runtimes_path / "mission-control" / "artifacts" / "images" / "plans"
+            allowed = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp"}
+            entries = []
+            if plans_dir.exists():
+                for f in sorted(plans_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+                    if f.is_file() and f.suffix.lower() in allowed:
+                        entries.append({"name": f.name, "url": f"/api/artifacts/image/{f.name}", "size": f.stat().st_size, "modified": int(f.stat().st_mtime * 1000)})
+            _json_response(self, 200, {"images": entries})
+            return
         if route.startswith("/api/artifacts/image/"):
             image_name = Path(route[len("/api/artifacts/image/"):]).name
-            # Check runtimes_path first (plan loop writes here), then legacy nemo-runtimes
-            image_path = self.server.config.runtimes_path / "mission-control" / "artifacts" / "images" / image_name
+            base = self.server.config.runtimes_path / "mission-control" / "artifacts" / "images"
+            # Search in order: plans/ → browser/ → root (legacy) → nemo-runtimes legacy
+            image_path = base / "plans" / image_name
+            if not image_path.exists():
+                image_path = base / "browser" / image_name
+            if not image_path.exists():
+                image_path = base / image_name
             if not image_path.exists():
                 image_path = Path(self.server.config.repo_path) / ".nemo-runtimes" / "mission-control" / "artifacts" / "images" / image_name
             if image_path.exists() and image_path.is_file():
@@ -8644,6 +8958,25 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route == "/api/repo/map":
             self._handle(lambda _: api_repo_map(self.server.config), {})
             return
+        if route == "/api/mcp/audit":
+            from urllib.parse import parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            limit = int(qs.get("limit", ["30"])[0])
+            self._handle(lambda _: api_mcp_audit(self.server.config, limit=min(limit, 200)), {})
+            return
+        if route.startswith("/api/job/") and route.endswith("/log"):
+            job_id = route[len("/api/job/"): -len("/log")].strip("/")
+            from urllib.parse import parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            offset = int(qs.get("offset", ["0"])[0])
+            self._handle(lambda _: api_job_log(self.server, job_id, offset=offset), {})
+            return
+        if route == "/api/files":
+            from urllib.parse import parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            rel = qs.get("path", ["."])[0]
+            self._handle(lambda _: api_files(self.server.config, rel), {})
+            return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
             return
@@ -8694,6 +9027,67 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             with _plan_jobs_lock:
                 _plan_jobs.pop(plan_job_id, None)
 
+    def _handle_terminal_stream(self, payload: dict[str, object]) -> None:
+        """Stream subprocess output as Server-Sent Events, line by line."""
+        command = str(payload.get("command") or "").strip()
+        if not command:
+            _json_response(self, 400, {"error": "command required", "error_code": "missing_command"})
+            return
+        timeout_seconds = min(max(int(payload.get("timeout_seconds") or 30), 1), 300)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+        def _send(data: dict[str, object]) -> bool:
+            try:
+                self.wfile.write(("data: " + json.dumps(data) + "\n\n").encode("utf-8"))
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return False
+
+        started = time.perf_counter()
+        _send({"type": "start", "command": command, "cwd": str(self.server.config.repo_path)})
+        proc: subprocess.Popen[str] | None = None
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=self.server.config.repo_path,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                encoding="utf-8",
+                errors="replace",
+            )
+            assert proc.stdout is not None
+            deadline = time.time() + timeout_seconds
+            for line in iter(proc.stdout.readline, ""):
+                if time.time() > deadline:
+                    proc.kill()
+                    _send({"type": "line", "text": f"\n[timeout after {timeout_seconds}s]"})
+                    break
+                if not _send({"type": "line", "text": line.rstrip("\n")}):
+                    proc.kill()
+                    break
+            proc.wait(timeout=5)
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            _send({"type": "done", "exit_code": proc.returncode, "duration_ms": duration_ms})
+        except Exception as exc:  # noqa: BLE001
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            _send({"type": "done", "exit_code": None, "duration_ms": duration_ms, "error": str(exc)})
+        finally:
+            if proc and proc.poll() is None:
+                proc.kill()
+
     def _handle_browser_task_sse(self, payload: dict[str, object]) -> None:
         """Stream browser agent steps as Server-Sent Events."""
         try:
@@ -8731,7 +9125,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
 
         config = self.server.config
         settings = _load_settings(config)
-        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images"
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images" / "browser"
         base_url = str(payload.get("model_base_url") or settings.get("model_base_url") or "http://localhost:1234/v1")
         api_key = str(payload.get("api_key") or settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
         vlm_model = _resolve_vlm_model(base_url, api_key=api_key)  # None → screenshot-only; non-vision LLMs can't handle images
@@ -8874,6 +9268,14 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
                 return
             self._handle_plan_sse(payload)
             return
+        if urlparse(self.path).path == "/api/terminal/stream" and "text/event-stream" in self.headers.get("Accept", ""):
+            try:
+                payload = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle_terminal_stream(payload)
+            return
         if urlparse(self.path).path == "/api/agent/browser-task" and "text/event-stream" in self.headers.get("Accept", ""):
             try:
                 payload = _load_body(self)
@@ -8944,6 +9346,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/browser/open": lambda payload: api_browser_open(self.server, payload),
             "/api/browser/search": lambda payload: api_browser_search(self.server, payload),
             "/api/extensions": lambda payload: api_extensions_update(self.server, payload),
+            "/api/git/init": lambda payload: api_git_init(self.server, payload),
             "/api/git/diff": lambda payload: api_git_diff(self.server.config, payload),
             "/api/git/stage": lambda payload: api_git_stage(self.server.config, payload),
             "/api/git/stage-hunk": lambda payload: api_git_stage_hunk(self.server.config, payload),
@@ -8956,6 +9359,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/file": lambda payload: api_file(self.server.config, payload),
             "/api/handoff": lambda payload: api_handoff(self.server.config, payload),
             "/api/handoff/start": lambda payload: api_handoff_start(self.server, payload),
+            "/api/handoff/continue": lambda payload: api_handoff_continue(self.server, payload),
             "/api/job": lambda payload: api_job(self.server, payload),
             "/api/job/cancel": lambda payload: api_job_cancel(self.server, payload),
             "/api/job/pause": lambda payload: api_job_pause(self.server, payload),
