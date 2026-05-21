@@ -6280,6 +6280,84 @@ _MULTI_KEY_RE = re.compile(r'"(?:tool|name|action|function_call)"\s*:\s*["{]')
 # Strip model thinking blocks before scanning — reasoning is not output.
 _THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.S)
 
+# ── Deterministic command extraction ────────────────────────────────────────
+# Programs we recognise as shell commands regardless of context.
+_SHELL_PROGRAMS: frozenset[str] = frozenset({
+    "git", "npm", "npx", "pip", "pip3", "python", "python3", "node", "cargo",
+    "go", "make", "docker", "docker-compose", "pytest", "jest", "yarn", "pnpm",
+    "tsc", "vite", "uvicorn", "gunicorn", "flask", "fastapi", "curl", "wget",
+    "ls", "dir", "cat", "echo", "cp", "mv", "rm", "mkdir", "touch", "find",
+    "grep", "rg", "sed", "awk", "tar", "zip", "unzip", "ssh", "scp",
+    "rustup", "cargo", "dotnet", "mvn", "gradle", "cmake",
+})
+# Execution-intent verbs the user may write before the command.
+_EXEC_VERB_RE = re.compile(
+    r"(?:^|\s)(?:ejecuta|execute|run|corre|correr|ejecutar|lanza|lanzar|arranca|arrancar"
+    r"|inicia|iniciar|instala|instalar|install|build|compila|prueba|test|despliega|deploy"
+    r"|levanta|lanza)\s+([^\n,;.?!]{2,120})",
+    re.IGNORECASE,
+)
+# Fenced code blocks (bash/sh/shell/zsh/ps1/cmd or plain).
+_CODE_BLOCK_RE = re.compile(r"```(?:bash|sh|shell|zsh|cmd|powershell|ps1|)?\s*\n?(.*?)\n?```", re.DOTALL)
+# Inline backtick code.
+_INLINE_CODE_RE = re.compile(r"`([^`\n]{2,120})`")
+
+
+def _looks_like_shell_cmd(text: str) -> bool:
+    """Return True if text looks like a runnable shell command."""
+    text = text.strip().lstrip("$ ")
+    first = text.split()[0].lower().lstrip("./") if text.split() else ""
+    return first in _SHELL_PROGRAMS or (len(text) > 3 and " " in text and not text.startswith("<"))
+
+
+def _extract_cmd_from_user_message(message: str) -> "str | None":
+    """Layer 1: extract a shell command the user explicitly asked to run."""
+    for m in _EXEC_VERB_RE.finditer(message):
+        candidate = m.group(1).strip().strip("'\"`")
+        # Trim trailing filler words
+        candidate = re.split(r"\s+(?:para|y\s|e\s|con\s|en\s|de\s|del\s|so\s|and\s|to\s)", candidate, maxsplit=1)[0].strip()
+        if _looks_like_shell_cmd(candidate):
+            return candidate
+    return None
+
+
+def _extract_cmds_from_response(text: str) -> "list[str]":
+    """Layer 2: extract shell commands the model wrote in code blocks / backticks."""
+    clean = _THINK_RE.sub("", text)
+    cmds: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        cmd = raw.strip().lstrip("$ ")
+        if cmd and cmd not in seen and _looks_like_shell_cmd(cmd):
+            seen.add(cmd)
+            cmds.append(cmd)
+
+    # Fenced blocks first
+    for m in _CODE_BLOCK_RE.finditer(clean):
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                _add(line)
+
+    # Inline backticks only if no fenced blocks found
+    if not cmds:
+        for m in _INLINE_CODE_RE.finditer(clean):
+            _add(m.group(1))
+
+    return cmds[:4]  # cap at 4 buttons
+
+
+def _make_terminal_action(command: str, label_prefix: str = "Run") -> "dict[str, object]":
+    return {
+        "id": f"auto-term-{uuid4().hex[:8]}",
+        "kind": "terminal_run",
+        "label": f"{label_prefix}: {command[:60]}",
+        "summary": "Comando detectado automáticamente.",
+        "payload": {"command": command, "timeout_seconds": 30},
+    }
+# ────────────────────────────────────────────────────────────────────────────
+
 
 def _normalize_tool_invocation(obj: object) -> "dict[str, object] | None":
     """Normalize any LLM tool-call JSON variant to canonical {\"tool\": name, \"params\": {}}."""
@@ -7651,6 +7729,8 @@ def api_agent_message(
     settings = _load_settings(config)
     payload = {**settings, **payload}
     message = _message(payload)
+    # Layer 1: deterministic — extract command the user explicitly asked to run
+    _user_requested_cmd = _extract_cmd_from_user_message(message)
     provider = _provider_mode(payload)
     nemo_mcp_url = _require_nemo_mcp_url(payload)
     if nemo_mcp_url == LEGACY_NEMO_SSE_URL and settings.get("nemo_mcp_url") == VSCODE_STDIO_NEMO_URL:
@@ -8240,6 +8320,20 @@ def api_agent_message(
             if len(_prose.split()) > 50:
                 _pre_actions = []
         actions.extend(_pre_actions)
+
+    # ── Deterministic command extraction (works with any model) ──────────────
+    # Only inject if no terminal_run action was already added by the model.
+    _has_terminal = any(a.get("kind") == "terminal_run" for a in actions)
+    if not _has_terminal:
+        if _user_requested_cmd:
+            # Layer 1: user explicitly asked to run a command → add it directly
+            actions.append(_make_terminal_action(_user_requested_cmd, "Run"))
+        else:
+            # Layer 2: model mentioned commands in code blocks → offer them as buttons
+            for _cmd in _extract_cmds_from_response(response):
+                actions.append(_make_terminal_action(_cmd, "Run"))
+    # ─────────────────────────────────────────────────────────────────────────
+
     agent_trace.append(
         _build_agent_trace_event(
             step=trace_step,
