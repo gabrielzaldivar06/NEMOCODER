@@ -5781,7 +5781,7 @@ def _run_or_handoff_actions(message: str, payload: dict[str, object], selected_o
     provider = payload.get("provider") or "subprocess"
     timeout_value = payload.get("timeout_seconds") or "300"
 
-    if any(token in text for token in ("run", "ejecuta", "lanza", "inicia run", "nuevo run")):
+    if any(token in text for token in ("inicia run", "nuevo run", "start run", "iniciar run")):
         actions.append(
             {
                 "id": "start-run-from-chat",
@@ -8312,7 +8312,7 @@ def api_agent_message(
         # pending actions are plan_generate / handoff_start, they are likely false positives from
         # tool_choice:"auto" on a simple question. Drop them so the text answer stands alone.
         _ACTION_KINDS_NEEDING_GUARD = {"plan_generate", "handoff_start"}  # terminal_run intentionally excluded
-        if all(a.kind in _ACTION_KINDS_NEEDING_GUARD for a in _pre_actions) and _pre_actions:
+        if all(a.get("kind") in _ACTION_KINDS_NEEDING_GUARD for a in _pre_actions) and _pre_actions:
             _prose = _THINK_RE.sub("", response)
             # Injected tool-call JSONs are prepended one-per-line; skip those lines
             _prose_lines = [ln for ln in _prose.splitlines() if not ln.strip().startswith("{")]

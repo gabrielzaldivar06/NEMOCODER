@@ -890,7 +890,6 @@ function parsePlanStepsFromMessage(content: string): { steps: PlanStep[]; reason
 // Persists across Vite HMR module reloads (window survives, module scope does not)
 
 const AUTO_DISPATCH_KINDS = new Set<AgentAction["kind"]>([
-  "plan_generate",
   "browser_task",
 ]);
 
