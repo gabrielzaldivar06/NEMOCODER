@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, Archive, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, GitBranch, GitCompare, GitPullRequest, Globe, HardDrive, Home, MessageSquarePlus, MessageSquareText, PanelBottom, Play, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Trash2, Wrench, CheckSquare } from "lucide-react";
+import { AlertTriangle, Archive, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, FolderOpen, GitBranch, GitCompare, GitPullRequest, Globe, HardDrive, Home, MessageSquarePlus, MessageSquareText, PanelBottom, Play, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Trash2, Wrench, CheckSquare } from "lucide-react";
 import "./styles.css";
 import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
 import { CommandDock } from "./components/CommandDock";
@@ -9,11 +9,17 @@ import { NemoMemoryOrbitCopy, type NemoMemoryOrbitEdge, type NemoMemoryOrbitNode
 import { ObjectiveDefinition } from "./components/ObjectiveDefinition";
 import { PlanProgress } from "./components/PlanProgress";
 import { TelemetryColumn } from "./components/TelemetryColumn";
+import { TelemetryStrip } from "./components/TelemetryStrip";
+import { JobsFeed } from "./components/JobsFeed";
+import { JobDetailPanel } from "./components/JobDetailPanel";
 import { WorktreeDiffPanel } from "./components/WorktreeDiffPanel";
 import { ReadinessScorePanel } from "./components/ReadinessScorePanel";
 import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
 import { TimelinePanel } from "./components/TimelinePanel";
+import { JobLiveLog } from "./components/JobLiveLog";
+import { FileExplorer } from "./components/FileExplorer";
 import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
+import type { GeneratedArtifact } from "./services/artifactUtils";
 import type { PersistedGeneratedArtifact } from "./services/artifactRegistry";
 import { clearArtifactRegistry } from "./services/artifactRegistry";
 import { usePlanState } from "./hooks/usePlanState";
@@ -81,6 +87,7 @@ type MissionState = {
   schema_version: number;
   product: string;
   repo_path: string;
+  is_git_repo?: boolean;
   runtimes_path: string;
   repos: string[];
   jobs: HandoffJob[];
@@ -198,11 +205,12 @@ type RenderedToolCall = AgentToolCall & {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel" | "workspace_open";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel" | "workspace_open" | "generate_image";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
   autoDispatched?: boolean;
+  escalation?: boolean;
 };
 type AgentMessage = {
   id: string;
@@ -587,7 +595,7 @@ function normalizeRun(run: MissionRun): MissionRun {
 }
 
 function normalizeState(payload: MissionState): MissionState {
-  return { ...payload, jobs: payload.jobs ?? [], runs: (payload.runs ?? []).map(normalizeRun), approval_queue: (payload.approval_queue ?? []).map(normalizeRun), settings: normalizeSettings(payload.settings) };
+  return { ...payload, statusLoaded: true, jobs: payload.jobs ?? [], runs: (payload.runs ?? []).map(normalizeRun), approval_queue: (payload.approval_queue ?? []).map(normalizeRun), settings: normalizeSettings(payload.settings) };
 }
 
 function estimateTokens(text: string): number {
@@ -641,7 +649,9 @@ const initialState: MissionState = {
   },
 };
 
-const CHAT_SESSION_STORAGE_KEY = "mission-control-chat-session-v1";
+function chatSessionKey(repoPath: string): string {
+  return `mission-control-chat-session-v1::${repoPath}`;
+}
 const CHAT_ARCHIVE_STORAGE_KEY = "mission-control-chat-archives-v1";
 const DEFAULT_SESSION_NEMO_TOOLS = [
   "context_bootstrap",
@@ -683,11 +693,16 @@ function statusTone(status: string): string {
 
 function describeRun(run: MissionRun): string {
   const fileCount = run.changed_files.length;
-  const riskCount = run.risk_flags.length;
+  const risks = run.risk_flags.filter((r) => r !== "validation_failed" || !run.risk_flags.includes("run_not_ready"));
+  const riskCount = risks.length;
   if (run.review_status === "running") return `Trabajando ahora en ${fileCount} archivo(s)`;
-  if (run.review_status === "blocked") return `${riskCount} riesgo(s) bloquean la decision`;
+  if (run.review_status === "blocked") {
+    if (riskCount === 0 || (run.risk_flags.includes("run_not_ready") && run.risk_flags.length <= 2))
+      return `${fileCount} archivo(s) — pendiente de revisión`;
+    return `${fileCount} archivo(s) — ${riskCount} problema(s) detectado(s)`;
+  }
   if (run.review_status === "awaiting_review") return `Listo para revisar cambios en ${fileCount} archivo(s)`;
-  return `${fileCount} archivo(s) cambiados y ${riskCount} riesgo(s) detectados`;
+  return `${fileCount} archivo(s) cambiados`;
 }
 
 function summarizePhase(run: MissionRun): string {
@@ -872,15 +887,39 @@ function parsePlanStepsFromMessage(content: string): { steps: PlanStep[]; reason
 // Types are imported from planNemoClient.ts
 
 // Persists across Vite HMR module reloads (window survives, module scope does not)
-declare global { interface Window { _injectedPublicPaths?: Set<string> } }
-if (!window._injectedPublicPaths) window._injectedPublicPaths = new Set<string>();
 
 const AUTO_DISPATCH_KINDS = new Set<AgentAction["kind"]>([
   "plan_generate",
-  "run",
-  "handoff",
   "browser_task",
 ]);
+
+function deriveEscalationActions(
+  message: AgentMessage,
+  lastUserContent: string,
+  modelBaseUrl: string,
+  nemoMcpUrl: string,
+): AgentAction[] {
+  const primaryKinds = new Set<string>(["plan_generate", "handoff", "generate_image", "browser_task", "workspace_open", "run"]);
+  if ((message.actions ?? []).some((a) => primaryKinds.has(a.kind))) return [];
+  if ((message.content ?? "").length < 80) return [];
+  const content = message.content ?? "";
+  const hasCodeFence = /```(python|javascript|typescript|bash|sh|rust|go|java|cpp)/i.test(content);
+  const hasArtifactFence = /```(html_artifact|react_artifact|svg_artifact|mermaid)/i.test(content);
+  const ts = Date.now();
+  const safeNemo = nemoMcpUrl || "http://127.0.0.1:8765/mcp/sse";
+  const safeModel = modelBaseUrl || "http://localhost:1234/v1";
+  const objective = lastUserContent || content.slice(0, 200);
+  if (hasCodeFence || hasArtifactFence) {
+    return [
+      { id: `esc-plan-${ts}`, kind: "plan_generate", label: "Iterar con NEMO", summary: "Refinar con el plan loop iterativo (scoring + memoria NEMO)", payload: { objective, max_iterations: 3, quality_threshold: 7.5, model_base_url: safeModel, nemo_mcp_url: safeNemo }, escalation: true },
+      { id: `esc-hoff-${ts}`, kind: "handoff", label: "Handoff", summary: "Sesión de codificación autónoma completa (edita archivos, hace commits)", payload: { objective, acceptance_criteria: "El código implementa lo solicitado y pasa los tests" }, escalation: true },
+    ];
+  }
+  return [
+    { id: `esc-img-${ts}`, kind: "generate_image", label: "→ Imagen", summary: "Generar una imagen basada en este texto con Pollinations AI", payload: { prompt: content.slice(0, 400) }, escalation: true },
+    { id: `esc-plan-${ts}`, kind: "plan_generate", label: "→ Script Python", summary: "Convertir en script Python ejecutable con el plan loop", payload: { objective, max_iterations: 3, quality_threshold: 7.5, model_base_url: safeModel, nemo_mcp_url: safeNemo }, escalation: true },
+  ];
+}
 
 export function App() {
   const [state, setState] = useState<MissionState>(initialState);
@@ -911,7 +950,7 @@ export function App() {
     {
       id: "welcome-agent-message",
       role: "assistant",
-      content: "Ask for a continuation, revision, or apply decision on the selected run.",
+      content: "Pide una continuación, revisión o decisión sobre el run seleccionado.",
       actions: [],
       tool_calls: [],
     },
@@ -928,15 +967,13 @@ export function App() {
   const [expandedRunSources, setExpandedRunSources] = useState<Record<string, boolean>>({});
   const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("trusted");
   const [activeSection, setActiveSection] = useState<AppSection>("home");
+  const [filesPanelOpen, setFilesPanelOpen] = useState(false);
     const [runsWorkbenchTab, setRunsWorkbenchTab] = useState<RunsWorkbenchTab>("file");
   const [reviewSubTab, setReviewSubTab] = useState<"timeline" | "diff">("diff");
   const [reviewedJobIds, setReviewedJobIds] = useState<Set<string>>(new Set());
   const [repoBusy, setRepoBusy] = useState<boolean>(false);
   const [repoError, setRepoError] = useState<string>("");
-  const [terminalDraft, setTerminalDraft] = useState<string>("");
-  const [terminalRunning, setTerminalRunning] = useState<boolean>(false);
-  const [terminalResult, setTerminalResult] = useState<TerminalRunResult | null>(null);
-  const [browserDraft, setBrowserDraft] = useState<string>("https://github.com");
+  const [browserDraft, setBrowserDraft] = useState<string>("");
   const [browserState, setBrowserState] = useState<BrowserState>({ homepage: "", last_url: "", history: [], search_query: "", search_history: [] });
   const [browserQueryDraft, setBrowserQueryDraft] = useState<string>("");
   const [browserSearchState, setBrowserSearchState] = useState<BrowserSearchState>({ query: "", engine: "", results: [] });
@@ -989,35 +1026,6 @@ export function App() {
     planState.loadFromLocalStorage();
   }, []);
 
-  // On mount, inject public HTML artifacts created by handoffs (runs once per module lifetime)
-  useEffect(() => {
-    const PUBLIC_HTML_PATHS = ["/game.html"];
-    for (const path of PUBLIC_HTML_PATHS) {
-      if (window._injectedPublicPaths!.has(path)) continue;
-      window._injectedPublicPaths!.add(path);
-      fetch(path)
-        .then((r) => r.ok ? r.text() : Promise.reject())
-        .then((html) => {
-          if (!html.trim().startsWith("<!")) return;
-          const name = path.split("/").pop()?.replace(".html", "") ?? "app";
-          setAgentMessages((prev) => {
-            if (prev.some((m) => m.id === `public-artifact-${name}`)) return prev;
-            return [
-              ...prev,
-              {
-                id: `public-artifact-${name}`,
-                role: "assistant" as const,
-                content: `**${name}** listo en el Artifact Studio:\n\n\`\`\`html_artifact\n${html}\n\`\`\``,
-                actions: [],
-                tool_calls: [],
-              },
-            ];
-          });
-          setActiveSection("home");
-        })
-        .catch(() => { window._injectedPublicPaths!.delete(path); /* retry allowed on next mount */ });
-    }
-  }, []);
 
   // Save plan to localStorage whenever it changes
   useEffect(() => {
@@ -1181,7 +1189,7 @@ export function App() {
       })
       .then((payload: MissionState) => {
         const nextState = normalizeState(payload);
-        setState({ ...nextState, statusLoaded: true });
+        setState(nextState);
         setSettingsDraft(nextState.settings);
         setRepoDraft(nextState.repo_path);
         const nextRun = nextState.runs.find((run) => run.source_json === selectedRunSource) ?? nextState.runs[0];
@@ -1446,6 +1454,18 @@ export function App() {
         setActiveJob(payload.job);
         setComposerOpen(false);
         setStatus(`Job started: ${payload.job.job_id}`);
+        const shortObj = handoffDraft.objective.slice(0, 120);
+        const ellipsis = handoffDraft.objective.length > 120 ? "…" : "";
+        setAgentMessages((prev) => [
+          ...prev,
+          {
+            id: `handoff-started-${payload.job.job_id}`,
+            role: "assistant" as const,
+            content: `**Handoff iniciado** — ${shortObj}${ellipsis}\n\nJob ID: \`${payload.job.job_id}\``,
+            ts: Date.now(),
+            actions: [],
+          },
+        ]);
       })
       .catch((error: Error) => setStatus(error.message))
       .finally(() => setHandoffRunning(false));
@@ -1611,7 +1631,16 @@ export function App() {
 
     sendRequest()
       .then((payload) => {
-        setAgentMessages((current) => [...current, payload.message]);
+        const escalation = deriveEscalationActions(
+          payload.message,
+          content,
+          settingsDraft.model_base_url,
+          settingsDraft.nemo_mcp_url || "",
+        );
+        const enhancedMessage: AgentMessage = escalation.length > 0
+          ? { ...payload.message, actions: [...(payload.message.actions ?? []), ...escalation] }
+          : payload.message;
+        setAgentMessages((current) => [...current, enhancedMessage]);
         loadMissionStats();
         if (planState.objective && !planState.currentPlan) {
           const parsed = parsePlanStepsFromMessage(payload.message.content || "");
@@ -1756,9 +1785,9 @@ export function App() {
         .catch((error: Error) => setStatus(error.message));
       return;
     }
-    if (action.kind === "run" || action.kind === "handoff") {
+    if (action.kind === "handoff") {
       const objective = String(action.payload.objective || action.label || "Chat objective");
-      setStatus(`Starting ${action.kind} from chat: ${objective}`);
+      setStatus(`Starting handoff from chat: ${objective}`);
       postJson<HandoffJobResult>("/api/handoff/start", {
         objective,
         acceptance_criteria: String(action.payload.acceptance_criteria || "passes requested goal"),
@@ -1787,7 +1816,54 @@ export function App() {
         .catch((error: Error) => setStatus(error.message));
       return;
     }
-    if (action.kind === "plan_generate") {
+    if (action.kind === "generate_image") {
+      const imgPrompt = String(action.payload.prompt || "");
+      if (!imgPrompt) { setStatus("Se necesita un prompt para generar imagen"); return; }
+      const imgMsgId = `img-${Date.now()}`;
+      setAgentMessages((prev) => [...prev, { id: imgMsgId, role: "assistant" as const, content: `**Generando imagen…**\n_${imgPrompt.slice(0, 100)}_`, tool_calls: [], actions: [] }]);
+      postJson<{ ok?: boolean; image_url?: string; error?: string }>(
+        "/api/agent/generate-image",
+        { prompt: imgPrompt, image_gen_backend: "auto" },
+      )
+        .then((result) => {
+          if (!result.ok || !result.image_url) {
+            setAgentMessages((prev) => prev.map((m) => m.id === imgMsgId ? { ...m, content: `Error generando imagen: ${result.error || "sin URL"}` } : m));
+          } else {
+            const imgData = JSON.stringify({ src: result.image_url, alt: imgPrompt.slice(0, 60) });
+            setAgentMessages((prev) => prev.map((m) => m.id === imgMsgId ? { ...m, content: `**Imagen generada**\n\`\`\`image\n${imgData}\n\`\`\`` } : m));
+          }
+        })
+        .catch((err: Error) => {
+          setAgentMessages((prev) => prev.map((m) => m.id === imgMsgId ? { ...m, content: `Error: ${err.message}` } : m));
+        });
+      return;
+    }
+    if (action.kind === "continue") {
+      const jobId = String(action.payload.job_id || "");
+      if (!jobId) { setStatus("Continue action missing job_id"); return; }
+      const objective = String(action.payload.objective || "");
+      setStatus(`Iniciando continuación de ${jobId}`);
+      postJson<HandoffJobResult>("/api/handoff/continue", { job_id: jobId, objective })
+        .then((payload) => {
+          setActiveJob(payload.job);
+          setActiveSection("runs");
+          setStatus(`Continuación iniciada: ${payload.job.job_id}`);
+          const shortObj = objective.slice(0, 100);
+          setAgentMessages((prev) => [
+            ...prev,
+            {
+              id: `continue-started-${payload.job.job_id}`,
+              role: "assistant" as const,
+              content: `**Continuación iniciada** — ${shortObj || jobId}\n\nJob ID: \`${payload.job.job_id}\``,
+              ts: Date.now(),
+              actions: [],
+            },
+          ]);
+        })
+        .catch((error: Error) => setStatus(error.message));
+      return;
+    }
+    if (action.kind === "plan_generate" || action.kind === "run") {
       const planPayload = action.payload as Record<string, unknown>;
       const objective = String(planPayload.objective || action.label || "Generate code");
       setStatus(`Generating: ${objective.slice(0, 60)}`);
@@ -1964,18 +2040,24 @@ export function App() {
       return;
     }
     if (action.kind === "workspace_open") {
-      const wsPath = String(action.payload.path || "");
+      const wsPath = String(action.payload.path || action.payload.repo_path || "");
       if (!wsPath) return;
       setStatus(`Opening workspace: ${wsPath}`);
-      postJson<{ ok: boolean; repo_path?: string }>("/api/repo/open", { path: wsPath })
+      postJson<{ ok: boolean; state?: MissionState }>("/api/repo/open", { repo_path: wsPath })
         .then((res) => {
           if (res.ok) {
-            setStatus(`Workspace opened: ${res.repo_path || wsPath}`);
+            if (res.state) {
+              const nextState = normalizeState(res.state);
+              setState(nextState);
+              setSettingsDraft(nextState.settings);
+              setRepoDraft(nextState.repo_path);
+            }
+            setStatus(`Workspace abierto: ${wsPath}`);
           } else {
-            setStatus(`Workspace open failed: ${wsPath}`);
+            setStatus(`No se pudo abrir: ${wsPath}`);
           }
         })
-        .catch((err: Error) => setStatus(`Workspace open error: ${err.message}`));
+        .catch((err: Error) => setStatus(`Error abriendo workspace: ${err.message}`));
       return;
     }
     if (action.kind === "browser_cancel") {
@@ -2227,16 +2309,12 @@ export function App() {
           return;
         }
         setActiveSection("terminal");
-        setTerminalDraft(command);
-        setTerminalRunning(true);
         setStatus(`Running authorized terminal command: ${command}`);
         postJson<TerminalRunResult>("/api/terminal/run", { command, timeout_seconds: timeoutSeconds })
           .then((payload) => {
-            setTerminalResult(payload);
             setStatus(payload.ok ? `Terminal command completed (${payload.duration_ms} ms)` : `Terminal command failed (${payload.exit_code ?? "timeout"})`);
           })
-          .catch((error: Error) => setStatus(error.message))
-          .finally(() => setTerminalRunning(false));
+          .catch((error: Error) => setStatus(error.message));
         return;
       }
       if (mode === "browser_open") {
@@ -2476,20 +2554,6 @@ export function App() {
         setStatus(`Todos los runs limpiados: ${payload.removed_count} ✓`);
       })
       .catch((error: Error) => setStatus(error.message));
-  };
-
-  const runTerminal = () => {
-    const command = terminalDraft.trim();
-    if (!command || terminalRunning) return;
-    setTerminalRunning(true);
-    setStatus(`Running terminal command: ${command}`);
-    postJson<TerminalRunResult>("/api/terminal/run", { command, timeout_seconds: 45 })
-      .then((payload) => {
-        setTerminalResult(payload);
-        setStatus(payload.ok ? `Terminal command completed (${payload.duration_ms} ms)` : `Terminal command failed (${payload.exit_code ?? "timeout"})`);
-      })
-      .catch((error: Error) => setStatus(error.message))
-      .finally(() => setTerminalRunning(false));
   };
 
   const loadBrowserState = () => {
@@ -2769,6 +2833,24 @@ export function App() {
       .catch((error: Error) => setStatus(error.message));
   };
 
+  const initGit = (initialCommit: boolean) => {
+    setGitBusy(true);
+    setStatus("Inicializando repositorio git…");
+    postJson<{ ok: boolean; state?: MissionState }>("/api/git/init", { initial_commit: initialCommit, message: "Initial commit" })
+      .then((res) => {
+        if (res.ok && res.state) {
+          const nextState = normalizeState(res.state);
+          setState(nextState);
+          setSettingsDraft(nextState.settings);
+        }
+        setStatus("Repositorio git inicializado");
+        loadGitStatus();
+        loadGitBranches();
+      })
+      .catch((error: Error) => setStatus(`git init error: ${error.message}`))
+      .finally(() => setGitBusy(false));
+  };
+
   useEffect(() => {
     refreshState();
     refreshApplyHistory();
@@ -2778,27 +2860,6 @@ export function App() {
     loadRiskMap();
     loadMissionStats();
 
-    try {
-      const raw = window.localStorage.getItem(CHAT_SESSION_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as Partial<ChatSessionSnapshot>;
-      if (Array.isArray(parsed.agentMessages) && parsed.agentMessages.length > 0) {
-        setAgentMessages(parsed.agentMessages.filter((item): item is AgentMessage => Boolean(item && typeof item === "object" && item.id && item.role && item.content)));
-      }
-      if (Array.isArray(parsed.queuedAgentPrompts)) {
-        const nextQueue = parsed.queuedAgentPrompts.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-        queuedAgentPromptsRef.current = nextQueue;
-        setQueuedAgentPrompts(nextQueue);
-      }
-      if (parsed.missionStats && typeof parsed.missionStats === "object") {
-        setMissionStats(parsed.missionStats as MissionStatsState);
-      }
-      if (Array.isArray(parsed.selectedNemoTools) && parsed.selectedNemoTools.length > 0) {
-        setSelectedNemoTools(parsed.selectedNemoTools.filter((item): item is string => typeof item === "string"));
-      }
-    } catch {
-      // Ignore corrupted local session snapshot.
-    }
   }, []);
 
   useEffect(() => {
@@ -2820,7 +2881,32 @@ export function App() {
     return () => clearInterval(id);
   }, [settingsDraft.model_base_url]);
 
+  // Load chat session whenever the active workspace changes (also fires on initial mount).
   useEffect(() => {
+    if (!state.repo_path) return;
+    const restoreFromRaw = (raw: string | null) => {
+      if (!raw) { setAgentMessages([]); return; }
+      try {
+        const parsed = JSON.parse(raw) as Partial<ChatSessionSnapshot>;
+        setAgentMessages(Array.isArray(parsed.agentMessages)
+          ? parsed.agentMessages.filter((item): item is AgentMessage => Boolean(item && typeof item === "object" && item.id && item.role && item.content))
+          : []);
+        if (Array.isArray(parsed.queuedAgentPrompts)) {
+          const nextQueue = parsed.queuedAgentPrompts.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+          queuedAgentPromptsRef.current = nextQueue;
+          setQueuedAgentPrompts(nextQueue);
+        }
+        if (parsed.missionStats && typeof parsed.missionStats === "object") setMissionStats(parsed.missionStats as MissionStatsState);
+        if (Array.isArray(parsed.selectedNemoTools) && parsed.selectedNemoTools.length > 0) setSelectedNemoTools(parsed.selectedNemoTools.filter((item): item is string => typeof item === "string"));
+      } catch { setAgentMessages([]); }
+    };
+    const scoped = window.localStorage.getItem(chatSessionKey(state.repo_path));
+    restoreFromRaw(scoped); // null → setAgentMessages([]) for new workspaces
+  }, [state.repo_path]);
+
+  // Save chat session scoped to the active workspace.
+  useEffect(() => {
+    if (!state.repo_path) return;
     const snapshot: ChatSessionSnapshot = {
       version: 1,
       agentMessages,
@@ -2829,7 +2915,7 @@ export function App() {
       selectedNemoTools,
     };
     try {
-      window.localStorage.setItem(CHAT_SESSION_STORAGE_KEY, JSON.stringify(snapshot));
+      window.localStorage.setItem(chatSessionKey(state.repo_path), JSON.stringify(snapshot));
     } catch {
       // Ignore quota issues and keep app running.
     }
@@ -2892,7 +2978,7 @@ export function App() {
   ];
 
   return (
-    <main className={`ide-shell section-${activeSection}`}>
+    <main className={`ide-shell section-${activeSection}${filesPanelOpen ? " files-panel-open" : ""}`}>
       <aside className="activity-bar" aria-label="Primary navigation">
         <div className="activity-brand" aria-hidden="true"><Bot size={24} /></div>
         <nav className="activity-nav" aria-label="Primary sections">
@@ -2903,6 +2989,16 @@ export function App() {
             </button>
           ))}
         </nav>
+        <div className="activity-files-btn">
+          <button
+            className={`activity ${filesPanelOpen ? "active" : ""}`}
+            title="File Explorer"
+            onClick={() => setFilesPanelOpen((v) => !v)}
+          >
+            <FolderOpen size={19} />
+            <span>Files</span>
+          </button>
+        </div>
         <div className="activity-system" aria-label="System status">
           <span>NEMO</span>
           <i />
@@ -2910,7 +3006,17 @@ export function App() {
         </div>
       </aside>
 
-      <aside className="explorer">
+      <aside className={`explorer${filesPanelOpen ? " explorer--files" : ""}`}>
+        {filesPanelOpen ? (
+          <div className="explorer-files-panel">
+            <div className="explorer-files-header">
+              <span>EXPLORER</span>
+              <button className="explorer-files-close" onClick={() => setFilesPanelOpen(false)} title="Close file panel">✕</button>
+            </div>
+            <FileExplorer />
+          </div>
+        ) : (
+        <>
         <div className="brand-row">
           <Bot size={20} />
           <div>
@@ -2928,6 +3034,7 @@ export function App() {
           busy={repoBusy}
           error={repoError}
           activeRepo={state.repo_path}
+          isGitRepo={state.is_git_repo}
         />
 
         <section className={`run-tree ${runTreeCollapsed ? "collapsed" : ""}`}>
@@ -2982,6 +3089,24 @@ export function App() {
                         <Square size={11} /> Stop
                       </button>
                     )}
+                    {matchingJob?.status === "completed" && (
+                      <button
+                        className="tree-run-continue-btn"
+                        title="Continuar esta tarea en un nuevo job"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          runAgentAction({
+                            id: `continue-${matchingJob.job_id}`,
+                            kind: "continue",
+                            label: "Continuar",
+                            summary: `Continuar: ${run.objective}`,
+                            payload: { job_id: matchingJob.job_id, objective: run.objective },
+                          });
+                        }}
+                      >
+                        ↩ Continuar
+                      </button>
+                    )}
                     <button
                       className="tree-run-delete-btn"
                       title="Ocultar este run"
@@ -3014,6 +3139,8 @@ export function App() {
             })}</div>}
           </div>
         </section>
+        </>
+        )}
       </aside>
 
       <section className="workbench">
@@ -3050,6 +3177,7 @@ export function App() {
           currentModel={settingsDraft.default_model}
           messages={agentMessages}
           browserArtifacts={browserArtifacts}
+          onRemoveBrowserArtifact={(id) => setBrowserArtifacts((prev) => prev.filter((a) => a.id !== id))}
           onDraftChange={setHomeAgentDraft}
           onSubmit={sendHomeAgentMessage}
           onStop={stopAgentMessage}
@@ -3077,7 +3205,7 @@ export function App() {
           {state.statusLoaded && <>
           <div className="tab-row">
             <button type="button" className={`tab ${runsWorkbenchTab === "file" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("file")}>
-              <FileCode2 size={14} /> {activeFile || "welcome.md"}
+              <FileCode2 size={14} /> {activeFile || "README.md"}
             </button>
             <button type="button" className={`tab ${runsWorkbenchTab === "review" ? "active" : ""}`} onClick={() => setRunsWorkbenchTab("review")}>
               <GitCompare size={14} /> Review
@@ -3205,6 +3333,7 @@ export function App() {
 
         {activeSection === "versioning" && <VersioningPanel
           repoPath={state.repo_path}
+          isGitRepo={state.is_git_repo}
           status={gitStatus}
           branches={gitBranches}
           remotes={gitRemotes}
@@ -3222,6 +3351,7 @@ export function App() {
             loadGitBranches();
             loadGitRemotes();
           }}
+          onGitInit={initGit}
           onSyncRemoteChange={setGitSyncRemote}
           onSyncBranchChange={setGitSyncBranch}
           onDiffPathChange={setGitDiffPath}
@@ -3238,13 +3368,7 @@ export function App() {
           onSync={syncGit}
         />}
 
-        {activeSection === "terminal" && <TerminalPanel
-          command={terminalDraft}
-          running={terminalRunning}
-          result={terminalResult}
-          onCommandChange={setTerminalDraft}
-          onRun={runTerminal}
-        />}
+        {activeSection === "terminal" && <TerminalPanel />}
 
         {activeSection === "browser" && <BrowserPanel
           draft={browserDraft}
@@ -3311,11 +3435,6 @@ export function App() {
           status={status}
           job={activeJob}
           onControl={controlJob}
-          terminalCommand={terminalDraft}
-          terminalRunning={terminalRunning}
-          terminalResult={terminalResult}
-          onTerminalCommandChange={setTerminalDraft}
-          onTerminalRun={runTerminal}
           activeSection={activeSection}
         />
       </section>
@@ -3360,14 +3479,62 @@ function latestHomeLayoutCommand(messages: AgentMessage[]): { command: HomeLayou
   return null;
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onParamsChange?: (params: import("./components/CommandDock").ChatParams) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onRemoveBrowserArtifact, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onRemoveBrowserArtifact: (id: string) => void; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onParamsChange?: (params: import("./components/CommandDock").ChatParams) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
   const [layoutMode, setLayoutMode] = useState<HomeLayoutMode>("full-cockpit");
-  const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: false, telemetry: false });
+  const [detailJobId, setDetailJobId] = useState<string | null>(null);
+  const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: true, telemetry: true });
   const [layoutSource, setLayoutSource] = useState<string>("manual");
   const appliedLayoutCommandRef = useRef<string>("");
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
-  const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite, clearArtifacts } = useGeneratedArtifacts({ messages, draft, onDraftChange });
-  const artifacts = useMemo(() => [...browserArtifacts, ...generatedArtifacts], [browserArtifacts, generatedArtifacts]);
+  const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite, clearArtifacts } = useGeneratedArtifacts({ messages, draft, onDraftChange, repoPath: state.repo_path });
+  const [diskArtifacts, setDiskArtifacts] = useState<GeneratedArtifact[]>([]);
+  const deletedDiskIdsRef = useRef<Set<string>>(new Set());
+  // Timestamp (ms) of when this workspace session started — only images created/modified AFTER
+  // this point are shown, so artifacts from previous workspace sessions don't bleed through.
+  const diskSessionStartRef = useRef<number>(Date.now());
+  useEffect(() => {
+    diskSessionStartRef.current = Date.now();
+    setDiskArtifacts([]);
+    deletedDiskIdsRef.current = new Set();
+    const load = () =>
+      fetch("/api/artifacts/images")
+        .then((r) => r.json())
+        .then((data: { images: Array<{ name: string; url: string; modified: number }> }) => {
+          setDiskArtifacts(
+            data.images
+              .filter((entry) => entry.modified >= diskSessionStartRef.current)
+              .map((entry) => ({
+                id: `disk-${entry.name}`,
+                messageId: "disk",
+                title: entry.name.replace(/\.[^.]+$/, ""),
+                kind: "image" as const,
+                language: "image",
+                content: JSON.stringify({ src: entry.url, alt: entry.name }),
+                tokenEstimate: 1,
+                persisted: true,
+                createdAt: new Date(entry.modified).toISOString(),
+                updatedAt: new Date(entry.modified).toISOString(),
+              }))
+              .filter((a) => !deletedDiskIdsRef.current.has(a.id))
+          );
+        })
+        .catch(() => {});
+    load();
+    const timer = window.setInterval(load, 30_000);
+    return () => window.clearInterval(timer);
+  }, [state.repo_path]);
+  const artifacts = useMemo(() => [...browserArtifacts, ...diskArtifacts, ...generatedArtifacts], [browserArtifacts, diskArtifacts, generatedArtifacts]);
+
+  const handleRemoveArtifact = (id: string) => {
+    if (id.startsWith("disk-")) {
+      deletedDiskIdsRef.current.add(id);
+      setDiskArtifacts((prev) => prev.filter((a) => a.id !== id));
+    } else if (browserArtifacts.some((a) => a.id === id)) {
+      onRemoveBrowserArtifact(id);
+    } else {
+      removeArtifact(id);
+    }
+  };
   const prevArtifactsLenRef = useRef(artifacts.length);
   useEffect(() => {
     if (artifacts.length > prevArtifactsLenRef.current) {
@@ -3515,11 +3682,14 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
               activeId={activeArtifactId}
               onSelect={setActiveArtifactId}
               onAttachToPrompt={attachArtifactToDraft}
-              onRemoveArtifact={removeArtifact}
+              onRemoveArtifact={handleRemoveArtifact}
               onToggleFavorite={toggleFavorite}
               onClearAll={() => {
-                clearArtifactRegistry();
+                clearArtifactRegistry(state.repo_path);
                 clearArtifacts();
+                deletedDiskIdsRef.current = new Set();
+                setDiskArtifacts([]);
+                browserArtifacts.forEach((a) => onRemoveBrowserArtifact(a.id));
               }}
               renderMarkdown={(content) => <MessageRichText content={content} animate={false} compact />}
             />
@@ -3531,31 +3701,66 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
             <button className="mission-panel-collapse" onClick={() => togglePanel("telemetry")} title="Collapse telemetry" aria-label="Collapse telemetry"><Database size={13} /></button>
             <div className="mission-right-rail">
               <NemoMemoryOrbitCopy nodes={orbitNodes} edges={orbitEdges} status={nemoState?.health.status ?? "snapshot"} onSelectNode={onOpenMemory} />
-              <TelemetryColumn
-                activeRun={activeRun}
-                visibleQueue={state.approval_queue}
-                totalRuns={totalRuns}
-                readyRuns={readyRuns}
-                blockedRuns={blockedRuns}
-                queueCount={queueCount}
-                running={running}
-                contextLabel={contextLabel}
-                memoryAtomCount={memoryKpis?.atom_count ?? atomCount}
-                evidenceCount={evidenceCount}
-                feedbackCount={feedbackCount}
-                sourceReads={sourceReads}
-                sourceCacheHitRate={sourceCacheHitRate}
-                status={status}
-                onSelectRun={onSelectRun}
-                onOpenMemory={onOpenMemory}
-                onRefreshCognitiveStats={onRefreshCognitiveStats}
-                onRefreshMissionStats={onRefreshMissionStats}
+              <TelemetryStrip
+                nemoReady={nemoState?.ok ?? (nemoState?.health.status === "ok" || nemoState?.health.status === "snapshot")}
+                llmReady={state.statusLoaded}
+                gitReady={state.is_git_repo ?? false}
+                pendingApprovals={state.jobs.filter((j) =>
+                  (j.permission_request?.requires_user_approval?.length ?? 0) > 0 &&
+                  !j.permission_request?.decision
+                ).length}
+              />
+              <JobsFeed
+                jobs={state.jobs}
+                runs={state.runs}
+                onSelectJob={setDetailJobId}
+                onApprove={(jobId) =>
+                  fetch(`/api/run/${jobId}/permission-grant`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+                    .then(onRefreshMissionStats)
+                }
+                onDeny={(jobId) =>
+                  fetch(`/api/run/${jobId}/permission-deny`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+                    .then(onRefreshMissionStats)
+                }
+                onMerge={(job, run) => {
+                  fetch(`/api/run/${job.job_id}/worktree-merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+                    .catch(() =>
+                      fetch("/api/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_json: run.source_json, approve_review: true }) })
+                    )
+                    .then(onRefreshMissionStats);
+                }}
               />
             </div>
           </>}
         </div>
         {shouldShowFocusDock && <div className="mission-focus-dock" aria-label="Focus artifact command dock">{commandDockElement}</div>}
       </div>
+      {detailJobId && (
+        <JobDetailPanel
+          jobId={detailJobId}
+          jobs={state.jobs}
+          runs={state.runs}
+          onClose={() => setDetailJobId(null)}
+          onMerge={(job, run) => {
+            fetch(`/api/run/${job.job_id}/worktree-merge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+              .catch(() =>
+                fetch("/api/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_json: run.source_json, approve_review: true }) })
+              )
+              .then(onRefreshMissionStats)
+              .then(() => setDetailJobId(null));
+          }}
+          onApprove={(jobId) => {
+            fetch(`/api/run/${jobId}/permission-grant`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+              .then(onRefreshMissionStats)
+              .then(() => setDetailJobId(null));
+          }}
+          onDeny={(jobId) => {
+            fetch(`/api/run/${jobId}/permission-deny`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })
+              .then(onRefreshMissionStats)
+              .then(() => setDetailJobId(null));
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -3933,6 +4138,11 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
   const chatMenuRef = React.useRef<HTMLDivElement>(null);
   const riskCount = run?.risk_flags.length ?? 0;
 
+  // Auto-switch to Run tab when a job starts so the user sees live output immediately.
+  useEffect(() => {
+    if (runningJob) setTab("run");
+  }, [runningJob?.job_id]);
+
   useEffect(() => {
     if (!chatMenuOpen) return;
     const handle = (e: MouseEvent) => {
@@ -4090,7 +4300,10 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
       {tab === "run" && (
         <div className="agent-run-body">
           {runningJob && (
-            <TimelinePanel jobId={runningJob.job_id} isLive={true} />
+            <>
+              <JobLiveLog jobId={runningJob.job_id} status={runningJob.status} />
+              <TimelinePanel jobId={runningJob.job_id} isLive={true} />
+            </>
           )}
           {!run && <EmptyState />}
           {run && (
@@ -4189,7 +4402,7 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
   );
 }
 
-function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo, onBrowseFolder, busy, error, activeRepo }: { repos: string[]; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; onBrowseFolder: () => Promise<string | null>; busy: boolean; error: string; activeRepo?: string }) {
+function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo, onBrowseFolder, busy, error, activeRepo, isGitRepo }: { repos: string[]; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; onBrowseFolder: () => Promise<string | null>; busy: boolean; error: string; activeRepo?: string; isGitRepo?: boolean }) {
   const [collapsed, setCollapsed] = React.useState<boolean>(false);
 
   const confirmAndOpen = React.useCallback((path: string) => {
@@ -4237,6 +4450,7 @@ function RepoWorkspaceSwitcher({ repos, repoDraft, onRepoDraftChange, onOpenRepo
         <div className="workspace-active-badge" title={activeRepo}>
           <HardDrive size={12} />
           <span className="workspace-active-name">{activeFolder}</span>
+          {isGitRepo === false && <span className="workspace-no-git" title="No es un repo git — git worktrees y handoff no disponibles">sin git</span>}
           <span className="workspace-active-access">acceso completo</span>
         </div>
       )}
@@ -4266,7 +4480,7 @@ function StageButton({ path, staged, onStage }: { path: string; staged: boolean;
     window.setTimeout(() => setStageStatus("done"), 900);
     window.setTimeout(() => setStageStatus("idle"), 2000);
   };
-  const label = stageStatus === "busy" ? "Preparando..." : stageStatus === "done" ? "✓ Listo" : staged ? "Desprepararar" : "Preparar";
+  const label = stageStatus === "busy" ? "Preparando..." : stageStatus === "done" ? "✓ Listo" : staged ? "Unstage" : "Preparar";
   return (
     <button onClick={handleClick} disabled={stageStatus === "busy"}>{label}</button>
   );
@@ -4274,6 +4488,7 @@ function StageButton({ path, staged, onStage }: { path: string; staged: boolean;
 
 function VersioningPanel({
   repoPath,
+  isGitRepo,
   status,
   branches,
   remotes,
@@ -4287,6 +4502,7 @@ function VersioningPanel({
   commitMessage,
   branchDraft,
   onRefresh,
+  onGitInit,
   onSyncRemoteChange,
   onSyncBranchChange,
   onDiffPathChange,
@@ -4303,6 +4519,7 @@ function VersioningPanel({
   onSync,
 }: {
   repoPath: string;
+  isGitRepo?: boolean;
   status: GitStatusState;
   branches: GitBranchItem[];
   remotes: GitRemote[];
@@ -4316,6 +4533,7 @@ function VersioningPanel({
   commitMessage: string;
   branchDraft: string;
   onRefresh: () => void;
+  onGitInit: (initialCommit: boolean) => void;
   onSyncRemoteChange: (value: string) => void;
   onSyncBranchChange: (value: string) => void;
   onDiffPathChange: (value: string) => void;
@@ -4331,6 +4549,21 @@ function VersioningPanel({
   onCheckout: (branch: string, create: boolean) => void;
   onSync: (direction: "pull" | "push") => void;
 }) {
+  if (isGitRepo === false) {
+    return (
+      <section className="section-surface versioning-panel">
+        <div className="panel-title"><GitBranch size={16} /> Versionado</div>
+        <div className="ops-panel">
+          <div className="mini-list"><span>Carpeta activa: {repoPath}</span></div>
+          <p className="muted" style={{ margin: "8px 0" }}>Esta carpeta no es un repositorio git. Puedes inicializarlo para habilitar versionado, branches y worktrees.</p>
+          <div className="review-actions">
+            <button onClick={() => onGitInit(false)}><GitBranch size={14} /> git init</button>
+            <button onClick={() => onGitInit(true)}><GitBranch size={14} /> git init + commit inicial</button>
+          </div>
+        </div>
+      </section>
+    );
+  }
   return (
     <section className="section-surface versioning-panel">
       <div className="panel-title"><GitBranch size={16} /> Versionado</div>
@@ -4423,23 +4656,110 @@ function VersioningPanel({
   );
 }
 
-function TerminalPanel({ command, running, result, onCommandChange, onRun }: { command: string; running: boolean; result: TerminalRunResult | null; onCommandChange: (value: string) => void; onRun: () => void }) {
+type TermEntry = { id: string; command: string; lines: string[]; exitCode: number | null; durationMs: number; running: boolean };
+
+function TerminalPanel() {
+  const [history, setHistory] = useState<TermEntry[]>([]);
+  const [draft, setDraft] = useState("");
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [histIdx, setHistIdx] = useState(-1);
+  const [busy, setBusy] = useState(false);
+  const outputRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
+  }, [history]);
+
+  const run = (cmd: string) => {
+    if (!cmd.trim() || busy) return;
+    const id = `t-${Date.now()}`;
+    setHistory((prev) => [...prev, { id, command: cmd, lines: [], exitCode: null, durationMs: 0, running: true }]);
+    setCmdHistory((prev) => [cmd, ...prev.slice(0, 99)]);
+    setHistIdx(-1);
+    setDraft("");
+    setBusy(true);
+    fetch("/api/terminal/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({ command: cmd }),
+    })
+      .then(async (resp) => {
+        const reader = resp.body!.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const parts = buf.split("\n");
+          buf = parts.pop() || "";
+          for (const part of parts) {
+            if (!part.startsWith("data: ")) continue;
+            try {
+              const evt = JSON.parse(part.slice(6)) as Record<string, unknown>;
+              if (evt.type === "line") {
+                setHistory((prev) => prev.map((e) => e.id === id ? { ...e, lines: [...e.lines, String(evt.text ?? "")] } : e));
+              } else if (evt.type === "done") {
+                setHistory((prev) => prev.map((e) => e.id === id ? { ...e, exitCode: evt.exit_code as number | null, durationMs: Number(evt.duration_ms ?? 0), running: false } : e));
+                setBusy(false);
+              }
+            } catch { /* skip malformed */ }
+          }
+        }
+      })
+      .catch((err: Error) => {
+        setHistory((prev) => prev.map((e) => e.id === id ? { ...e, lines: [...e.lines, `[error: ${err.message}]`], running: false } : e));
+        setBusy(false);
+      });
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") { event.preventDefault(); run(draft.trim()); }
+    else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = Math.min(histIdx + 1, cmdHistory.length - 1);
+      setHistIdx(next);
+      if (cmdHistory[next] !== undefined) setDraft(cmdHistory[next]);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      const next = Math.max(histIdx - 1, -1);
+      setHistIdx(next);
+      setDraft(next === -1 ? "" : (cmdHistory[next] ?? ""));
+    }
+  };
+
   return (
-    <section className="section-surface terminal-panel">
-      <div className="panel-title"><TerminalSquare size={16} /> Terminal</div>
-      <div className="ops-panel">
-        <div className="repo-open-row">
-          <input value={command} onChange={(event) => onCommandChange(event.target.value)} placeholder="git status --short" />
-          <button className="repo-item" onClick={onRun} disabled={running}>{running ? "Ejecutando" : "Ejecutar"}</button>
-        </div>
-        {result && <div className="mini-list">
-          <span>exit: {result.exit_code ?? "timeout"} / duration: {result.duration_ms} ms</span>
-          <span>cwd: {result.cwd}</span>
-        </div>}
+    <section className="section-surface terminal-panel-real" onClick={() => inputRef.current?.focus()}>
+      <div className="term-output" ref={outputRef}>
+        {history.length === 0 && <span className="term-hint">Escribe un comando y presiona Enter. Usa ↑↓ para historial.</span>}
+        {history.map((entry) => (
+          <div key={entry.id} className="term-entry">
+            <div className="term-prompt-line"><span className="term-ps1">$</span><span className="term-cmd-text">{entry.command}</span></div>
+            {entry.lines.map((line, i) => <div key={i} className="term-line">{line || " "}</div>)}
+            {!entry.running && (
+              <div className={`term-status ${entry.exitCode === 0 ? "ok" : "err"}`}>
+                [{entry.exitCode ?? "timeout"} · {entry.durationMs}ms]
+              </div>
+            )}
+            {entry.running && <div className="term-cursor">▌</div>}
+          </div>
+        ))}
       </div>
-      <div className="ops-panel terminal-output">
-        <div className="panel-title"><Code2 size={16} /> Salida</div>
-        <pre>{result ? `${result.stdout || ""}${result.stderr ? `\n${result.stderr}` : ""}`.trim() || "(no output)" : "Ejecuta un comando para ver la salida."}</pre>
+      <div className="term-input-row">
+        <span className="term-ps1">$</span>
+        <input
+          ref={inputRef}
+          className="term-input"
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); setHistIdx(-1); }}
+          onKeyDown={handleKeyDown}
+          placeholder="git status --short"
+          autoComplete="off"
+          spellCheck={false}
+          disabled={busy}
+        />
+        {busy && <span className="term-busy-dot" />}
       </div>
     </section>
   );
@@ -4696,6 +5016,13 @@ function ModelSelector({ value, baseUrl, onChange }: { value: string; baseUrl: s
 
 function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, repoDraft, onRepoDraftChange, onOpenRepo, cloneDraft, onCloneDraftChange, onCloneRepo, cleanupResult, onCleanup, orphanCleanupResult, onCleanupOrphans, mcpWatcher, onRefreshMcpWatcher, selectedNemoTools = DEFAULT_SESSION_NEMO_TOOLS, onToggleNemoTool }: { state: MissionState; settings: MissionState["settings"]; onSettingsChange: (settings: MissionState["settings"]) => void; onSaveSettings: () => void; repoDraft: string; onRepoDraftChange: (value: string) => void; onOpenRepo: (repoPath?: string) => void; cloneDraft: { url: string; destination: string }; onCloneDraftChange: (draft: { url: string; destination: string }) => void; onCloneRepo: () => void; cleanupResult: CleanupResult | null; onCleanup: (dryRun: boolean) => void; orphanCleanupResult: OrphanCleanupResult | null; onCleanupOrphans: (dryRun: boolean) => void; mcpWatcher: NemoMcpWatcherState | null; onRefreshMcpWatcher: () => void; selectedNemoTools?: string[]; onToggleNemoTool?: (toolName: string) => void }) {
   const update = (key: keyof MissionState["settings"], value: string | number | boolean | string[]) => onSettingsChange({ ...settings, [key]: value });
+  const _epUrl = settings.model_base_url ?? "";
+  const endpointLabel = _epUrl.includes("nvidia") ? "NVIDIA NIM"
+    : _epUrl.includes("openai.com") ? "OpenAI"
+    : _epUrl.includes("anthropic") ? "Anthropic"
+    : (_epUrl.includes("localhost") || _epUrl.includes("127.0.0.1")) ? "LM Studio"
+    : _epUrl ? (() => { try { return new URL(_epUrl).hostname; } catch { return "API"; } })()
+    : "LM Studio";
   const watcherTone = mcpWatcher?.active ? "ready" : "blocked";
   const watcherLabel = mcpWatcher?.status ?? "loading";
   const capabilities = mcpWatcher?.capabilities;
@@ -4731,7 +5058,7 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
       <div className="panel-title"><Settings size={16} /> <span id="settings-panel-title">Ajustes</span></div>
       <label htmlFor={fieldIds.modelBaseUrl}>URL del endpoint<input id={fieldIds.modelBaseUrl} value={settings.model_base_url} onChange={(event) => update("model_base_url", event.target.value)} /></label>
       <label>Modelo<ModelSelector value={settings.default_model} baseUrl={settings.model_base_url} onChange={(v) => update("default_model", v)} /></label>
-      <label htmlFor={fieldIds.provider}>Modo del agente<select id={fieldIds.provider} value={settings.provider} onChange={(event) => update("provider", event.target.value)}><option value="subprocess">Real con LM Studio</option></select></label>
+      <label>Modo del agente<div className="composer-static-field"><code>{endpointLabel}</code></div></label>
       <label htmlFor={fieldIds.memoryDb}>Base de memoria NEMO<input id={fieldIds.memoryDb} value={settings.memory_db} onChange={(event) => update("memory_db", event.target.value)} /></label>
       <label htmlFor={fieldIds.nemoMcpUrl}>Transporte MCP NEMO<input id={fieldIds.nemoMcpUrl} value={settings.nemo_mcp_url || ""} onChange={(event) => update("nemo_mcp_url", event.target.value)} placeholder="stdio://vscode/nemo" /></label>
       <div className={`mcp-watcher ${watcherTone}`}>
@@ -4771,12 +5098,12 @@ function RepoSettingsPanel({ state, settings, onSettingsChange, onSaveSettings, 
       <label htmlFor={fieldIds.runtimePath}>Carpeta runtime<input id={fieldIds.runtimePath} value={settings.runtime_path} onChange={(event) => update("runtime_path", event.target.value)} /></label>
       <label htmlFor={fieldIds.validationPolicy}>Nivel de validacion<select id={fieldIds.validationPolicy} value={settings.validation_policy} onChange={(event) => update("validation_policy", event.target.value)}><option value="none">ninguna</option><option value="smoke">rapida</option><option value="targeted">dirigida</option><option value="full">completa</option></select></label>
       <div className="settings-grid">
-        <label htmlFor={fieldIds.timeoutSeconds}>Timeout (s)<input id={fieldIds.timeoutSeconds} type="number" value={settings.timeout_seconds} onChange={(event) => update("timeout_seconds", Number(event.target.value))} /></label>
-        <label htmlFor={fieldIds.maxRuntimeMinutes}>Max minutos<input id={fieldIds.maxRuntimeMinutes} type="number" value={settings.max_runtime_minutes} onChange={(event) => update("max_runtime_minutes", Number(event.target.value))} /></label>
-        <label htmlFor={fieldIds.heartbeatMinutes}>Heartbeat (min)<input id={fieldIds.heartbeatMinutes} type="number" value={settings.heartbeat_minutes} onChange={(event) => update("heartbeat_minutes", Number(event.target.value))} /></label>
-        <label htmlFor={fieldIds.tokenBudget}>Presupuesto tokens<input id={fieldIds.tokenBudget} type="number" value={settings.token_budget} onChange={(event) => update("token_budget", Number(event.target.value))} /></label>
-        <label htmlFor={fieldIds.contextWindowTokens}>Ventana contexto<input id={fieldIds.contextWindowTokens} type="number" value={settings.context_window_tokens} onChange={(event) => update("context_window_tokens", Number(event.target.value))} /></label>
-        <label htmlFor={fieldIds.chatMaxTokens}>Salida chat max<input id={fieldIds.chatMaxTokens} type="number" value={settings.chat_max_tokens} onChange={(event) => update("chat_max_tokens", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.timeoutSeconds}>Timeout (s)<input id={fieldIds.timeoutSeconds} type="number" min="1" max="3600" value={settings.timeout_seconds} onChange={(event) => update("timeout_seconds", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.maxRuntimeMinutes}>Max minutos<input id={fieldIds.maxRuntimeMinutes} type="number" min="1" max="1440" value={settings.max_runtime_minutes} onChange={(event) => update("max_runtime_minutes", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.heartbeatMinutes}>Heartbeat (min)<input id={fieldIds.heartbeatMinutes} type="number" min="1" max="60" value={settings.heartbeat_minutes} onChange={(event) => update("heartbeat_minutes", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.tokenBudget}>Presupuesto tokens<input id={fieldIds.tokenBudget} type="number" min="100" max="200000" value={settings.token_budget} onChange={(event) => update("token_budget", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.contextWindowTokens}>Ventana contexto<input id={fieldIds.contextWindowTokens} type="number" min="1000" max="1000000" value={settings.context_window_tokens} onChange={(event) => update("context_window_tokens", Number(event.target.value))} /></label>
+        <label htmlFor={fieldIds.chatMaxTokens}>Salida chat max<input id={fieldIds.chatMaxTokens} type="number" min="256" max="65536" value={settings.chat_max_tokens} onChange={(event) => update("chat_max_tokens", Number(event.target.value))} /></label>
       </div>
       <div className="settings-grid">
         <label htmlFor={fieldIds.imageGenBackend}>Backend imagen<select id={fieldIds.imageGenBackend} value={settings.image_gen_backend} onChange={(event) => update("image_gen_backend", event.target.value)}><option value="auto">auto</option><option value="automatic1111">AUTOMATIC1111</option><option value="comfyui">ComfyUI</option></select></label>
@@ -5197,6 +5524,7 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
   let listType: "ul" | "ol" = "ul";
   let codeLines: string[] = [];
   let inCode = false;
+  let codeLang = "";
 
   const flushList = () => {
     if (!listItems.length) return;
@@ -5208,8 +5536,21 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
 
   const flushCode = () => {
     if (!codeLines.length) return;
-    blocks.push(<pre key={`c-${blocks.length}`}><code>{codeLines.join("\n")}</code></pre>);
+    const raw = codeLines.join("\n");
+    if (codeLang === "image") {
+      try {
+        const parsed = JSON.parse(raw.trim()) as { src?: string; alt?: string };
+        if (parsed.src) {
+          blocks.push(<img key={`img-${blocks.length}`} src={parsed.src} alt={parsed.alt || "Imagen generada"} className="rich-generated-image" />);
+          codeLines = [];
+          codeLang = "";
+          return;
+        }
+      } catch { /* fall through */ }
+    }
+    blocks.push(<pre key={`c-${blocks.length}`}><code>{raw}</code></pre>);
     codeLines = [];
+    codeLang = "";
   };
 
   lines.forEach((line) => {
@@ -5221,6 +5562,7 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
         inCode = false;
       } else {
         inCode = true;
+        codeLang = trimmed.slice(3).trim().toLowerCase();
       }
       return;
     }
@@ -5270,68 +5612,34 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
   );
 }
 
-function BottomPanel({ run, status, job, onControl, terminalCommand, terminalRunning, terminalResult, onTerminalCommandChange, onTerminalRun, activeSection }: {
+function BottomPanel({ run, status, job, onControl, activeSection }: {
   run: MissionRun | undefined;
   status: string;
   job: HandoffJob | null;
   onControl: (action: "cancel" | "pause" | "resume") => void;
-  terminalCommand: string;
-  terminalRunning: boolean;
-  terminalResult: TerminalRunResult | null;
-  onTerminalCommandChange: (value: string) => void;
-  onTerminalRun: () => void;
   activeSection: AppSection;
 }) {
   const running = job ? ["starting", "running"].includes(job.status) : false;
   const paused = job?.status === "paused";
   const iterationLines = job ? extractIterationLines(job.logs) : [];
-  const [activeTab, setActiveTab] = useState<"timeline" | "terminal" | "output">("terminal");
+  const [activeTab, setActiveTab] = useState<"timeline" | "estado" | "output">("estado");
   return (
     <section className="bottom-panel">
       <div className="bottom-tabs">
         <button type="button" className={activeTab === "timeline" ? "active" : ""} onClick={() => setActiveTab("timeline")}>
           <PanelBottom size={14} /> Timeline
         </button>
-        <button type="button" className={activeTab === "terminal" ? "active" : ""} onClick={() => setActiveTab("terminal")}>
-          <TerminalSquare size={14} /> Terminal
+        <button type="button" className={activeTab === "estado" ? "active" : ""} onClick={() => setActiveTab("estado")}>
+          <TerminalSquare size={14} /> Estado
         </button>
         <button type="button" className={activeTab === "output" ? "active" : ""} onClick={() => setActiveTab("output")}>
           <Clock3 size={14} /> Output
         </button>
       </div>
       <div className="bottom-content">
-        {activeTab === "terminal" && (
+        {activeTab === "estado" && (
           <>
             <div className="terminal-line"><span>nemo</span> {status}</div>
-            <div className="job-console">
-              {activeSection === "terminal" && (
-                <>
-                  <div className="job-iteration-title">Terminal real</div>
-                  <div className="repo-open-row" style={{ padding: "6px 12px", gridTemplateColumns: "minmax(0, 1fr) auto", marginBottom: 0 }}>
-                    <input
-                      value={terminalCommand}
-                      onChange={(event) => onTerminalCommandChange(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" && !event.shiftKey) {
-                          event.preventDefault();
-                          onTerminalRun();
-                        }
-                      }}
-                      placeholder="git status --short"
-                    />
-                    <button className="repo-item" onClick={onTerminalRun} disabled={terminalRunning}>
-                      {terminalRunning ? "Ejecutando" : "Ejecutar"}
-                    </button>
-                  </div>
-                  {terminalResult && <div className="mini-list" style={{ padding: "0 12px 8px" }}>
-                    <span>exit: {terminalResult.exit_code ?? "timeout"} / duration: {terminalResult.duration_ms} ms</span>
-                    <span>cwd: {terminalResult.cwd}</span>
-                  </div>}
-                </>
-              )}
-              <div className="job-iteration-title">Salida</div>
-              <pre>{terminalResult ? `${terminalResult.stdout || ""}${terminalResult.stderr ? `\n${terminalResult.stderr}` : ""}`.trim() || "(no output)" : "Ejecuta un comando para ver salida."}</pre>
-            </div>
             {job ? <div className="job-console">
               <div className="job-header">
                 <strong>{job.job_id}</strong>
@@ -5342,7 +5650,7 @@ function BottomPanel({ run, status, job, onControl, terminalCommand, terminalRun
                   <button disabled={!running} onClick={() => onControl("cancel")}>Cancel</button>
                 </div>
               </div>
-            </div> : null}
+            </div> : <div className="terminal-line" style={{opacity: 0.4}}>Sin handoff activo — usa la sección TERM para ejecutar comandos.</div>}
           </>
         )}
 
@@ -5579,7 +5887,7 @@ function VaultPanel() {
 }
 
 function EmptyState() {
-  return <div className="empty">Sin datos disponibles.</div>;
+  return <div className="empty">Sin runs todavía. Inicia un handoff desde Home para ver resultados aquí.</div>;
 }
 
 const rootElement = document.getElementById("root");
