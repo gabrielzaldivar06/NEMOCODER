@@ -6983,6 +6983,13 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             except Exception:
                 pass
 
+    # Snapshot existing image files in cwd BEFORE plan runs, so we only copy newly generated ones.
+    _plan_start_time = time.time()
+    _preexisting_images: set[str] = set()
+    for _ext in ("png", "jpg", "jpeg", "svg"):
+        for _f in Path(".").glob(f"*.{_ext}"):
+            _preexisting_images.add(_f.name)
+
     # Emit start event immediately.
     yield {"type": "start", "objective": objective, "max_iterations": max_iterations, "quality_threshold": quality_threshold, "job_id": job_id}
 
@@ -7435,6 +7442,13 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         for search_dir in search_dirs:
             for ext in ("png", "jpg", "jpeg", "svg"):
                 for img in search_dir.glob(f"*.{ext}"):
+                    # Only copy files that the plan itself generated:
+                    # - in tmpdir (always new), OR
+                    # - in cwd but not pre-existing AND modified after plan started
+                    is_tmpdir = search_dir == _plan_tmpdir
+                    is_new_in_cwd = img.name not in _preexisting_images and img.stat().st_mtime >= _plan_start_time
+                    if not is_tmpdir and not is_new_in_cwd:
+                        continue
                     dest = artifacts_dir / img.name
                     shutil.copy2(img, dest)
                     if artifact_file is None:

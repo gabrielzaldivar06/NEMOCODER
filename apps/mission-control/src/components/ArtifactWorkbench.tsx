@@ -38,8 +38,26 @@ function artifactSrcDoc(artifact: GeneratedArtifact): string {
   return "";
 }
 
+function codeHighlightSrcDoc(artifact: GeneratedArtifact): string {
+  const lang = artifact.language && artifact.language !== "text" ? artifact.language : "plaintext";
+  const escaped = artifact.content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return `<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<style>
+  html,body{margin:0;padding:0;background:#0d1117;color:#e6edf3;font-family:'Fira Code',Consolas,'Courier New',monospace;font-size:13px;line-height:1.65}
+  pre{margin:0;padding:14px 16px;overflow:auto;min-height:100vh;box-sizing:border-box}
+  code.hljs{background:transparent;padding:0;font-size:inherit;line-height:inherit}
+  ::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:#0d1117}::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px}
+</style>
+</head><body>
+<pre><code class="language-${lang}">${escaped}</code></pre>
+<script>hljs.highlightAll();<\/script>
+</body></html>`;
+}
+
 function isRenderableArtifact(artifact: GeneratedArtifact | undefined): boolean {
-  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "image", "video", "audio", "image_request", "browser"].includes(artifact.kind));
+  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "code", "image", "video", "audio", "image_request", "browser"].includes(artifact.kind));
 }
 
 function artifactFileExtension(artifact: GeneratedArtifact): string {
@@ -348,13 +366,7 @@ function ImageRequestPreview({ artifact }: { artifact: GeneratedArtifact }) {
     // Plain text image prompts are valid too.
   }
 
-  useEffect(() => {
-    setStatus("idle");
-    setGeneratedUrl("");
-    setError("");
-  }, [artifact.id]);
-
-  const generateImage = () => {
+  const generateImage = useCallback(() => {
     setStatus("running");
     setError("");
     void fetch("/api/agent/generate-image", {
@@ -371,13 +383,16 @@ function ImageRequestPreview({ artifact }: { artifact: GeneratedArtifact }) {
       setError(reason instanceof Error ? reason.message : "image_generation_failed");
       setStatus("failed");
     });
-  };
+  }, [requestPayload]);
+
+  // Auto-generate as soon as the artifact appears — no manual button click needed.
+  useEffect(() => { generateImage(); }, [artifact.id]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   return <div className="artifact-image-request">
     {generatedUrl ? <img src={generatedUrl} alt={String(requestPayload.prompt || "Generated artifact")} /> : <Image size={30} />}
-    <strong>{generatedUrl ? "Generated image" : "Image request"}</strong>
+    <strong>{generatedUrl ? "Generated image" : status === "running" ? "Generating…" : "Image request"}</strong>
     <p>{prompt}</p>
-    <button onClick={generateImage} disabled={status === "running"} title="Generar imagen local"><Zap size={13} /><span>{status === "running" ? "Generating" : status === "done" ? "Regenerate" : "Generate"}</span></button>
+    <button onClick={generateImage} disabled={status === "running"} title="Regenerar imagen"><Zap size={13} /><span>{status === "done" ? "Regenerate" : status === "running" ? "Generating" : "Generate"}</span></button>
     {error && <small>{error}</small>}
   </div>;
 }
@@ -590,6 +605,8 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <BrowserLiveView content={activeArtifact.content} />
             ) : viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
               <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={artifactSrcDoc(activeArtifact)} />
+            ) : viewMode === "preview" && activeArtifact.kind === "code" ? (
+              <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={codeHighlightSrcDoc(activeArtifact)} />
             ) : viewMode === "preview" && (activeArtifact.kind === "image" || activeArtifact.kind === "video" || activeArtifact.kind === "audio") ? (
               <MediaPreview artifact={activeArtifact} />
             ) : viewMode === "preview" && activeArtifact.kind === "markdown" ? (
