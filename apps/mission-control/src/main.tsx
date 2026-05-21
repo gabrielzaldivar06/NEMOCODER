@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AlertTriangle, Archive, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, Circle, Clock3, Code2, Database, FileCode2, Files, FolderOpen, GitBranch, GitCompare, GitPullRequest, Globe, HardDrive, Home, MessageSquarePlus, MessageSquareText, PanelBottom, Play, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Trash2, Wrench, CheckSquare } from "lucide-react";
+import { AlertTriangle, Archive, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, ChevronUp, Circle, Clock3, Code2, Database, FileCode2, Files, FolderOpen, GitBranch, GitCompare, GitPullRequest, Globe, HardDrive, Home, MessageSquarePlus, MessageSquareText, PanelBottom, Play, Puzzle, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Square, TerminalSquare, Trash2, Wrench, CheckSquare } from "lucide-react";
 import "./styles.css";
 import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
 import { CommandDock } from "./components/CommandDock";
@@ -5748,20 +5748,24 @@ function BottomPanel({ run, status, job, onControl, activeSection }: {
   const paused = job?.status === "paused";
   const iterationLines = job ? extractIterationLines(job.logs) : [];
   const [activeTab, setActiveTab] = useState<"timeline" | "estado" | "output">("estado");
+  const [collapsed, setCollapsed] = useState(true);
   return (
-    <section className="bottom-panel">
+    <section className={`bottom-panel${collapsed ? " collapsed" : ""}`}>
       <div className="bottom-tabs">
-        <button type="button" className={activeTab === "timeline" ? "active" : ""} onClick={() => setActiveTab("timeline")}>
+        <button type="button" className={activeTab === "timeline" ? "active" : ""} onClick={() => { setActiveTab("timeline"); if (collapsed) setCollapsed(false); }}>
           <PanelBottom size={14} /> Timeline
         </button>
-        <button type="button" className={activeTab === "estado" ? "active" : ""} onClick={() => setActiveTab("estado")}>
+        <button type="button" className={activeTab === "estado" ? "active" : ""} onClick={() => { setActiveTab("estado"); if (collapsed) setCollapsed(false); }}>
           <TerminalSquare size={14} /> Estado
         </button>
-        <button type="button" className={activeTab === "output" ? "active" : ""} onClick={() => setActiveTab("output")}>
+        <button type="button" className={activeTab === "output" ? "active" : ""} onClick={() => { setActiveTab("output"); if (collapsed) setCollapsed(false); }}>
           <Clock3 size={14} /> Output
         </button>
+        <button type="button" className="bottom-collapse-btn" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Expandir panel" : "Colapsar panel"}>
+          {collapsed ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
       </div>
-      <div className="bottom-content">
+      {!collapsed && <div className="bottom-content">
         {activeTab === "estado" && (
           <>
             <div className="terminal-line"><span>nemo</span> {status}</div>
@@ -5805,7 +5809,7 @@ function BottomPanel({ run, status, job, onControl, activeSection }: {
             )) : <EmptyState />}
           </>
         )}
-      </div>
+      </div>}
     </section>
   );
 }

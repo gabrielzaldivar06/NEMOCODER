@@ -3332,6 +3332,7 @@ button { font: inherit; }
 .bottom-panel {
   position: relative;
   flex: 0 0 218px;
+  transition: flex-basis 0.15s ease;
   min-height: 0;
   border-top: 1px solid rgba(45, 212, 230, 0.18);
   background:
@@ -3386,6 +3387,9 @@ button { font: inherit; }
 }
 .bottom-tabs button:hover { color: #d8f7ff; border-color: rgba(45, 212, 230, 0.18); background: rgba(0, 214, 232, 0.065); }
 .bottom-tabs button.active { color: #031114; border-color: transparent; background: var(--accent); box-shadow: 0 0 18px rgba(0, 214, 232, 0.24); }
+.bottom-panel.collapsed { flex: 0 0 36px; }
+.bottom-collapse-btn { margin-left: auto; background: none !important; border: none !important; color: rgba(45,212,230,0.5) !important; padding: 0 6px !important; cursor: pointer; display: flex; align-items: center; }
+.bottom-collapse-btn:hover { color: rgba(45,212,230,0.9) !important; }
 .bottom-content {
   position: relative;
   z-index: 1;
