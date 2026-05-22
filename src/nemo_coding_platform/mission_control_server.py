@@ -5079,6 +5079,11 @@ def api_self_modify_start(server: "MissionControlHttpServer", payload: dict[str,
     return {"ok": True, "job": job.to_dict()}
 
 
+def _nemo_configured(memory_db: "Path | None", nemo_mcp_url: "str | None") -> bool:
+    """Return True when at least one NEMO backend is configured."""
+    return bool(memory_db) or bool((nemo_mcp_url or "").strip())
+
+
 def _nemo_chat_tool_call(
     config: MissionControlServerConfig,
     tool_calls: list[dict[str, object]],
@@ -5103,7 +5108,7 @@ def _nemo_chat_tool_call(
             }
         )
         return {}
-    if config.memory_db is None and not (nemo_mcp_url or "").strip():
+    if not _nemo_configured(config.memory_db, nemo_mcp_url):
         tool_calls.append(
             {
                 "id": f"tool-{uuid4().hex[:8]}",
