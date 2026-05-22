@@ -57,7 +57,7 @@ def _lm_sequence(gen_response: str, scores: list):
 def _run_plan(config, scores, max_iter=5, gen="print('hello')",
               model_base_url="http://localhost:1234/v1"):
     """Run api_agent_plan_gen with mocked LM + NEMO + disabled sleep. Return (done_event, iter_events)."""
-    with patch("nemo_coding_platform.mission_control_server._plan_lm_call",
+    with patch("nemo_coding_platform.plan_loop._plan_lm_call",
                side_effect=_lm_sequence(gen, scores)), \
          patch("nemo_coding_platform.mission_control_server._nemo_chat_tool_call",
                side_effect=_fake_nemo), \

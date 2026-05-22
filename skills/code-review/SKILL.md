@@ -1,5 +1,5 @@
 ---
-name: Code Review
+name: code review
 description: Thorough code quality review — correctness, style, edge cases, and test coverage.
 ---
 
