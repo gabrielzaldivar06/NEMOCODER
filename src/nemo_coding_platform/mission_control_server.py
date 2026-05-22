@@ -1961,6 +1961,8 @@ def _chat_base_url(payload: dict[str, object]) -> str:
 
 _resolve_lmstudio_model_cache: dict[str, tuple[str, float]] = {}
 _RESOLVE_MODEL_TTL = 60.0  # seconds — model changes don't happen mid-plan
+_RESOLVE_MODEL_SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
+_RESOLVE_MODEL_CHAT_TYPES = frozenset({"llm", "vlm"})
 
 
 def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", default_model: str = "") -> str:
@@ -1978,8 +1980,6 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
     cached = _resolve_lmstudio_model_cache.get(cache_key)
     if cached is not None and time.time() < cached[1]:
         return cached[0]
-    _SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
-    _CHAT_TYPES = {"llm", "vlm"}
     base = base_url.rstrip("/")
     # Management API lives at the root, not under /v1
     mgmt_base = re.sub(r"/v\d+$", "", base)
@@ -1991,9 +1991,9 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
             data = json.loads(r.read().decode())
         candidates = [
             m for m in data.get("data", [])
-            if m.get("type") in _CHAT_TYPES
+            if m.get("type") in _RESOLVE_MODEL_CHAT_TYPES
             and m.get("state") == "loaded"
-            and not _SKIP.search(m.get("id", ""))
+            and not _RESOLVE_MODEL_SKIP.search(m.get("id", ""))
         ]
         if candidates:
             candidates.sort(key=lambda m: int(m.get("loaded_context_length") or 0), reverse=True)
@@ -2012,7 +2012,7 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
             data = json.loads(r.read().decode())
         models = [
             m["id"] for m in data.get("data", [])
-            if not _SKIP.search(m.get("id", "")) and not _UUID_ONLY.match(m.get("id", ""))
+            if not _RESOLVE_MODEL_SKIP.search(m.get("id", "")) and not _UUID_ONLY.match(m.get("id", ""))
         ]
         result = ""
         # If the configured default_model is available, prefer it over auto-selection.
@@ -2030,8 +2030,11 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
             return result
     except Exception:
         pass
-    # Strategy 3: explicit default_model for remote endpoints without discovery
-    _resolve_lmstudio_model_cache[cache_key] = (default_model, time.time() + _RESOLVE_MODEL_TTL)
+    # Strategy 3: explicit default_model for remote endpoints without discovery.
+    # Only cache non-empty results — an empty string means "unreachable", which may
+    # resolve on the next call if LM Studio comes back online within the TTL window.
+    if default_model:
+        _resolve_lmstudio_model_cache[cache_key] = (default_model, time.time() + _RESOLVE_MODEL_TTL)
     return default_model
 
 
@@ -2362,9 +2365,17 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         client._acquire(timeout=30.0)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))  # type: ignore[no-any-return]
+                raw = r.read().decode("utf-8")
+        except urllib.error.HTTPError:
+            raise
+        except urllib.error.URLError:
+            raise
         finally:
             client._release()
+        try:
+            return json.loads(raw)  # type: ignore[no-any-return]
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"LM Studio returned non-JSON: {raw[:200]!r}") from exc
 
     def _extract_content(resp_payload: dict[str, object]) -> str:
         choices = resp_payload.get("choices") if isinstance(resp_payload, dict) else None
@@ -5850,12 +5861,16 @@ _lm_client_lock = threading.Lock()
 
 
 def _get_lm_client(payload: dict[str, Any]) -> "LmClient":
-    """Return (or lazily create) the module-level LmClient for the given base_url."""
+    """Return (or lazily create) the module-level LmClient for the given base_url + api_key."""
     global _lm_client
     base_url = _chat_base_url(payload)
     api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
     with _lm_client_lock:
-        if _lm_client is None or _lm_client.base_url != base_url.rstrip("/"):
+        if (
+            _lm_client is None
+            or _lm_client.base_url != base_url.rstrip("/")
+            or _lm_client.api_key != api_key
+        ):
             _lm_client = LmClient(base_url=base_url, api_key=api_key)
         return _lm_client
 
@@ -6908,7 +6923,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
 
     # Progressive refinement tracking
     consecutive_perfect = 0   # iters in a row with score >= 9.5
-    plateau_count = 0          # iters in a row with |delta| < 0.5 AND best_score >= 6.0
+    plateau_count = 0          # iters in a row with delta < 0.5 (directional, not abs) AND best_score >= 6.0
     prev_score = 0.0           # score from the previous iteration
     stop_reason = "max_iterations"  # updated when an early-stop condition fires
 
