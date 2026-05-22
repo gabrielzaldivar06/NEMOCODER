@@ -59,6 +59,8 @@ from nemo_coding_platform.core.repo_map import build_repo_map, read_anchor_docs
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, default_nemo_mcp_url, discover_vscode_mcp_server
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
+from nemo_coding_platform.nemo_gateway import NemoGateway
+from nemo_coding_platform.lm_client import LmClient
 
 
 class HandoffJobStatus(StrEnum):
@@ -2339,12 +2341,13 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
     )
 
     def _do_request(req: urllib.request.Request) -> dict[str, object]:
-        _llm_sem_acquire(timeout=30.0)
+        client = _get_lm_client(payload)
+        client._acquire(timeout=30.0)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))  # type: ignore[no-any-return]
         finally:
-            _LLM_SEM.release()
+            client._release()
 
     def _extract_content(resp_payload: dict[str, object]) -> str:
         choices = resp_payload.get("choices") if isinstance(resp_payload, dict) else None
@@ -5094,53 +5097,12 @@ def _nemo_chat_tool_call(
     allowed_tools: set[str] | None = None,
     **arguments: Any,
 ) -> dict[str, Any]:
-    canonical_name = f"nemo_memory.{tool_name}"
-    alias_name = f"spacecode.{tool_name}"
-    if isinstance(allowed_tools, set) and tool_name not in allowed_tools:
-        tool_calls.append(
-            {
-                "id": f"tool-{uuid4().hex[:8]}",
-                "name": canonical_name,
-                "tool_name": tool_name,
-                "alias_name": alias_name,
-                "status": "skipped",
-                "summary": "Tool disabled for this chat session by MCP tool selector.",
-            }
-        )
-        return {}
-    if not _nemo_configured(config.memory_db, nemo_mcp_url):
-        tool_calls.append(
-            {
-                "id": f"tool-{uuid4().hex[:8]}",
-                "name": canonical_name,
-                "tool_name": tool_name,
-                "alias_name": alias_name,
-                "status": "skipped",
-                "summary": "NEMO not configured for this session (no memory_db and no mcp_url).",
-            }
-        )
-        return {}
-    result = mcp_call_nemo_tool(
-        tool_name,
-        lifecycle_phase=lifecycle_phase,
-        memory_db=str(config.memory_db) if config.memory_db else "",
-        mcp_url=(nemo_mcp_url or ""),
-        approve_review=bool((nemo_mcp_url or "").strip()),
-        **arguments,
+    gw = NemoGateway(
+        memory_db=config.memory_db,
+        mcp_url=nemo_mcp_url,
+        allowed_tools=allowed_tools,
     )
-    ok = bool(result.get("ok"))
-    payload = _normalize_nemo_tool_payload(result)
-    tool_calls.append(
-        {
-            "id": f"tool-{uuid4().hex[:8]}",
-            "name": canonical_name,
-            "tool_name": tool_name,
-            "alias_name": alias_name,
-            "status": "completed" if ok else "failed",
-            "summary": _nemo_tool_summary(tool_name, payload if ok else result),
-        }
-    )
-    return payload if ok else {}
+    return gw.call(tool_name, lifecycle_phase or "start", tool_calls, **arguments)
 
 
 def _normalize_nemo_tool_payload(result: dict[str, Any]) -> dict[str, Any]:
@@ -5864,6 +5826,18 @@ def _extract_json_score(critique: str) -> float:
 # from the same or different models — driver-level contention causes freezes.
 _LLM_SEM = threading.Semaphore(1)
 
+_lm_client: "LmClient | None" = None
+
+
+def _get_lm_client(payload: dict[str, Any]) -> "LmClient":
+    """Return (or lazily create) the module-level LmClient for the given base_url."""
+    global _lm_client
+    base_url = _chat_base_url(payload)
+    api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
+    if _lm_client is None or _lm_client.base_url != base_url.rstrip("/"):
+        _lm_client = LmClient(base_url=base_url, api_key=api_key)
+    return _lm_client
+
 
 def _llm_sem_acquire(timeout: float = 30.0) -> None:
     """Acquire _LLM_SEM with a deadline. Raises RuntimeError if semaphore is busy."""
@@ -5890,38 +5864,22 @@ _plan_jobs_lock = threading.Lock()
 def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: int = 1024, timeout: int = 120, temperature: float = 0.6) -> str:
     """Minimal LM call for plan loop — works with LM Studio, NVIDIA NIM, or any OpenAI-compatible endpoint."""
     base_url = _chat_base_url(payload)
-    model = _chat_model(payload)
+    model = _resolve_lmstudio_model(base_url) or _chat_model(payload)
     api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
-    body = json.dumps({
-        "model": model,
-        "messages": [
+    is_local = "127.0.0.1:1234" in base_url or "localhost:1234" in base_url
+    client = LmClient(base_url=base_url, api_key=api_key)
+    return client.chat(
+        messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "stream": False,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST",
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=float(timeout),
+        acquire_timeout=60.0,
+        extra_body={"model": model} if model else {},
+        with_cooldown=is_local,
     )
-    data: dict[str, object] = {}
-    _llm_sem_acquire(timeout=60.0)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        # Hold semaphore during cooldown so concurrent chat can't call LLM while
-        # GPU drains from this call (Arc iGPU / Vulkan shared-VRAM contention).
-        time.sleep(1.5)
-    finally:
-        _LLM_SEM.release()
-    choices = data.get("choices") or []
-    if not choices:
-        raise ValueError("plan lm call: no choices in response")
-    return str(choices[0].get("message", {}).get("content", ""))
 
 
 # Shell keywords that appear as bare lines in model output but are invalid Python at runtime.
@@ -6780,12 +6738,13 @@ def _visual_critique_lm_call(payload: dict[str, Any], objective: str, image_path
         method="POST",
     )
     try:
-        _llm_sem_acquire(timeout=60.0)
+        vis_client = LmClient(base_url=vis_base_url, api_key=str(payload.get('api_key') or os.environ.get('LMSTUDIO_API_KEY') or 'lm-studio'))
+        vis_client._acquire(timeout=60.0)
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         finally:
-            _LLM_SEM.release()
+            vis_client._release()
         choices = data.get("choices") or []
         if choices:
             return str(choices[0].get("message", {}).get("content", ""))
