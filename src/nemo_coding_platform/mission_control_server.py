@@ -1964,6 +1964,9 @@ _RESOLVE_MODEL_TTL = 60.0  # seconds — model changes don't happen mid-plan
 _RESOLVE_MODEL_SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
 _RESOLVE_MODEL_CHAT_TYPES = frozenset({"llm", "vlm"})
 
+_models_list_cache: dict[str, tuple[list[dict[str, object]], float]] = {}
+_MODELS_LIST_TTL = 60.0  # local: loaded models change rarely; NIM: catalogue stable within a session
+
 
 def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", default_model: str = "") -> str:
     """Return the best available chat model.
@@ -2899,10 +2902,21 @@ def api_models(config: MissionControlServerConfig) -> dict[str, object]:
     current_model = str(settings.get("default_model") or "")
     current_base = str(settings.get("model_base_url") or local_base).rstrip("/")
 
+    now = time.time()
+
+    def _cached(key: str, fetcher, *args: object) -> list[dict[str, object]]:
+        entry = _models_list_cache.get(key)
+        if entry is not None and now < entry[1]:
+            return entry[0]
+        result = fetcher(*args)
+        if result:
+            _models_list_cache[key] = (result, now + _MODELS_LIST_TTL)
+        return result
+
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        local_fut = pool.submit(_fetch_lmstudio_models, local_base)
-        nvidia_fut = pool.submit(_fetch_nvidia_nim_models, api_key)
+        local_fut = pool.submit(_cached, f"local:{local_base}", _fetch_lmstudio_models, local_base)
+        nvidia_fut = pool.submit(_cached, f"nvidia:{api_key}", _fetch_nvidia_nim_models, api_key)
         local_models = local_fut.result()
         nvidia_models = nvidia_fut.result()
 
