@@ -913,7 +913,7 @@ class HandoffJobManager:
             env.setdefault("LMSTUDIO_API_KEY", _settings_api_key)
         _nemo_url = str(_nemo_settings.get("nemo_mcp_url") or "")
         _nemo_db = str(config.memory_db) if config.memory_db else ""
-        if _nemo_url:
+        if _nemo_configured(config.memory_db, _nemo_url):
             try:
                 mcp_call_nemo_tool(
                     "context_bootstrap",
@@ -997,7 +997,7 @@ class HandoffJobManager:
             self._append_log(job, str(error))
         finally:
             _write_current_job_context(config, None)
-            if _nemo_url:
+            if _nemo_configured(config.memory_db, _nemo_url):
                 try:
                     mcp_call_nemo_tool(
                         "store_conversation",
