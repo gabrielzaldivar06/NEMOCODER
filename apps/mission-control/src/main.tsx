@@ -3403,7 +3403,7 @@ export function App() {
                           refreshState();
                         }}
                       />
-                      <ReadinessScorePanel readiness={selectedRun?.readiness} />
+                      <ReadinessScorePanel readiness={selectedRun?.readiness} runId={selectedRun?.run_id} />
                     </div>
                   )}
                 </div>
