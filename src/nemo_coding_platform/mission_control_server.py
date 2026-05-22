@@ -5804,16 +5804,21 @@ def _run_or_handoff_actions(message: str, payload: dict[str, object], selected_o
 
 def _extract_json_score(critique: str) -> float:
     """Parse a numeric score from the LLM's JSON critique response."""
-    # Try full JSON parse first (may be wrapped in ```json fence)
-    json_match = re.search(r'\{.*?\}', critique, re.DOTALL)
+    # Greedy match to capture the outermost JSON object (handles nested arrays/objects).
+    # Try progressively shorter substrings on decode failure (trailing-trim fallback).
+    json_match = re.search(r'\{.*\}', critique, re.DOTALL)
     if json_match:
-        try:
-            data = json.loads(json_match.group(0))
-            s = data.get("score")
-            if s is not None:
-                return max(1.0, min(10.0, float(s)))
-        except (json.JSONDecodeError, TypeError, ValueError):
-            pass
+        candidate = json_match.group(0)
+        # Trim from the right until valid JSON or exhausted
+        for end in range(len(candidate), 0, -1):
+            try:
+                data = json.loads(candidate[:end])
+                s = data.get("score")
+                if s is not None:
+                    return max(1.0, min(10.0, float(s)))
+                break
+            except (json.JSONDecodeError, ValueError):
+                continue
     # Fallback: bare "score": N pattern
     m = re.search(r'"score"\s*:\s*(\d+(?:\.\d+)?)', critique)
     if m:
@@ -5827,6 +5832,7 @@ def _extract_json_score(critique: str) -> float:
 _LLM_SEM = threading.Semaphore(1)
 
 _lm_client: "LmClient | None" = None
+_lm_client_lock = threading.Lock()
 
 
 def _get_lm_client(payload: dict[str, Any]) -> "LmClient":
@@ -5834,9 +5840,10 @@ def _get_lm_client(payload: dict[str, Any]) -> "LmClient":
     global _lm_client
     base_url = _chat_base_url(payload)
     api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
-    if _lm_client is None or _lm_client.base_url != base_url.rstrip("/"):
-        _lm_client = LmClient(base_url=base_url, api_key=api_key)
-    return _lm_client
+    with _lm_client_lock:
+        if _lm_client is None or _lm_client.base_url != base_url.rstrip("/"):
+            _lm_client = LmClient(base_url=base_url, api_key=api_key)
+        return _lm_client
 
 
 def _llm_sem_acquire(timeout: float = 30.0) -> None:
@@ -5865,9 +5872,8 @@ def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: i
     """Minimal LM call for plan loop — works with LM Studio, NVIDIA NIM, or any OpenAI-compatible endpoint."""
     base_url = _chat_base_url(payload)
     model = _resolve_lmstudio_model(base_url) or _chat_model(payload)
-    api_key = str(payload.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
     is_local = "127.0.0.1:1234" in base_url or "localhost:1234" in base_url
-    client = LmClient(base_url=base_url, api_key=api_key)
+    client = _get_lm_client(payload)
     return client.chat(
         messages=[
             {"role": "system", "content": system},
@@ -6724,33 +6730,18 @@ def _visual_critique_lm_call(payload: dict[str, Any], objective: str, image_path
         },
     ]
     vis_base_url = _chat_base_url(payload)
-    body = json.dumps({
-        "model": _resolve_lmstudio_model(vis_base_url) or _chat_model(payload),
-        "messages": messages,
-        "temperature": 0.0,
-        "max_tokens": 200,
-        "stream": False,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{vis_base_url}/chat/completions",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {str(payload.get('api_key') or os.environ.get('LMSTUDIO_API_KEY') or 'lm-studio')}"},
-        method="POST",
-    )
+    model = _resolve_lmstudio_model(vis_base_url) or _chat_model(payload)
     try:
-        vis_client = LmClient(base_url=vis_base_url, api_key=str(payload.get('api_key') or os.environ.get('LMSTUDIO_API_KEY') or 'lm-studio'))
-        vis_client._acquire(timeout=60.0)
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        finally:
-            vis_client._release()
-        choices = data.get("choices") or []
-        if choices:
-            return str(choices[0].get("message", {}).get("content", ""))
+        return _get_lm_client(payload).chat(
+            messages,
+            temperature=0.0,
+            max_tokens=200,
+            timeout=60.0,
+            acquire_timeout=60.0,
+            extra_body={"model": model} if model else {},
+        )
     except Exception:  # noqa: BLE001
-        pass
-    return None
+        return None
 
 
 class _PlanNemoAdapter:
@@ -7372,10 +7363,12 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             f"Code{_score_ctx}:\n{_critique_target[:1500]}"
             f"{_plan_artifact_note}"
         )
+        _critique_failed = False
         try:
             critique_raw = _plan_lm_call(payload, critique_sys, critique_user, max_tokens=512, timeout=240, temperature=0.0)
         except Exception:  # noqa: BLE001
             critique_raw = '{"score":5,"present":[],"missing":[],"improvements":[],"summary":"unavailable"}'
+            _critique_failed = True
 
         text_score = _extract_json_score(critique_raw)
         visual_score = _extract_json_score(visual_raw) if visual_raw else 0.0
@@ -7390,7 +7383,9 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         # scores at least 7.0 — matches system prompt instruction to the LLM critic.
         # When harness tests fail we trust the LLM's lower score.
         _has_test_failures = harness_result is not None and harness_result.get("failed", 0) > 0
-        if exec_ok and not _has_test_failures and score < 7.0:
+        # Only apply the 7.0 floor when the evaluator actually responded.
+        # A dead/unreachable evaluator must not promote a run to passing.
+        if exec_ok and not _has_test_failures and not _critique_failed and score < 7.0:
             score = 7.0
 
         # --- Update best-known snapshot ---
@@ -7497,7 +7492,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         else:
             consecutive_perfect = 0
 
-        if i > 1 and abs(_delta) < 0.5 and best_score >= 6.0:
+        if i > 1 and _delta < 0.5 and best_score >= 6.0:
             plateau_count += 1
         else:
             plateau_count = 0

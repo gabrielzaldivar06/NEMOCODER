@@ -13,13 +13,19 @@ from typing import Any
 
 
 class LmClient:
-    """Wraps all LM Studio API calls. One instance per server process."""
+    """Wraps all LM Studio API calls. One instance per server process.
+
+    _sem is class-level so all LmClient instances share one semaphore — this
+    is the Arc iGPU serialization guarantee. Creating multiple instances (e.g.
+    for different base_urls) must not bypass the global inference lock.
+    """
+
+    _sem: threading.Semaphore = threading.Semaphore(1)
 
     def __init__(self, base_url: str, api_key: str = "lm-studio", cooldown: float = 1.5) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.cooldown = cooldown
-        self._sem = threading.Semaphore(1)
 
     # ------------------------------------------------------------------
     # Semaphore helpers
@@ -70,10 +76,11 @@ class LmClient:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
-            if with_cooldown:
-                time.sleep(self.cooldown)
         finally:
             self._release()
+        # Cooldown after release so other callers aren't blocked during the sleep.
+        if with_cooldown:
+            time.sleep(self.cooldown)
 
         choices = payload.get("choices") or []
         if not choices:

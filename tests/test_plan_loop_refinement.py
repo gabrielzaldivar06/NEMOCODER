@@ -144,8 +144,10 @@ class TestConsecutivePerfectStop(unittest.TestCase):
 
 class TestRegressionStop(unittest.TestCase):
     def test_stops_on_regression_greater_than_2(self):
+        # scores=[10,3,...]: iter1 score=10 (no boost), iter2 mock=3 boosted to 7.0.
+        # Regression check: 7.0 < 10-2=8 → True → fires at i=2 (2 total iterations).
         with tempfile.TemporaryDirectory() as tmp:
-            done, iters = _run_plan(_make_config(tmp), scores=[8, 3, 10, 10], max_iter=5)
+            done, iters = _run_plan(_make_config(tmp), scores=[10, 3, 10, 10], max_iter=5)
         self.assertEqual(done["stop_reason"], "regression")
         self.assertEqual(len(iters), 2)
 
@@ -168,8 +170,11 @@ class TestPlateauStop(unittest.TestCase):
         self.assertEqual(len(iters), 3)
 
     def test_no_plateau_when_best_score_below_6(self):
+        # Use gen that fails at runtime so exec_ok=False → no 7.0 floor boost.
+        # Scores stay ≤ 5 → best_score < 6 → plateau condition never fires.
         with tempfile.TemporaryDirectory() as tmp:
-            done, iters = _run_plan(_make_config(tmp), scores=[5, 5, 5, 5, 5], max_iter=5)
+            done, iters = _run_plan(_make_config(tmp), scores=[5, 5, 5, 5, 5], max_iter=5,
+                                    gen="raise RuntimeError('below-six')")
         self.assertNotEqual(done["stop_reason"], "plateau")
 
     def test_plateau_resets_on_improvement(self):
@@ -181,8 +186,10 @@ class TestPlateauStop(unittest.TestCase):
 
 class TestMaxIterationsStop(unittest.TestCase):
     def test_runs_all_iters_when_no_other_stop(self):
+        # Scores already ≥ 7 (no 7.0 floor applied). Delta = 0.5 each step — strict
+        # < 0.5 plateau check never fires. No consecutive perfect (all < 9.5). No regression.
         with tempfile.TemporaryDirectory() as tmp:
-            done, iters = _run_plan(_make_config(tmp), scores=[5, 6, 7, 8, 9], max_iter=5)
+            done, iters = _run_plan(_make_config(tmp), scores=[7, 7.5, 8, 8.5, 9], max_iter=5)
         self.assertEqual(done["stop_reason"], "max_iterations")
         self.assertEqual(len(iters), 5)
 
