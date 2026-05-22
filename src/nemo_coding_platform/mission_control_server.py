@@ -8866,6 +8866,45 @@ def api_worktree_cleanup(config: "MissionControlServerConfig", job_id: str, jobs
     return {"cleaned_up": True, "branch": branch}
 
 
+def api_run_reject(
+    config: "MissionControlServerConfig",
+    job_id: str,
+    payload: dict[str, object],
+    jobs: "HandoffJobManager",
+) -> dict[str, object]:
+    """Reject a handoff run: persist reason to NEMO create_correction and clean up the worktree."""
+    try:
+        job = jobs.get(job_id)
+    except FileNotFoundError:
+        return {"error": f"job not found: {job_id}"}
+    reason = str(payload.get("reason") or "").strip() or "user rejected without providing a reason"
+    note = str(payload.get("note") or "").strip()
+    objective = str(job.payload.get("objective") or job.job_id)[:120]
+    _nemo_db = getattr(config, "memory_db", None)
+    _nemo_url = str(job.payload.get("nemo_mcp_url") or getattr(config, "nemo_mcp_url", "") or "")
+    if _nemo_configured(_nemo_db, _nemo_url):
+        try:
+            mcp_call_nemo_tool(
+                "create_correction",
+                lifecycle_phase="review",
+                memory_db=str(_nemo_db) if _nemo_db else "",
+                mcp_url=_nemo_url,
+                wrong_assumption=f"run '{job_id}' with objective '{objective}' would produce acceptable results",
+                correct_answer=f"user rejected: {reason[:200]}",
+                context=f"job_id={job_id} note={note[:100]}" if note else f"job_id={job_id}",
+                topic="user_rejections",
+                tags=["user_rejected", "handoff_rejection"],
+                importance_level=9,
+            )
+        except Exception:  # noqa: BLE001
+            pass  # NEMO persistence is best-effort — cleanup still happens
+    from nemo_coding_platform.core.worktree_runtime import cleanup_git_worktree
+    branch = _job_worktree_branch(job)
+    wt_path = _job_worktree_path(config, job)
+    cleanup_git_worktree(Path(config.repo_path), wt_path, branch)
+    return {"ok": True, "job_id": job_id, "reason": reason}
+
+
 def _find_run_payload_by_id(config: "MissionControlServerConfig", run_id: str) -> dict[str, Any] | None:
     for root in (config.runtimes_path, config.run_results_path):
         if not root.exists():
@@ -9649,6 +9688,15 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route.startswith("/api/run/") and route.endswith("/worktree-cleanup"):
             job_id = route[len("/api/run/"): -len("/worktree-cleanup")].strip("/")
             self._handle(lambda _: api_worktree_cleanup(self.server.config, job_id, self.server.jobs), {})
+            return
+        if route.startswith("/api/run/") and route.endswith("/reject"):
+            job_id = route[len("/api/run/"): -len("/reject")].strip("/")
+            try:
+                body = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle(lambda payload: api_run_reject(self.server.config, job_id, payload, self.server.jobs), body)
             return
         if route.startswith("/api/run/") and route.endswith("/permission-grant"):
             job_id = route[len("/api/run/"): -len("/permission-grant")].strip("/")

@@ -1,7 +1,9 @@
 from __future__ import annotations
+import json
+import urllib.request as _urllib_request
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from nemo_coding_platform.core.engine_interface import EngineProvider, MutationRequest, MutationResult, apply_mutation_request, create_engine_provider
 from nemo_coding_platform.core.checkpoint import build_checkpoint_markdown, load_execution_snapshot, restore_file_snapshot, save_execution_snapshot, snapshot_changed_files
@@ -37,7 +39,7 @@ from nemo_coding_platform.core.todo_guard import build_todo_reminder, extract_to
 from nemo_coding_platform.core.validation import VALIDATION_SKIPPED_COMMAND, ValidationCommand, ValidationResult, ValidationStatus, ValidationSuiteResult, format_validation_report, run_validation_suite, simulate_validation, write_python_validation_script
 from nemo_coding_platform.core.workspace import Workspace
 from nemo_coding_platform.core.event_emitter import emit_event
-from nemo_coding_platform.core.repo_map import build_repo_map
+from nemo_coding_platform.core.repo_map import build_repo_map, read_anchor_docs
 from nemo_coding_platform.core.worktree_runtime import (
     initialize_git_worktree_runtime,
     snapshot_runtime_files,
@@ -50,6 +52,46 @@ from nemo_coding_platform.core.nemo_learning import (
 )
 
 
+def _make_repair_critique_fn(profile: "ModelProfile") -> "Callable[[str, str, str], float] | None":
+    if not profile or not profile.base_url:
+        return None
+
+    def _critique(objective: str, diff: str, validation_summary: str) -> float:
+        sys_prompt = (
+            "You are a code quality evaluator for multi-file software repair tasks. "
+            "Reply ONLY with a JSON object — no markdown, no prose. "
+            'Format: {"score":<int 1-10>,"summary":"<str>"}\n'
+            "Scoring: 10=perfect, 7-9=good (tests pass, clean code), 5-6=partial, 1-4=broken. "
+            "Primary signal: validation passed and objective is fully met."
+        )
+        user_msg = (
+            f"Objective: {objective}\n\n"
+            f"Diff (truncated):\n{diff[:1200]}\n\n"
+            f"Validation: {validation_summary}"
+        )
+        payload = {
+            "model": profile.model or "local",
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            "max_tokens": 128,
+            "temperature": 0.0,
+        }
+        headers = {"Content-Type": "application/json"}
+        _key = profile.api_key
+        if _key:
+            headers["Authorization"] = f"Bearer {_key}"
+        url = profile.base_url.rstrip("/") + "/chat/completions"
+        req = _urllib_request.Request(url, json.dumps(payload).encode(), headers)
+        with _urllib_request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+        text = data["choices"][0]["message"]["content"]
+        return float(json.loads(text)["score"])
+
+    return _critique
+
+
 _CONTEXT_OVERFLOW_MARKERS = (
     "context size has been exceeded",
     "maximum context length",
@@ -58,7 +100,7 @@ _CONTEXT_OVERFLOW_MARKERS = (
     "token limit",
     "midstreamfallbackerror",
 )
-_MAX_NEMO_CONTEXT_CHARS = 4000
+_MAX_NEMO_CONTEXT_CHARS = 10000
 
 
 def _contains_context_overflow(text: str) -> bool:
@@ -274,6 +316,61 @@ def _generate_tests_content(
         return ""
 
 
+def _plan_target_files(
+    profile: "ModelProfile",
+    objective: str,
+    repo_map: str,
+    anchor_docs: str,
+) -> list[str]:
+    """Lightweight planner call: given repo map + objective, return target file paths.
+
+    Uses a fast, low-temperature call with a small token budget (256 tokens).
+    Returns empty list on any failure — caller treats it as no-op.
+    """
+    import json as _json
+    import urllib.request as _urllib
+
+    context_parts: list[str] = []
+    if anchor_docs:
+        context_parts.append(anchor_docs)
+    if repo_map:
+        context_parts.append(f"## Repo Map\n{repo_map[:4000]}")
+
+    system = (
+        "You are a software planning assistant. Given a repo structure and an objective, "
+        "identify which files need to be modified. "
+        "Reply ONLY with a JSON object — no markdown, no prose. "
+        'Format: {"target_files": ["relative/path/to/file.ext"], "approach": "<one sentence>"}'
+    )
+    user = f"## Objective\n{objective[:500]}\n\n" + "\n\n".join(context_parts)
+
+    payload = {
+        "model": profile.model or "local",
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "max_tokens": 256,
+        "temperature": 0.0,
+    }
+    url = profile.base_url.rstrip("/") + "/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if profile.api_key:
+        headers["Authorization"] = f"Bearer {profile.api_key}"
+    try:
+        req = _urllib.Request(url, _json.dumps(payload).encode(), headers)
+        with _urllib.urlopen(req, timeout=30) as resp:
+            data = _json.loads(resp.read())
+        text = str(data["choices"][0]["message"]["content"]).strip()
+        # Strip optional markdown fences
+        if text.startswith("```"):
+            text = "\n".join(text.splitlines()[1:])
+            if text.endswith("```"):
+                text = text[:-3].rstrip()
+        parsed = _json.loads(text)
+        files = [str(f) for f in parsed.get("target_files", []) if isinstance(f, str) and f]
+        return files[:12]  # hard cap — planner should not return huge lists
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def execute_headless_handoff(
     request: HandoffRequest,
     fail_validation: tuple[str, ...] = (),
@@ -326,7 +423,12 @@ def execute_headless_handoff(
         wt_path = repo_root / ".worktrees" / runtime.runtime_id
         runtime = replace(runtime, worktree_path=wt_path)
         branch = worktree_branch_name(runtime.runtime_id)
-        initialize_git_worktree_runtime(runtime, repo_root, branch)
+        try:
+            initialize_git_worktree_runtime(runtime, repo_root, branch)
+        except Exception:  # noqa: BLE001
+            # Non-git repos or dirty state — fall back to isolated worktree
+            use_git_worktree = False
+            runtime = agent_runtime.worktree
     execution_snapshots: dict[str, Any] = {}
 
     def _capture_execution_snapshot(
@@ -451,35 +553,54 @@ def execute_headless_handoff(
     repo_root = Path(request.repo_path).resolve()
     perm_path = Path(permissions_file) if permissions_file else repo_root / ".spacecode-permissions.json"
     ruleset = load_ruleset_from_file(perm_path) if perm_path.exists() else default_ruleset(AutonomyLevel.FULL_HANDOFF)
-    
+
+    # --- Repo map + anchor docs (README/CLAUDE.md) ---
+    _repo_map = build_repo_map(
+        request.repo_path,
+        cache_path=Path(request.repo_path) / ".nemo-runtimes" / "repo-map-cache.json",
+        max_chars=12000,
+    )
+    _anchor_docs = read_anchor_docs(request.repo_path)
+
+    # --- Planner phase: infer target files when none specified ---
+    # A lightweight LLM call (30s timeout, 256 tokens) that reads the repo map
+    # and returns which files need to be edited for this objective.
+    # Only runs in subprocess mode and when the user didn't specify targets.
+    _planner_targets: tuple[str, ...] = ()
+    if not target_files and provider_mode != "fake":
+        emit_event("plan_created", "Planner: inferring target files from repo map", "plan", {"step": "planner"})
+        _planned = _plan_target_files(profile, request.prd, _repo_map, _anchor_docs)
+        if _planned:
+            _planner_targets = tuple(_planned)
+            emit_event("plan_created", f"Planner: selected {len(_planner_targets)} target file(s)", "plan", {"target_files": list(_planner_targets)})
+
+    # Honor permissions, then merge explicit targets with planner suggestions.
+    _candidate_targets = list(target_files) or list(_planner_targets)
     allowed_files = []
     denied_files = []
-    for f in target_files:
+    for f in _candidate_targets:
         if ruleset.evaluate("write_file", f) == PermissionAction.ALLOW:
             allowed_files.append(f)
         else:
             denied_files.append(f)
 
-    if target_files and denied_files and not allowed_files:
+    if _candidate_targets and denied_files and not allowed_files:
         raise PermissionError(f"all requested target files denied by permissions policy: {', '.join(denied_files)}")
 
-    # If user provided explicit targets, honor permissions by keeping only allowed ones.
-    effective_targets = tuple(allowed_files) if target_files else target_files
-    for relative_target in effective_targets:
-        source_path = repo_root / relative_target
-        if not source_path.exists() or not source_path.is_file():
-            continue
-        runtime_target = runtime.resolve_inside(relative_target)
-        runtime_target.parent.mkdir(parents=True, exist_ok=True)
-        runtime_target.write_bytes(source_path.read_bytes())
+    effective_targets = tuple(allowed_files) if _candidate_targets else ()
 
-    _repo_map = build_repo_map(
-        request.repo_path,
-        cache_path=Path(request.repo_path) / ".nemo-runtimes" / "repo-map-cache.json",
-    )
+    # Copy target files into the worktree only when NOT using a git worktree
+    # (git worktrees already have the full repo accessible).
+    if not use_git_worktree:
+        for relative_target in effective_targets:
+            source_path = repo_root / relative_target
+            if not source_path.exists() or not source_path.is_file():
+                continue
+            runtime_target = runtime.resolve_inside(relative_target)
+            runtime_target.parent.mkdir(parents=True, exist_ok=True)
+            runtime_target.write_bytes(source_path.read_bytes())
 
     # --- NEMO workspace file structure awareness ---
-    # Search for prior file changes in this workspace so the agent has context.
     try:
         adapter, _ws_result = adapter.call(
             NemoLifecyclePhase.BUILD,
@@ -496,7 +617,7 @@ def execute_headless_handoff(
         elif _ws_context:
             nemo_context = f"# Recent Workspace File Changes\n{_ws_context}"
     except Exception:  # noqa: BLE001
-        pass  # Non-critical — workspace file memory is additive
+        pass
 
     # --- NEMO Learning: inject cross-session project context ---
     try:
@@ -510,25 +631,12 @@ def execute_headless_handoff(
     except Exception:  # noqa: BLE001
         pass
 
-    # --- GENERATE_TESTS step (TDD red phase) ---
-    # Skip LLM call in fake mode — no real engine to drive the TDD cycle.
-    emit_event("mutation_created", "Generating tests (TDD red phase)", "plan", {"step": "generate_tests"})
-    _generated_test_content = (
-        _generate_tests_content(profile, request.prd, spec_content, request.acceptance_criteria)
-        if provider_mode != "fake"
-        else ""
-    )
+    # Prepend anchor docs (README/CLAUDE.md) to NEMO context so the agent
+    # understands the repo purpose and conventions before any memories.
+    if _anchor_docs:
+        nemo_context = (f"# Project Context\n{_anchor_docs}\n\n{nemo_context}").strip()
+
     _generated_test_artifact: Artifact | None = None
-    if _generated_test_content:
-        write_runtime_file(runtime, "test_generated.py", _generated_test_content)
-        _generated_test_artifact = Artifact.from_content(
-            "artifact-generated-tests",
-            run.id,
-            ArtifactType.TEST,
-            "test_generated.py",
-            "LLM-generated pytest tests (TDD red phase)",
-            _generated_test_content,
-        )
 
     mutation_request = MutationRequest(
         request.prd,
@@ -767,6 +875,8 @@ def execute_headless_handoff(
                 evidence_compactor=_compress_repair_evidence,
                 nemo_adapter=adapter,
                 task_id=task.id,
+                critique_fn=_make_repair_critique_fn(profile) if provider_mode != "fake" else None,
+                quality_threshold=request.quality_threshold,
             )
         merged_attempts = seeded_attempts + tuple(
             RepairAttempt(seeded_repair_cursor + index + 1, item.reason, item.action)
@@ -774,6 +884,13 @@ def execute_headless_handoff(
         )
         repair_plan = RepairPlan(RepairBudget(request.repair_budget), attempts=merged_attempts)
         validation = repair_result.validation
+        if repair_result.best_score > 0:
+            emit_event(
+                "repair_quality_score",
+                f"Repair quality score: {repair_result.best_score:.1f}/10 ({repair_result.stop_reason or 'ok'})",
+                "review",
+                {"score": repair_result.best_score, "stop_reason": repair_result.stop_reason},
+            )
         # --- Cognitive Learning: persist repair failure pattern to NEMO ---
         # Every exhausted repair budget feeds the empirical risk map so future
         # tasks can avoid the same file/command combinations.
@@ -819,6 +936,80 @@ def execute_headless_handoff(
                 importance_level=7,
             )
             nemo_results.append(_anchor_trace)
+        # --- NEMO-Guided Repair Continuation ---
+        # When the regular budget is exhausted and validation still fails,
+        # call anticipate() to surface past repair patterns and grant ONE
+        # extra attempt with that strategy injected into context.
+        # Skipped when stop_reason is loop_detected or noop (structural, not budget).
+        if (
+            repair_result is not None
+            and repair_result.stop_reason == "repair_budget_exhausted"
+            and isinstance(adapter, PersistentNemoAdapter)
+        ):
+            _failed_cmds = ", ".join(r.command.command for r in validation.results if not r.passed) or "unknown"
+            _task_desc = (request.objective_summary or request.prd)[:120]
+            adapter, _anticipate_result = adapter.call(
+                NemoLifecyclePhase.REVIEW,
+                "anticipate",
+                task=f"repair recovery: {_task_desc[:80]} failed=[{_failed_cmds[:100]}]",
+                topic="repair_recovery",
+                limit=5,
+            )
+            nemo_results.append(_anticipate_result)
+            _memories = _anticipate_result.payload.get("memories") if isinstance(_anticipate_result.payload, dict) else []
+            _strategy_lines = [
+                f"- {str(mem.get('content', '')).strip()[:200]}"
+                for mem in (_memories or [])
+                if str(mem.get("content", "")).strip()
+            ]
+            if _strategy_lines:
+                _strategy_text = (
+                    f"NEMO repair guidance from {len(_strategy_lines)} past memory pattern(s):\n"
+                    + "\n".join(_strategy_lines[:5])
+                )
+                emit_event(
+                    "nemo_guided_repair_start",
+                    f"Budget exhausted — NEMO found {len(_strategy_lines)} recovery pattern(s); attempting 1 guided repair",
+                    "execute",
+                    {"strategy_preview": _strategy_text[:120], "memories_found": len(_strategy_lines)},
+                )
+                _guided_request = replace(mutation_request, context=f"{_strategy_text}\n\n{mutation_request.context}")
+                _guided_result = run_repair_loop(
+                    validation,
+                    validation_commands,
+                    fail_validation,
+                    RepairBudget(1),
+                    engine,
+                    provider,
+                    _guided_request,
+                    validator=validator,
+                    nemo_adapter=adapter,
+                    task_id=task.id,
+                    critique_fn=_make_repair_critique_fn(profile) if provider_mode != "fake" else None,
+                )
+                if _guided_result.validation.passed:
+                    repair_result = _guided_result
+                    validation = _guided_result.validation
+                    emit_event(
+                        "nemo_guided_repair_succeeded",
+                        f"NEMO-guided repair succeeded (score={_guided_result.best_score:.1f})",
+                        "execute",
+                        {"score": _guided_result.best_score},
+                    )
+                else:
+                    emit_event(
+                        "nemo_guided_repair_failed",
+                        "NEMO-guided repair also failed — accepting exhausted state",
+                        "execute",
+                        {},
+                    )
+            else:
+                emit_event(
+                    "nemo_guided_repair_no_strategy",
+                    "Budget exhausted — no recovery patterns in NEMO for this failure type",
+                    "execute",
+                    {},
+                )
     effective_mutation_result = mutation_result
     if repair_result and not (effective_mutation_result.changed_files or effective_mutation_result.applied_files):
         for repair_mutation in reversed(repair_result.mutation_results):

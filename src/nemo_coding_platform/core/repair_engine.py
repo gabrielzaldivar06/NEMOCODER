@@ -20,6 +20,7 @@ class RepairRunResult:
     validation: ValidationSuiteResult
     stop_reason: str = ""
     tokens_consumed: int = 0
+    best_score: float = 0.0
 
 
 def format_validation_evidence(validation: ValidationSuiteResult, attempt: int) -> str:
@@ -43,6 +44,13 @@ def _diffs_are_identical(a: str, b: str) -> bool:
     return a.strip() == b.strip()
 
 
+def _safe_critique(critique_fn: Callable[[str, str, str], float], objective: str, diff: str, validation_summary: str) -> float:
+    try:
+        return max(0.0, min(10.0, float(critique_fn(objective, diff, validation_summary))))
+    except Exception:
+        return 0.0
+
+
 def run_repair_loop(
     initial_validation: ValidationSuiteResult,
     commands: tuple[str, ...],
@@ -60,17 +68,29 @@ def run_repair_loop(
     evidence_compactor: Callable[[str, int], tuple[str, str | None]] | None = None,
     nemo_adapter: object = None,
     task_id: str = "",
+    critique_fn: Callable[[str, str, str], float] | None = None,
+    quality_threshold: float = 0.0,
 ) -> RepairRunResult:
     plan = RepairPlan(budget)
     validation = initial_validation
     mutations: list[MutationResult] = []
     stop_reason = ""
     lint_evidence = ""
+    best_score: float = 0.0
     start_time = time.time()
     _tokens_consumed = 0
     _CHARS_PER_TOKEN = 4  # standard heuristic
     _last_token_source = "estimated"
-    while not validation.passed and plan.can_record_attempt():
+    while plan.can_record_attempt():
+        _repair_mode = not validation.passed
+        _quality_mode = (
+            validation.passed
+            and quality_threshold > 0
+            and critique_fn is not None
+            and 0 < best_score < quality_threshold
+        )
+        if not _repair_mode and not _quality_mode:
+            break
         attempt_number = attempt_offset + len(plan.attempts) + 1
         elapsed_seconds = time.time() - start_time
         if on_attempt:
@@ -88,66 +108,75 @@ def run_repair_loop(
             )
             break
 
-        failed = ", ".join(result.command.command for result in validation.results if not result.passed) or "validation"
-        plan = plan.next_attempt("validation_failed", f"repair failed command(s): {failed}")
-        raw_validation_evidence = format_validation_evidence(validation, attempt_number)
-        validation_evidence = prune_tool_output(raw_validation_evidence, max_chars=1500)
-        if evidence_compactor and len(raw_validation_evidence) > 1500:
-            compact_claim, evidence_handle = evidence_compactor(raw_validation_evidence, attempt_number)
-            if compact_claim:
-                evidence_lines = [
-                    f"repair_attempt={attempt_number}",
-                    validation.summary(),
-                    f"compacted_validation_claim={compact_claim}",
-                ]
-                if evidence_handle:
-                    evidence_lines.append(f"evidence_handle={evidence_handle}")
-                validation_evidence = "\n".join(evidence_lines)
+        if _quality_mode:
+            plan = plan.next_attempt("quality_below_threshold", f"score={best_score:.1f}<{quality_threshold:.1f}")
+            raw_validation_evidence = (
+                f"quality_score={best_score:.1f} quality_target={quality_threshold:.1f} VALIDATION_PASSED=true"
+            )
+            validation_evidence = raw_validation_evidence
+        else:
+            failed = ", ".join(result.command.command for result in validation.results if not result.passed) or "validation"
+            plan = plan.next_attempt("validation_failed", f"repair failed command(s): {failed}")
+            raw_validation_evidence = format_validation_evidence(validation, attempt_number)
+            validation_evidence = prune_tool_output(raw_validation_evidence, max_chars=1500)
+            if evidence_compactor and len(raw_validation_evidence) > 1500:
+                compact_claim, evidence_handle = evidence_compactor(raw_validation_evidence, attempt_number)
+                if compact_claim:
+                    evidence_lines = [
+                        f"repair_attempt={attempt_number}",
+                        validation.summary(),
+                        f"compacted_validation_claim={compact_claim}",
+                    ]
+                    if evidence_handle:
+                        evidence_lines.append(f"evidence_handle={evidence_handle}")
+                    validation_evidence = "\n".join(evidence_lines)
         previous_diff = mutations[-1].diff_artifact if mutations else base_request.previous_diff
 
-        # --- Loop Detection (inspired by deer-flow loop_detection_middleware) ---
-        # If the most recent repair produced the same diff as the one before it,
-        # stop immediately instead of exhausting the budget.
-        if len(mutations) >= 2 and _diffs_are_identical(mutations[-1].diff_artifact, mutations[-2].diff_artifact):
-            stop_reason = "repair_loop_detected"
-            break
-        # Also stop if the last repair was a no-op and we've seen it before.
-        if len(mutations) >= 1 and not mutations[-1].diff_artifact.strip():
-            if len(mutations) >= 2 and not mutations[-2].diff_artifact.strip():
+        if _repair_mode:
+            # --- Loop Detection (repair mode only) ---
+            if len(mutations) >= 2 and _diffs_are_identical(mutations[-1].diff_artifact, mutations[-2].diff_artifact):
                 stop_reason = "repair_loop_detected"
                 break
+            if len(mutations) >= 1 and not mutations[-1].diff_artifact.strip():
+                if len(mutations) >= 2 and not mutations[-2].diff_artifact.strip():
+                    stop_reason = "repair_loop_detected"
+                    break
 
-        # Prepend the todo reminder to the context on the first attempt only.
-        # Skip the reminder for repairs: the repair objective already states what
-        # needs to be fixed; the pipeline-step checklist confuses the model into
-        # thinking it must re-run infrastructure it cannot and should not redo.
         reminder_prefix = ""
-
-        # Classify the failure to frame the repair objective clearly.
         noop_attempt = not mutations[-1].changed_files if mutations else False
 
-        # Build a precise NEMO query: include the actual error text so semantic
-        # search retrieves memories for this specific error, not just the objective.
-        first_failed_output = next(
-            (r.output for r in validation.results if not r.passed and r.output),
-            "",
-        )
-        error_snippet = first_failed_output.strip()[:200] if first_failed_output else ""
-        nemo_query = f"repair: {failed} — {error_snippet}" if error_snippet else f"repair failure: {failed}"
+        if _quality_mode:
+            nemo_query = f"quality improvement: score={best_score:.1f} objective={base_request.objective[:80]}"
+        else:
+            # Build a precise NEMO query: include the actual error text so semantic
+            # search retrieves memories for this specific error, not just the objective.
+            first_failed_output = next(
+                (r.output for r in validation.results if not r.passed and r.output),
+                "",
+            )
+            error_snippet = first_failed_output.strip()[:200] if first_failed_output else ""
+            nemo_query = f"repair: {failed} — {error_snippet}" if error_snippet else f"repair failure: {failed}"
         nemo_snippet = nemo_before_attempt(
             nemo_adapter,
             query=nemo_query,
             tags=("repair_failure",),
         )
 
-        repair_evidence_lines = [
-            "# Repair Evidence",
-            validation_evidence,
-        ]
-        if lint_evidence:
-            repair_evidence_lines += ["", lint_evidence]
-        if previous_diff:
-            repair_evidence_lines += ["", "# Previous Diff", previous_diff]
+        if _quality_mode:
+            repair_evidence_lines = [
+                "# Quality Improvement Context",
+                validation_evidence,
+                *([f"", "# Current Diff", mutations[-1].diff_artifact[:1200]] if mutations else []),
+            ]
+        else:
+            repair_evidence_lines = [
+                "# Repair Evidence",
+                validation_evidence,
+            ]
+            if lint_evidence:
+                repair_evidence_lines += ["", lint_evidence]
+            if previous_diff:
+                repair_evidence_lines += ["", "# Previous Diff", previous_diff]
 
         repair_context = "\n".join(
             item
@@ -171,9 +200,12 @@ def run_repair_loop(
                 break
             remaining_timeout_seconds = min(base_request.timeout_seconds, max(1.0, remaining_budget))
         
-        # When the previous attempt wrote nothing, the model just stalled.
-        # Make the directive concrete: "write the file now" instead of "repair failure".
-        if noop_attempt:
+        if _quality_mode:
+            repair_objective = (
+                f"Improve code quality (current: {best_score:.1f}/10, target: {quality_threshold:.1f}/10) "
+                f"for: {base_request.objective}"
+            )
+        elif noop_attempt:
             repair_objective = f"No files were written. Write the required files now for: {base_request.objective}"
         else:
             repair_objective = f"Repair validation failure for: {base_request.objective}"
@@ -198,10 +230,11 @@ def run_repair_loop(
         mutation = apply_mutation_request(engine, provider, repair_request)
         mutations.append(mutation)
         
-        # --- Post-Mutation Linting (inspired by aider) ---
+        # --- Post-Mutation Linting ---
         lint_results = lint_changed_files(mutation.changed_files, base_request.runtime_path)
         lint_evidence = format_lint_evidence(lint_results)
-        nemo_after_failure(nemo_adapter, raw_validation_evidence, task_id, attempt_number)
+        if _repair_mode:
+            nemo_after_failure(nemo_adapter, raw_validation_evidence, task_id, attempt_number)
 
         if not mutation.changed_files and not mutation.applied_files:
             stop_reason = "repair_noop"
@@ -215,8 +248,27 @@ def run_repair_loop(
             _tokens_consumed += (len(repair_context) + len(last_diff)) // _CHARS_PER_TOKEN
             _last_token_source = "estimated"
         validation = validator() if validator else simulate_validation(commands, fail_validation)
+        if validation.passed and critique_fn is not None:
+            _score = _safe_critique(
+                critique_fn,
+                base_request.objective,
+                mutations[-1].diff_artifact if mutations else "",
+                validation.summary(),
+            )
+            best_score = max(best_score, _score)
     if not validation.passed and not stop_reason and not plan.can_record_attempt():
         stop_reason = "repair_budget_exhausted"
+    # Evaluate quality when validation passed but critique wasn't called inside the loop
+    # (e.g. validation was already passing on entry, so the while body never ran).
+    if validation.passed and critique_fn is not None and best_score == 0.0:
+        best_score = _safe_critique(
+            critique_fn,
+            base_request.objective,
+            mutations[-1].diff_artifact if mutations else "",
+            validation.summary(),
+        )
+    if validation.passed and quality_threshold > 0 and 0 < best_score < quality_threshold:
+        stop_reason = "quality_below_threshold"
     if validation.passed and mutations:
         last_failed_cmd = ", ".join(result.command.command for result in initial_validation.results if not result.passed) or "validation"
         nemo_after_success(
@@ -224,5 +276,5 @@ def run_repair_loop(
             f"fixed: {base_request.objective}. error_was: {last_failed_cmd}. diff: {mutations[-1].diff_artifact[:500]}",
             task_id,
         )
-    return RepairRunResult(plan, tuple(mutations), validation, stop_reason, tokens_consumed=_tokens_consumed)
+    return RepairRunResult(plan, tuple(mutations), validation, stop_reason, tokens_consumed=_tokens_consumed, best_score=best_score)
 

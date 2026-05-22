@@ -361,6 +361,71 @@ class TokenBudgetTests(unittest.TestCase):
         self.assertIn("compacted_validation_claim=compacted failure summary", provider.requests[0].validation_output)
         self.assertIn("evidence_handle=ev-test-1", provider.requests[0].validation_output)
 
+    def test_quality_floor_triggers_extra_attempt_when_score_below_threshold(self) -> None:
+        """When validation passes but critique score < quality_threshold, loop makes one more attempt."""
+        scores_returned = iter([4.0, 8.0])  # first critique: too low; second: above threshold
+
+        def fake_critique(objective: str, diff: str, validation_summary: str) -> float:
+            return next(scores_returned, 8.0)
+
+        attempts: list[str] = []
+
+        class TrackingProvider(FakeEngineProvider):
+            def create_plan(self, request):
+                attempts.append(request.objective)
+                return super().create_plan(request)
+
+        # validator always passes — repair attempt fixes validation, then quality mode kicks in
+        def _passing_validator():
+            return simulate_validation(("test",), ())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_repair_loop(
+                simulate_validation(("test",), ("test",)),  # initial: FAILS
+                ("test",),
+                ("test",),
+                RepairBudget(3),
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                TrackingProvider(),
+                MutationRequest("Build feature", "spec.md", ("ok",), "context"),
+                validator=_passing_validator,
+                critique_fn=fake_critique,
+                quality_threshold=7.0,
+            )
+
+        # Iteration 1: repair mode (validation failure) → passes → score=4.0 < 7.0
+        # Iteration 2: quality mode → "Improve code quality" → score=8.0 >= 7.0 → stop
+        quality_attempts = [a for a in attempts if "quality" in a.lower()]
+        self.assertTrue(len(quality_attempts) >= 1, "at least one quality-improvement attempt expected")
+        self.assertGreaterEqual(result.best_score, 7.0, "final score should meet quality threshold")
+        self.assertEqual(result.stop_reason, "")
+
+    def test_quality_floor_stops_when_budget_exhausted_before_reaching_threshold(self) -> None:
+        """When budget runs out during quality improvement, stop_reason is quality_below_threshold."""
+        def always_low_critique(objective: str, diff: str, validation_summary: str) -> float:
+            return 3.0  # never reaches threshold
+
+        def _passing_validator():
+            return simulate_validation((), ())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_repair_loop(
+                simulate_validation(("test",), ("test",)),  # initial: FAILS
+                ("test",),
+                ("test",),
+                RepairBudget(2),  # slot 1: repair; slot 2: quality attempt — budget exhausted
+                QualityMutationEngine(Workspace.from_path(tmp)),
+                FakeEngineProvider(),
+                MutationRequest("Build feature", "spec.md", ("ok",), "context"),
+                validator=_passing_validator,
+                critique_fn=always_low_critique,
+                quality_threshold=7.0,
+            )
+
+        self.assertEqual(result.stop_reason, "quality_below_threshold")
+        self.assertTrue(result.validation.passed)
+        self.assertLess(result.best_score, 7.0)
+
 
 if __name__ == "__main__":
     unittest.main()

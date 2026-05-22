@@ -27,6 +27,7 @@ class HandoffRequest:
     validation_commands: tuple[str, ...]
     checkpoint_minutes: int = 15
     repair_budget: int = 3
+    quality_threshold: float = 0.0
     objective_summary: str | None = None
     linked_prd: str | None = None
     spec_mode: str = "auto"

@@ -70,8 +70,13 @@ export function WorktreeDiffPanel({ jobId, onMerged, onRejected }: Props) {
   };
 
   const handleReject = async () => {
+    const reason = window.prompt("Why are you rejecting this run? (optional)") ?? "";
     try {
-      await fetch(`/api/run/${jobId}/worktree-cleanup`, { method: "POST" });
+      await fetch(`/api/run/${jobId}/reject`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
     } catch {
       // best-effort cleanup
     }
