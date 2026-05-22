@@ -1023,6 +1023,7 @@ export function App() {
   const [gitSelectedHunks, setGitSelectedHunks] = useState<Record<string, boolean>>({});
   const [gitCommitMessage, setGitCommitMessage] = useState<string>("");
   const [gitBranchDraft, setGitBranchDraft] = useState<string>("");
+  const [steerInput, setSteerInput] = React.useState<{ jobId: string; value: string } | null>(null);
   const agentRequestControllerRef = useRef<AbortController | null>(null);
   const queuedAgentPromptsRef = useRef<string[]>([]);
   const autoDispatchedRef = useRef<Set<string>>(new Set());
@@ -2092,13 +2093,7 @@ export function App() {
     if (action.kind === "plan_steer") {
       const jobId = String(action.payload.job_id || "");
       if (!jobId) return;
-      const directive = window.prompt("Directiva para la siguiente iteración:");
-      if (!directive?.trim()) return;
-      fetch("/api/agent/plan/steer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: jobId, directive: directive.trim() }),
-      }).catch(() => null);
+      setSteerInput({ jobId, value: "" });
       return;
     }
     if (action.kind === "workspace_open") {
@@ -2477,6 +2472,16 @@ export function App() {
         setStatus(`Job started: ${payload.job.job_id}`);
       })
       .catch((error: Error) => setStatus(error.message));
+  };
+
+  const submitSteer = () => {
+    if (!steerInput?.value.trim()) return;
+    fetch("/api/agent/plan/steer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: steerInput.jobId, directive: steerInput.value.trim() }),
+    }).catch(() => null);
+    setSteerInput(null);
   };
 
   const saveSettings = () => {
@@ -3550,6 +3555,33 @@ export function App() {
           activeSection={activeSection}
         />
       </section>
+      {steerInput !== null && (
+        <div className="steer-overlay">
+          <div className="steer-overlay-box">
+            <p className="steer-overlay-label">Directiva para la siguiente iteración:</p>
+            <textarea
+              className="steer-overlay-textarea"
+              value={steerInput.value}
+              autoFocus
+              rows={3}
+              placeholder="Describe what the plan loop should do differently..."
+              onChange={(e) => setSteerInput((s) => s ? { ...s, value: e.target.value } : null)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitSteer();
+                if (e.key === "Escape") setSteerInput(null);
+              }}
+            />
+            <div className="steer-overlay-actions">
+              <button className="mission-action-btn plan_steer" onClick={submitSteer}>
+                Send (Ctrl+Enter)
+              </button>
+              <button className="mission-action-btn" onClick={() => setSteerInput(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
