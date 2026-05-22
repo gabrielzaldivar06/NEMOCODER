@@ -1077,7 +1077,7 @@ def api_agent_plan_gen(  # type: ignore[return]
         if harness_result and not harness_result.get("skipped") and harness_result.get("passed", 0) > 0 and harness_result.get("failed", 0) == 0:
             score = min(10.0, score + 0.5)
         _has_test_failures = harness_result is not None and harness_result.get("failed", 0) > 0
-        if exec_ok and not _has_test_failures and not _critique_failed and score < 7.0:
+        if exec_ok and not _has_test_failures and not _critique_failed and 4.0 <= score < 7.0:
             score = 7.0
 
         if not exec_ok:

@@ -125,8 +125,11 @@ SOURCE_ANALYTICS_MAX_EVENTS = 400
 JOB_HEARTBEAT_SECONDS = 20.0
 JOB_STALL_HEARTBEATS = 8
 _NEMO_TOOL_SCAN_CACHE: dict[str, object] = {"at": 0.0, "verified_read_only": (), "declared_write_or_destructive": ()}
+_NEMO_TOOL_SCAN_CACHE_LOCK = threading.Lock()
 _NEMO_MCP_CAPABILITY_CACHE: dict[str, object] = {"at": 0.0, "key": None, "payload": None}
+_NEMO_MCP_CAPABILITY_CACHE_LOCK = threading.Lock()
 _URL_SOURCE_CACHE: dict[str, dict[str, object]] = {}
+_URL_SOURCE_CACHE_LOCK = threading.Lock()
 _DEFAULT_SESSION_NEMO_TOOLS: tuple[str, ...] = (
     "context_bootstrap",
     "prime_context",
@@ -260,13 +263,14 @@ def _default_settings(config: MissionControlServerConfig) -> dict[str, object]:
 def _load_settings(config: MissionControlServerConfig) -> dict[str, object]:
     settings = _default_settings(config)
     path = _settings_path(config)
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                settings.update(loaded)
-        except (json.JSONDecodeError, OSError):
-            pass
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            settings.update(loaded)
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("settings load failed (%s): %s", path, exc)
     settings["repo_path"] = str(config.repo_path)
     settings["runtime_path"] = str(config.runtimes_path)
     settings["memory_db"] = str(config.memory_db) if config.memory_db else ""
@@ -336,9 +340,20 @@ def _validate_provider_timeout(provider: str, timeout_seconds: float, *, error_c
 
 
 def _save_settings(config: MissionControlServerConfig, settings: dict[str, object]) -> None:
+    import tempfile as _tempfile
     path = _settings_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2, sort_keys=True), encoding="utf-8")
+    fd, tmp = _tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        os.write(fd, json.dumps(settings, indent=2, sort_keys=True).encode())
+        os.close(fd)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _recent_repos(existing: tuple[str, ...], repo: str) -> list[str]:
@@ -606,14 +621,16 @@ def _read_url_source(url: str, *, timeout_seconds: int = 8, max_chars: int = 300
 def _read_url_source_cached(url: str, *, timeout_seconds: int = 8, max_chars: int = 3000) -> tuple[dict[str, str], bool]:
     key = url.strip().lower()
     now = time.time()
-    cached = _URL_SOURCE_CACHE.get(key)
-    if isinstance(cached, dict):
-        cached_at = float(cached.get("at") or 0.0)
-        payload = cached.get("payload")
-        if now - cached_at <= URL_SOURCE_CACHE_TTL_SECONDS and isinstance(payload, dict):
-            return {str(k): str(v) for k, v in payload.items()}, True
+    with _URL_SOURCE_CACHE_LOCK:
+        cached = _URL_SOURCE_CACHE.get(key)
+        if isinstance(cached, dict):
+            cached_at = float(cached.get("at") or 0.0)
+            payload = cached.get("payload")
+            if now - cached_at <= URL_SOURCE_CACHE_TTL_SECONDS and isinstance(payload, dict):
+                return {str(k): str(v) for k, v in payload.items()}, True
     source = _read_url_source(url, timeout_seconds=timeout_seconds, max_chars=max_chars)
-    _URL_SOURCE_CACHE[key] = {"at": now, "payload": dict(source)}
+    with _URL_SOURCE_CACHE_LOCK:
+        _URL_SOURCE_CACHE[key] = {"at": now, "payload": dict(source)}
     return source, False
 
 
@@ -1083,11 +1100,13 @@ def _chat_base_url(payload: dict[str, object]) -> str:
 
 
 _resolve_lmstudio_model_cache: dict[str, tuple[str, float]] = {}
+_resolve_lmstudio_model_cache_lock = threading.Lock()
 _RESOLVE_MODEL_TTL = 60.0  # seconds — model changes don't happen mid-plan
 _RESOLVE_MODEL_SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
 _RESOLVE_MODEL_CHAT_TYPES = frozenset({"llm", "vlm"})
 
 _models_list_cache: dict[str, tuple[list[dict[str, object]], float]] = {}
+_models_list_cache_lock = threading.Lock()
 _MODELS_LIST_TTL = 60.0  # local: loaded models change rarely; NIM: catalogue stable within a session
 
 
@@ -1103,9 +1122,10 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
     Results are cached for _RESOLVE_MODEL_TTL seconds to avoid repeated HTTP probes per iteration.
     """
     cache_key = f"{base_url}|{api_key}|{default_model}"
-    cached = _resolve_lmstudio_model_cache.get(cache_key)
-    if cached is not None and time.time() < cached[1]:
-        return cached[0]
+    with _resolve_lmstudio_model_cache_lock:
+        cached = _resolve_lmstudio_model_cache.get(cache_key)
+        if cached is not None and time.time() < cached[1]:
+            return cached[0]
     base = base_url.rstrip("/")
     # Management API lives at the root, not under /v1
     mgmt_base = re.sub(r"/v\d+$", "", base)
@@ -1124,10 +1144,11 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
         if candidates:
             candidates.sort(key=lambda m: int(m.get("loaded_context_length") or 0), reverse=True)
             result = str(candidates[0]["id"])
-            _resolve_lmstudio_model_cache[cache_key] = (result, time.time() + _RESOLVE_MODEL_TTL)
+            with _resolve_lmstudio_model_cache_lock:
+                _resolve_lmstudio_model_cache[cache_key] = (result, time.time() + _RESOLVE_MODEL_TTL)
             return result
-    except Exception:
-        pass
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, KeyError) as exc:
+        logger.debug("LM Studio mgmt API unavailable (%s): %s", mgmt_base, exc)
     # Strategy 2: /v1/models with Authorization (works for NVIDIA NIM and other remote APIs)
     _UUID_ONLY = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
     try:
@@ -1152,15 +1173,17 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
             elif models:
                 result = models[0]
         if result:
-            _resolve_lmstudio_model_cache[cache_key] = (result, time.time() + _RESOLVE_MODEL_TTL)
+            with _resolve_lmstudio_model_cache_lock:
+                _resolve_lmstudio_model_cache[cache_key] = (result, time.time() + _RESOLVE_MODEL_TTL)
             return result
-    except Exception:
-        pass
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        logger.debug("model list via /v1/models failed (%s): %s", base, exc)
     # Strategy 3: explicit default_model for remote endpoints without discovery.
     # Only cache non-empty results — an empty string means "unreachable", which may
     # resolve on the next call if LM Studio comes back online within the TTL window.
     if default_model:
-        _resolve_lmstudio_model_cache[cache_key] = (default_model, time.time() + _RESOLVE_MODEL_TTL)
+        with _resolve_lmstudio_model_cache_lock:
+            _resolve_lmstudio_model_cache[cache_key] = (default_model, time.time() + _RESOLVE_MODEL_TTL)
     return default_model
 
 
@@ -1363,11 +1386,12 @@ def _runtime_verified_nemo_tools(payload: dict[str, object]) -> tuple[tuple[str,
         return declared_read_only, declared_write_or_destructive
 
     now = time.time()
-    cache_at = float(_NEMO_TOOL_SCAN_CACHE.get("at", 0.0) or 0.0)
-    if now - cache_at <= NEMO_TOOL_SCAN_TTL_SECONDS:
-        cached_verified = tuple(_NEMO_TOOL_SCAN_CACHE.get("verified_read_only", ()) or ())
-        cached_declared = tuple(_NEMO_TOOL_SCAN_CACHE.get("declared_write_or_destructive", ()) or ())
-        return cached_verified, cached_declared
+    with _NEMO_TOOL_SCAN_CACHE_LOCK:
+        cache_at = float(_NEMO_TOOL_SCAN_CACHE.get("at", 0.0) or 0.0)
+        if now - cache_at <= NEMO_TOOL_SCAN_TTL_SECONDS:
+            cached_verified = tuple(_NEMO_TOOL_SCAN_CACHE.get("verified_read_only", ()) or ())
+            cached_declared = tuple(_NEMO_TOOL_SCAN_CACHE.get("declared_write_or_destructive", ()) or ())
+            return cached_verified, cached_declared
 
     memory_db = str(payload.get("memory_db") or ".nemo-runtimes/nemo-memory.sqlite")
     adapter = PersistentNemoAdapter(PersistentMemoryStore(Path(memory_db)))
@@ -1392,9 +1416,10 @@ def _runtime_verified_nemo_tools(payload: dict[str, object]) -> tuple[tuple[str,
 
     verified_tuple = tuple(sorted(set(verified_read_only)))
     declared_tuple = tuple(declared_write_or_destructive)
-    _NEMO_TOOL_SCAN_CACHE["at"] = now
-    _NEMO_TOOL_SCAN_CACHE["verified_read_only"] = verified_tuple
-    _NEMO_TOOL_SCAN_CACHE["declared_write_or_destructive"] = declared_tuple
+    with _NEMO_TOOL_SCAN_CACHE_LOCK:
+        _NEMO_TOOL_SCAN_CACHE["at"] = now
+        _NEMO_TOOL_SCAN_CACHE["verified_read_only"] = verified_tuple
+        _NEMO_TOOL_SCAN_CACHE["declared_write_or_destructive"] = declared_tuple
     return verified_tuple, declared_tuple
 
 
@@ -2028,12 +2053,14 @@ def api_models(config: MissionControlServerConfig) -> dict[str, object]:
     now = time.time()
 
     def _cached(key: str, fetcher, *args: object) -> list[dict[str, object]]:
-        entry = _models_list_cache.get(key)
-        if entry is not None and now < entry[1]:
-            return entry[0]
+        with _models_list_cache_lock:
+            entry = _models_list_cache.get(key)
+            if entry is not None and now < entry[1]:
+                return entry[0]
         result = fetcher(*args)
         if result:
-            _models_list_cache[key] = (result, now + _MODELS_LIST_TTL)
+            with _models_list_cache_lock:
+                _models_list_cache[key] = (result, now + _MODELS_LIST_TTL)
         return result
 
     import concurrent.futures
@@ -3479,14 +3506,15 @@ def _probe_nemo_mcp_capabilities(
     include_roundtrip_probe: bool = False,
 ) -> dict[str, object]:
     cache_key = (str(config.memory_db), str(mcp_url or "").strip(), bool(include_roundtrip_probe))
-    cached_payload = _NEMO_MCP_CAPABILITY_CACHE.get("payload")
-    if (
-        not include_roundtrip_probe
-        and _NEMO_MCP_CAPABILITY_CACHE.get("key") == cache_key
-        and isinstance(cached_payload, dict)
-        and time.time() - float(_NEMO_MCP_CAPABILITY_CACHE.get("at") or 0.0) < 300.0
-    ):
-        return dict(cached_payload)
+    with _NEMO_MCP_CAPABILITY_CACHE_LOCK:
+        cached_payload = _NEMO_MCP_CAPABILITY_CACHE.get("payload")
+        if (
+            not include_roundtrip_probe
+            and _NEMO_MCP_CAPABILITY_CACHE.get("key") == cache_key
+            and isinstance(cached_payload, dict)
+            and time.time() - float(_NEMO_MCP_CAPABILITY_CACHE.get("at") or 0.0) < 300.0
+        ):
+            return dict(cached_payload)
 
     if not mcp_url:
         return {
@@ -3520,7 +3548,8 @@ def _probe_nemo_mcp_capabilities(
             "errors": [] if supports_core_context_reads else ["vscode_stdio_catalog_missing_core_tools"],
             "probe_mode": "vscode_stdio_catalog",
         }
-        _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
+        with _NEMO_MCP_CAPABILITY_CACHE_LOCK:
+            _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
         return payload
 
     bootstrap_raw = mcp_call_nemo_tool(
@@ -3559,7 +3588,8 @@ def _probe_nemo_mcp_capabilities(
             "errors": errors,
             "probe_mode": "vscode_stdio_lightweight",
         }
-        _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
+        with _NEMO_MCP_CAPABILITY_CACHE_LOCK:
+            _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
         return payload
 
     prime_raw = mcp_call_nemo_tool(
@@ -3648,7 +3678,8 @@ def _probe_nemo_mcp_capabilities(
         "errors": errors,
     }
     if not include_roundtrip_probe:
-        _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
+        with _NEMO_MCP_CAPABILITY_CACHE_LOCK:
+            _NEMO_MCP_CAPABILITY_CACHE.update({"at": time.time(), "key": cache_key, "payload": payload})
     return payload
 
 
@@ -5086,6 +5117,7 @@ def _pollinations_image(params: dict[str, object], config: "MissionControlServer
         dest.write_bytes(image_bytes)
         return {"artifact_path": str(dest), "url": url, "model_used": model}
     except Exception as exc:  # noqa: BLE001
+        logger.warning("pollinations image generation failed: %s", exc)
         return {"error": str(exc)}
 
 
@@ -5535,8 +5567,8 @@ def _llm_tool_call_to_action(
                         "summary": f"status={job.status} | returncode={job.returncode}",
                         "payload": {"job_id": job_id},
                     }
-            except Exception:  # noqa: BLE001
-                pass
+            except (KeyError, AttributeError, TypeError) as exc:
+                logger.warning("job_status lookup error for %s: %s", job_id, exc)
         return None
 
     if tool == "browser_task":

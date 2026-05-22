@@ -550,7 +550,9 @@ class HandoffJobManager:
         if run_thread is None:
             return
         if run_thread.is_alive() and run_thread is not threading.current_thread():
-            run_thread.join(timeout=6)
+            run_thread.join(timeout=30)
+            if run_thread.is_alive():
+                logger.warning("run_thread for %s did not finish in 30s", job.job_id)
         if not run_thread.is_alive():
             job.run_thread = None
 
@@ -735,7 +737,7 @@ class HandoffJobManager:
             return None
 
         top_level = [path for path in sorted(runtime_path.iterdir(), key=lambda item: item.name) if path.is_file()]
-        signature = "|".join(f"{path.name}:{path.stat().st_size}" for path in top_level)
+        signature = "|".join(f"{path.name}:{path.stat().st_size}:{int(path.stat().st_mtime * 10)}" for path in top_level)
         if signature and signature == job.last_runtime_signature:
             job.stagnant_heartbeats += 1
         else:
@@ -770,7 +772,9 @@ class HandoffJobManager:
     def _join_heartbeat(self, job: HandoffJob) -> None:
         heartbeat_thread = job.heartbeat_thread
         if heartbeat_thread is not None and heartbeat_thread.is_alive():
-            heartbeat_thread.join(timeout=1)
+            heartbeat_thread.join(timeout=5)
+            if heartbeat_thread.is_alive():
+                logger.warning("heartbeat_thread for %s did not stop in 5s", job.job_id)
         job.heartbeat_thread = None
         job.heartbeat_stop = None
 
@@ -1035,7 +1039,9 @@ class HandoffJobManager:
                     _stdout.close()
                 except Exception:
                     pass
-                _reader.join(timeout=10.0)
+                _reader.join(timeout=60.0)
+                if _reader.is_alive():
+                    logger.warning("pipe_reader for %s did not drain in 60s", job.job_id)
             else:
                 job.returncode = job.process.wait()
             if job.heartbeat_stop is not None:

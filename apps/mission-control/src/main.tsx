@@ -15,6 +15,7 @@ import { JobDetailPanel } from "./components/JobDetailPanel";
 import { JobResultCard } from "./components/JobResultCard";
 import { WorktreeDiffPanel } from "./components/WorktreeDiffPanel";
 import { ReadinessScorePanel } from "./components/ReadinessScorePanel";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { JobLiveLog } from "./components/JobLiveLog";
@@ -6157,5 +6158,5 @@ if (rootElement) {
   const missionControlWindow = window as MissionControlWindow;
   const missionControlRoot = missionControlWindow.__missionControlRoot ?? createRoot(rootElement);
   missionControlWindow.__missionControlRoot = missionControlRoot;
-  missionControlRoot.render(<App />);
+  missionControlRoot.render(<ErrorBoundary><App /></ErrorBoundary>);
 }

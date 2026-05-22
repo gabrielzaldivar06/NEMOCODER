@@ -4803,6 +4803,9 @@ textarea:focus-visible,
 .replay-check-change { font-size: 9px; color: #f0a742; background: #2d2000; padding: 1px 4px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; }
 
 .timeline-empty { padding: 20px; text-align: center; color: #8b949e; font-size: 12px; }
+.error-boundary-fallback { padding: 20px; color: #f85149; background: #0d1117; border: 1px solid #f85149; border-radius: 8px; font-size: 12px; display: flex; flex-direction: column; gap: 8px; }
+.error-boundary-fallback button { background: #161b22; border: 1px solid #f85149; color: #f85149; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+.error-boundary-fallback pre { color: #8b949e; font-size: 10px; margin: 0; white-space: pre-wrap; }
 
 /* ── Tool Audit Section ─────────────────────────────────────────────── */
 .tool-audit-section { border-top: 1px solid #30363d; }
