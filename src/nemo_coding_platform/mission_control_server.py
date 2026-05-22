@@ -41,7 +41,12 @@ from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
 from nemo_coding_platform.core.mission_control import build_mission_control_state
 from nemo_coding_platform.core.model_config import MODEL_ROLES, default_model_role_profile
 from nemo_coding_platform.core.nemo_adapter import McpNemoAdapter, NemoCallResult, NemoCall, PersistentNemoAdapter
-from nemo_coding_platform.core.nemo_patterns import nemo_before_attempt, nemo_after_failure, nemo_after_success
+from nemo_coding_platform.core.nemo_patterns import (
+    classify_exec_error,
+    nemo_before_attempt,
+    nemo_after_failure,
+    nemo_after_success,
+)
 from nemo_coding_platform.core.nemo_learning import build_project_context, ingest_task_outcome
 from nemo_coding_platform.core.reflexion import ReflexionEntry, persist_reflexion
 from nemo_coding_platform.core.sdd import SDDPhase
@@ -50,7 +55,7 @@ from nemo_coding_platform.core.persistence import build_replay_summary, load_hea
 from nemo_coding_platform.core.review_gate import MergeApplyResult, apply_merge_plan, build_merge_plan, rollback_apply_result
 from nemo_coding_platform.core.rate_limiter import RateLimiter
 from nemo_coding_platform.core.self_modification import get_self_mod_continuity, query_self_mod_risk_patterns, self_mod_impact, self_mod_similar_runs, self_mod_trajectory
-from nemo_coding_platform.core.repo_map import build_repo_map
+from nemo_coding_platform.core.repo_map import build_repo_map, read_anchor_docs
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, default_nemo_mcp_url, discover_vscode_mcp_server
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
@@ -438,13 +443,13 @@ class HandoffJobManager:
             command.append("--no-memory-db")
         else:
             command.extend(("--memory-db", str(config.memory_db)))
-            mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
-            if mcp_url.lower() == VSCODE_STDIO_NEMO_URL:
-                mcp_url = LEGACY_NEMO_SSE_URL
-            if not mcp_url:
-                mcp_url = LEGACY_NEMO_SSE_URL  # continuation subprocesses always need SSE, not stdio
-            command.extend(("--mcp-url", mcp_url))
-            command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
+        mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
+        if mcp_url.lower() == VSCODE_STDIO_NEMO_URL:
+            mcp_url = LEGACY_NEMO_SSE_URL
+        if not mcp_url:
+            mcp_url = LEGACY_NEMO_SSE_URL  # continuation subprocesses always need SSE, not stdio
+        command.extend(("--mcp-url", mcp_url))
+        command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
         base_url = str(payload.get("base_url") or payload.get("model_base_url") or "http://127.0.0.1:1234/v1")
         model = str(payload.get("model") or payload.get("default_model") or "").strip() or _resolve_lmstudio_model(base_url)
         command.extend(("--model-profile", model))
@@ -821,13 +826,13 @@ class HandoffJobManager:
             command.append("--no-memory-db")
         else:
             command.extend(("--memory-db", str(config.memory_db)))
-            mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
-            if mcp_url:
-                # stdio://vscode/nemo only works inside VS Code — child subprocesses need HTTP SSE
-                if mcp_url.lower() == VSCODE_STDIO_NEMO_URL:
-                    mcp_url = LEGACY_NEMO_SSE_URL
-                command.extend(("--mcp-url", mcp_url))
-                command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
+        mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
+        if mcp_url:
+            # stdio://vscode/nemo only works inside VS Code — child subprocesses need HTTP SSE
+            if mcp_url.lower() == VSCODE_STDIO_NEMO_URL:
+                mcp_url = LEGACY_NEMO_SSE_URL
+            command.extend(("--mcp-url", mcp_url))
+            command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
         base_url_run = str(payload.get("base_url") or payload.get("model_base_url") or "http://127.0.0.1:1234/v1")
         model_run = str(payload.get("model") or payload.get("default_model") or "").strip() or _resolve_lmstudio_model(base_url_run)
         command.extend(("--model-profile", model_run))
@@ -900,7 +905,7 @@ class HandoffJobManager:
         existing_pythonpath = os.environ.get("PYTHONPATH", "")
         pythonpath = str(source_root) if not existing_pythonpath else f"{source_root};{existing_pythonpath}"
         env = {**os.environ, "PYTHONPATH": pythonpath, "PYTHONUNBUFFERED": "1"}
-        _nemo_settings = _load_settings(config) if config.memory_db else {}
+        _nemo_settings = _load_settings(config)
         # Propagate the API key from settings so nemo_code_runtime subprocess can authenticate
         # against non-local endpoints (e.g. NVIDIA NIM) where LMSTUDIO_API_KEY is not set.
         _settings_api_key = str(_nemo_settings.get("api_key") or job.payload.get("api_key") or "")
@@ -908,7 +913,7 @@ class HandoffJobManager:
             env.setdefault("LMSTUDIO_API_KEY", _settings_api_key)
         _nemo_url = str(_nemo_settings.get("nemo_mcp_url") or "")
         _nemo_db = str(config.memory_db) if config.memory_db else ""
-        if _nemo_db and _nemo_url:
+        if _nemo_url:
             try:
                 mcp_call_nemo_tool(
                     "context_bootstrap",
@@ -922,6 +927,7 @@ class HandoffJobManager:
                 )
             except Exception:
                 pass
+        _write_current_job_context(config, job.job_id)
         try:
             job.process = subprocess.Popen(
                 job.command,
@@ -990,7 +996,8 @@ class HandoffJobManager:
             job.error = str(error)
             self._append_log(job, str(error))
         finally:
-            if _nemo_db and _nemo_url:
+            _write_current_job_context(config, None)
+            if _nemo_url:
                 try:
                     mcp_call_nemo_tool(
                         "store_conversation",
@@ -1037,7 +1044,7 @@ class MissionControlServerConfig:
         runtimes: str | Path = ".nemo-runtimes",
         apply_results: str | Path = DEFAULT_APPLY_RESULTS,
         run_results: str | Path = DEFAULT_RUN_RESULTS,
-        memory_db: str | Path | None = ".nemo-runtimes/nemo-memory.sqlite",
+        memory_db: str | Path | None = None,
     ) -> "MissionControlServerConfig":
         repo_path = Path(repo).resolve()
         runtimes_path = _resolve_under_repo(repo_path, runtimes)
@@ -1052,7 +1059,7 @@ class MissionControlServerConfig:
         if not runtimes.is_absolute():
             runtimes = repo / runtimes
         memory_value = settings.get("memory_db")
-        memory_db = _resolve_under_repo(repo, memory_value) if isinstance(memory_value, str) and memory_value else self.memory_db
+        memory_db = _resolve_under_repo(repo, memory_value) if isinstance(memory_value, str) and memory_value else None
         # Preserve run_results_path: run JSONs don't move when runtime_path changes in settings.
         # Re-anchor only if the existing path was relative to the old repo root.
         old_run_results = self.run_results_path
@@ -2332,9 +2339,12 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
     )
 
     def _do_request(req: urllib.request.Request) -> dict[str, object]:
-        with _LLM_SEM:
+        _llm_sem_acquire(timeout=30.0)
+        try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))  # type: ignore[no-any-return]
+        finally:
+            _LLM_SEM.release()
 
     def _extract_content(resp_payload: dict[str, object]) -> str:
         choices = resp_payload.get("choices") if isinstance(resp_payload, dict) else None
@@ -4314,7 +4324,7 @@ def _probe_nemo_mcp_capabilities(
     ):
         return dict(cached_payload)
 
-    if config.memory_db is None:
+    if not mcp_url:
         return {
             "enabled": False,
             "supports_context_bootstrap": False,
@@ -4323,7 +4333,7 @@ def _probe_nemo_mcp_capabilities(
             "supports_core_context_reads": False,
             "supports_write_read_roundtrip": False,
             "roundtrip_probe_executed": False,
-            "errors": ["memory_db_disabled"],
+            "errors": ["nemo_mcp_url_not_configured"],
         }
 
     errors: list[str] = []
@@ -5093,7 +5103,7 @@ def _nemo_chat_tool_call(
             }
         )
         return {}
-    if config.memory_db is None:
+    if config.memory_db is None and not (nemo_mcp_url or "").strip():
         tool_calls.append(
             {
                 "id": f"tool-{uuid4().hex[:8]}",
@@ -5101,14 +5111,14 @@ def _nemo_chat_tool_call(
                 "tool_name": tool_name,
                 "alias_name": alias_name,
                 "status": "skipped",
-                "summary": "NEMO memory database is disabled for this Mission Control session.",
+                "summary": "NEMO not configured for this session (no memory_db and no mcp_url).",
             }
         )
         return {}
     result = mcp_call_nemo_tool(
         tool_name,
         lifecycle_phase=lifecycle_phase,
-        memory_db=str(config.memory_db),
+        memory_db=str(config.memory_db) if config.memory_db else "",
         mcp_url=(nemo_mcp_url or ""),
         approve_review=bool((nemo_mcp_url or "").strip()),
         **arguments,
@@ -5849,6 +5859,14 @@ def _extract_json_score(critique: str) -> float:
 # from the same or different models — driver-level contention causes freezes.
 _LLM_SEM = threading.Semaphore(1)
 
+def _llm_sem_acquire(timeout: float = 30.0) -> None:
+    """Acquire _LLM_SEM with a deadline. Raises RuntimeError if semaphore is busy."""
+    if not _LLM_SEM.acquire(timeout=timeout):
+        raise RuntimeError(
+            f"LLM semaphore busy after {timeout}s — LM Studio may be hung. "
+            "Try again in a moment."
+        )
+
 _SERVER_START_TIME: float = time.time()
 
 # Per-job control plane for running plan loops.
@@ -5878,12 +5896,15 @@ def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: i
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         method="POST",
     )
-    with _LLM_SEM:
+    _llm_sem_acquire(timeout=60.0)
+    try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         # Hold semaphore during cooldown so concurrent chat can't call LLM while
         # GPU drains from this call (Arc iGPU / Vulkan shared-VRAM contention).
         time.sleep(1.5)
+    finally:
+        _LLM_SEM.release()
     choices = data.get("choices") or []
     if not choices:
         raise ValueError("plan lm call: no choices in response")
@@ -6610,6 +6631,84 @@ def _try_run_code(
         return False, str(exc)[:400]
 
 
+def api_code_exec(config: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Execute a code artifact inline. Returns stdout, stderr, exit_code, duration_ms, and base64 images."""
+    import base64, shutil, tempfile
+
+    code = str(payload.get("code", "")).strip()
+    lang_raw = str(payload.get("language", "python")).lower().strip()
+    timeout_sec = min(int(payload.get("timeout", 30)), 60)
+
+    if not code:
+        return {"error": "code is required", "exec_ok": False, "stdout": "", "stderr": "", "exit_code": -1, "duration_ms": 0, "images": []}
+
+    _lang_aliases = {"py": "python", "js": "javascript", "node": "javascript", "sh": "bash"}
+    lang = _lang_aliases.get(lang_raw, lang_raw)
+    if lang not in ("python", "javascript", "bash", "sql"):
+        return {"error": f"unsupported language: {lang_raw}", "exec_ok": False, "stdout": "", "stderr": "", "exit_code": -1, "duration_ms": 0, "images": []}
+
+    # Prevent GUI hang: inject Agg backend if matplotlib imported without use()
+    if lang == "python" and "matplotlib" in code and "matplotlib.use(" not in code:
+        code = "import matplotlib\nmatplotlib.use('Agg')\n" + code
+
+    workspace = Path(tempfile.mkdtemp(prefix="repl_"))
+    start_ts = time.time()
+    try:
+        if lang == "python":
+            entry, _ = _write_workspace(code, workspace)
+            cmd = [sys.executable, str(entry)]
+            cwd = str(workspace)
+        elif lang == "javascript":
+            cmd = ["node", "-e", code]
+            cwd = None
+        elif lang == "bash":
+            cmd = ["bash", "-c", code]
+            cwd = None
+        else:  # sql
+            sql_runner = (
+                "import sqlite3, sys\nconn = sqlite3.connect(':memory:')\n"
+                f"sql = {repr(code)}\n"
+                "try:\n"
+                "  for s in sql.split(';'):\n"
+                "    s = s.strip()\n"
+                "    if s:\n"
+                "      cur = conn.execute(s)\n"
+                "      rows = cur.fetchall()\n"
+                "      if rows: print('\\n'.join(str(r) for r in rows))\n"
+                "except Exception as e: print(f'Error: {e}', file=sys.stderr); sys.exit(1)\n"
+            )
+            cmd = [sys.executable, "-c", sql_runner]
+            cwd = None
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, cwd=cwd)
+        duration_ms = int((time.time() - start_ts) * 1000)
+
+        images: list[dict[str, str]] = []
+        if lang == "python":
+            for img_path in sorted(workspace.glob("*.png")) + sorted(workspace.glob("*.jpg")) + sorted(workspace.glob("*.svg")):
+                try:
+                    data = img_path.read_bytes()
+                    mime = "image/svg+xml" if img_path.suffix == ".svg" else ("image/jpeg" if img_path.suffix in (".jpg", ".jpeg") else "image/png")
+                    images.append({"name": img_path.name, "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}"})
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return {
+            "exec_ok": result.returncode == 0,
+            "stdout": result.stdout[:4000],
+            "stderr": result.stderr[:2000],
+            "exit_code": result.returncode,
+            "duration_ms": duration_ms,
+            "images": images,
+        }
+    except subprocess.TimeoutExpired:
+        return {"exec_ok": False, "stdout": "", "stderr": f"Timeout after {timeout_sec}s", "exit_code": -1, "duration_ms": int((time.time() - start_ts) * 1000), "images": []}
+    except Exception as exc:  # noqa: BLE001
+        return {"exec_ok": False, "stdout": "", "stderr": str(exc)[:800], "exit_code": -1, "duration_ms": 0, "images": []}
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 _CANDIDATE_TEMPS = [0.4, 0.7, 1.0]
 
 
@@ -6668,9 +6767,12 @@ def _visual_critique_lm_call(payload: dict[str, Any], objective: str, image_path
         method="POST",
     )
     try:
-        with _LLM_SEM:
+        _llm_sem_acquire(timeout=60.0)
+        try:
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+        finally:
+            _LLM_SEM.release()
         choices = data.get("choices") or []
         if choices:
             return str(choices[0].get("message", {}).get("content", ""))
@@ -6959,7 +7061,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     # SDD phase tracking: SPEC (iter 1 with test mode) → IMPLEMENT → VALIDATE
     _sdd_phase = SDDPhase.SPEC if is_test else SDDPhase.IMPLEMENT
 
-    # --- Project context: repo file map + NEMO cross-session memories ---
+    # --- Project context: anchor docs + repo file map + NEMO cross-session memories ---
     _plan_repo = str(getattr(config, "repo_path", "") or "")
     if _plan_repo:
         try:
@@ -6973,6 +7075,14 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
                     f"## Project file structure\n{_repo_map}\n\n"
                     "Use the above to understand which modules already exist and what imports are available.\n\n"
                 ) + gen_sys
+        except Exception:
+            pass
+        # README.md / CLAUDE.md — project conventions, architecture, stack.
+        # Capped at 600 chars each to stay inside the context budget.
+        try:
+            _anchor_docs = read_anchor_docs(_plan_repo, max_chars_each=600)
+            if _anchor_docs:
+                gen_sys = f"## Project documentation\n{_anchor_docs}\n\n" + gen_sys
         except Exception:
             pass
         if _nemo_adapter:
@@ -7012,17 +7122,18 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             _steer_directive = ""
 
         # --- Retrieve NEMO pattern memory via nemo_patterns.nemo_before_attempt ---
-        # Always search for universal code patterns (cross-task language-level best practices).
-        # Then add objective-scoped memories — previous iterations of THIS specific objective only.
+        # Classify the previous iteration's failure so queries are targeted, not generic.
+        # last_exec_output is set only on exec failures; empty means previous exec passed (or i==1).
+        _prev_error_class = classify_exec_error(last_exec_output, last_exec_output == "")
         nemo_hint = nemo_before_attempt(
             _nemo_adapter,
-            query=f"{lang} code generation best practices avoid errors",
+            query=f"{lang} {_prev_error_class} fix best practices",
             tags=("code_pattern", lang),
             limit=3,
         )
         nemo_hint += nemo_before_attempt(
             _nemo_adapter,
-            query=f"{topic} {lang} code generation error failure",
+            query=f"{topic} {lang} {_prev_error_class} error fix",
             tags=("plan_loop", lang, obj_hash),
             limit=3,
         )
@@ -7303,6 +7414,12 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
         # Pytest bonus: all tests pass → small boost capped at 10
         if harness_result and not harness_result.get("skipped") and harness_result.get("passed", 0) > 0 and harness_result.get("failed", 0) == 0:
             score = min(10.0, score + 0.5)
+        # Enforce design rule: code that executes cleanly AND has no test failures
+        # scores at least 7.0 — matches system prompt instruction to the LLM critic.
+        # When harness tests fail we trust the LLM's lower score.
+        _has_test_failures = harness_result is not None and harness_result.get("failed", 0) > 0
+        if exec_ok and not _has_test_failures and score < 7.0:
+            score = 7.0
 
         # --- Update best-known snapshot ---
         if not exec_ok:
@@ -7316,16 +7433,18 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
 
         # --- NEMO structured checkpoint via nemo_patterns ---
         critique_summary = critique_raw[:300]
+        _cur_error_class = classify_exec_error(exec_output, exec_ok)
         if not exec_ok or score < 5.0:
             nemo_after_failure(
                 _nemo_adapter,
                 evidence=(
                     f"objective={objective[:120]} lang={lang} score={score:.1f}/10\n"
-                    f"exec_error={exec_output[:200]}\ncritique={critique_summary}"
+                    f"error_class={_cur_error_class} exec_error={exec_output[:200]}\n"
+                    f"critique={critique_summary}"
                 ),
                 task_id=topic,
                 attempt_n=i,
-                tags=("plan_loop", "plan_failure", lang, topic, obj_hash),
+                tags=("plan_loop", "plan_failure", lang, topic, obj_hash, _cur_error_class),
             )
         elif score >= quality_threshold:
             nemo_after_success(
@@ -7393,6 +7512,7 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             "visual_critique": visual_raw[:200] if visual_raw else None,
             "code_chars": len(code),
             "code": code,
+            "lang": lang,
             "think_snippet": think_snippet[:400],
             "harness": harness_result if not harness_result.get("skipped") else None,
             "sdd_phase": str(_sdd_phase),
@@ -7535,8 +7655,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
     if completed and best_code and best_score >= 7.0:
         try:
             _nemo_adapter.call(
-                "REVIEW",
-                "create_memory",
+                NemoLifecyclePhase.REVIEW,
+                "cognitive_ingest",
                 content=(
                     f"[plan_loop_success][{lang}] objective={objective!r} score={best_score:.1f}\n"
                     f"```{lang}\n{best_code[:800]}\n```"
@@ -8818,8 +8938,31 @@ def api_replay_gen(config: "MissionControlServerConfig", run_id: str):  # type: 
     }
 
 
-def api_mcp_audit(config: "MissionControlServerConfig", limit: int = 30) -> dict[str, object]:
-    """Return the last N entries from the MCP tool audit log."""
+def _write_current_job_context(config: "MissionControlServerConfig", job_id: str | None) -> None:
+    """Write or clear the shared current_job.json so mcp_server can tag audit entries."""
+    import os as _os
+    path = Path(config.repo_path) / ".spacecode-runtimes" / "mcp" / "current_job.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if job_id:
+            path.write_text(json.dumps({"job_id": job_id}), encoding="utf-8")
+        elif path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def api_mcp_audit(
+    config: "MissionControlServerConfig",
+    limit: int = 30,
+    job_id: str | None = None,
+    jobs: "HandoffJobManager | None" = None,
+) -> dict[str, object]:
+    """Return the last N entries from the MCP tool audit log.
+
+    If job_id is provided and jobs manager is available, restricts results to
+    the time window of that job (created_at → updated_at or now).
+    """
     import os as _os
     audit_path = Path(
         _os.environ.get("SPACE_CODE_MCP_AUDIT_LOG", ".spacecode-runtimes/mcp/tool-audit.jsonl")
@@ -8827,23 +8970,46 @@ def api_mcp_audit(config: "MissionControlServerConfig", limit: int = 30) -> dict
     if not audit_path.is_absolute():
         audit_path = Path(config.repo_path) / audit_path
     if not audit_path.exists():
-        return {"entries": [], "count": 0, "path": str(audit_path)}
+        return {"entries": [], "count": 0, "path": str(audit_path), "job_id": job_id}
+
+    # Determine time window for job-scoped filtering
+    window_start: str | None = None
+    window_end: str | None = None
+    if job_id and jobs is not None:
+        with jobs._lock:
+            job = jobs._jobs.get(job_id)
+        if job:
+            window_start = job.created_at
+            _terminal = {str(HandoffJobStatus.COMPLETED), str(HandoffJobStatus.FAILED)}
+            window_end = job.updated_at if job.status in _terminal else datetime.now(timezone.utc).isoformat()
+
     try:
         lines = audit_path.read_text(encoding="utf-8").splitlines()
-        entries: list[dict] = []
-        for line in reversed(lines):
+        all_entries: list[dict] = []
+        for line in lines:
             if not line.strip():
                 continue
             try:
-                entries.append(json.loads(line))
+                all_entries.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-            if len(entries) >= limit:
-                break
-        entries.reverse()
-        return {"entries": entries, "count": len(entries), "path": str(audit_path)}
+
+        # Apply job scope filter: prefer direct job_id tag; fall back to time window
+        if job_id:
+            tagged = [e for e in all_entries if e.get("job_id") == job_id]
+            if tagged:
+                all_entries = tagged
+            elif window_start:
+                all_entries = [
+                    e for e in all_entries
+                    if window_start <= str(e.get("ts", "")) <= (window_end or "9999")
+                ]
+
+        # Return the most recent `limit` entries
+        entries = all_entries[-limit:] if len(all_entries) > limit else all_entries
+        return {"entries": entries, "count": len(entries), "path": str(audit_path), "job_id": job_id}
     except OSError:
-        return {"entries": [], "count": 0, "path": str(audit_path)}
+        return {"entries": [], "count": 0, "path": str(audit_path), "job_id": job_id}
 
 
 def api_run_timeline(
@@ -9070,7 +9236,16 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             qs = parse_qs(urlparse(self.path).query)
             limit = int(qs.get("limit", ["30"])[0])
-            self._handle(lambda _: api_mcp_audit(self.server.config, limit=min(limit, 200)), {})
+            _audit_job_id = qs.get("job_id", [None])[0] or None
+            self._handle(
+                lambda _: api_mcp_audit(
+                    self.server.config,
+                    limit=min(limit, 200),
+                    job_id=_audit_job_id,
+                    jobs=self.server.jobs,
+                ),
+                {},
+            )
             return
         if route.startswith("/api/job/") and route.endswith("/log"):
             job_id = route[len("/api/job/"): -len("/log")].strip("/")
@@ -9451,6 +9626,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/repo/clone": lambda payload: api_repo_clone(self.server, payload),
             "/api/repo/pick-folder": lambda payload: api_repo_pick_folder(self.server, payload),
             "/api/terminal/run": lambda payload: api_terminal_run(self.server.config, payload),
+            "/api/code/exec": lambda payload: api_code_exec(self.server.config, payload),
             "/api/browser/open": lambda payload: api_browser_open(self.server, payload),
             "/api/browser/search": lambda payload: api_browser_search(self.server, payload),
             "/api/extensions": lambda payload: api_extensions_update(self.server, payload),
