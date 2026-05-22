@@ -2760,14 +2760,14 @@ class MissionControlServerTests(unittest.TestCase):
             def _fake_nemo(config, tool_calls, tool_name, *, lifecycle_phase=None, nemo_mcp_url="", **kw):
                 return {"ok": True, "payload": {"context": "", "portfolio": {"estimated_tokens": 0}, "memories": []}}
 
-            with patch("nemo_coding_platform.mission_control_server._plan_lm_call", side_effect=_fake_lm), \
+            with patch("nemo_coding_platform.plan_loop._plan_lm_call", side_effect=_fake_lm), \
                  patch("nemo_coding_platform.mission_control_server._nemo_chat_tool_call", side_effect=_fake_nemo):
                 events = list(mission_control_server.api_agent_plan_gen(
                     config,
                     {"objective": "Write a greeting function", "max_iterations": 1, "quality_threshold": 1.0},
                 ))
 
-        self.assertTrue(any("Repo context" in s for s in captured_sys), f"No 'Repo context' in captured sys prompts: {captured_sys}")
+        self.assertTrue(any("Project file structure" in s for s in captured_sys), f"No 'Project file structure' in captured sys prompts: {captured_sys}")
 
     def test_find_run_payload_by_id_returns_none_for_unknown_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
