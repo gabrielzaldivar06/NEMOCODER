@@ -2476,12 +2476,22 @@ export function App() {
 
   const submitSteer = () => {
     if (!steerInput?.value.trim()) return;
+    const captured = steerInput;
     fetch("/api/agent/plan/steer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ job_id: steerInput.jobId, directive: steerInput.value.trim() }),
-    }).catch(() => null);
-    setSteerInput(null);
+      body: JSON.stringify({ job_id: captured.jobId, directive: captured.value.trim() }),
+    })
+      .then((r) => {
+        if (r.ok) {
+          setSteerInput(null);
+        } else {
+          r.json().then((body: { error?: string }) =>
+            setStatus(`Steer failed: ${body?.error ?? r.statusText}`)
+          ).catch(() => setStatus(`Steer failed: ${r.status} ${r.statusText}`));
+        }
+      })
+      .catch((err: Error) => setStatus(`Steer error: ${err.message}`));
   };
 
   const saveSettings = () => {

@@ -1959,6 +1959,10 @@ def _chat_base_url(payload: dict[str, object]) -> str:
     return value.strip().rstrip("/")
 
 
+_resolve_lmstudio_model_cache: dict[str, tuple[str, float]] = {}
+_RESOLVE_MODEL_TTL = 60.0  # seconds — model changes don't happen mid-plan
+
+
 def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", default_model: str = "") -> str:
     """Return the best available chat model.
 
@@ -1968,7 +1972,12 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
     2. Fall back to /v1/models with Authorization header (works for remote APIs like NVIDIA NIM).
     3. Fall back to default_model if provided (for remote endpoints without model discovery).
     Embedding/reranker models are always excluded.
+    Results are cached for _RESOLVE_MODEL_TTL seconds to avoid repeated HTTP probes per iteration.
     """
+    cache_key = f"{base_url}|{api_key}|{default_model}"
+    cached = _resolve_lmstudio_model_cache.get(cache_key)
+    if cached is not None and time.time() < cached[1]:
+        return cached[0]
     _SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
     _CHAT_TYPES = {"llm", "vlm"}
     base = base_url.rstrip("/")
@@ -1988,7 +1997,9 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
         ]
         if candidates:
             candidates.sort(key=lambda m: int(m.get("loaded_context_length") or 0), reverse=True)
-            return str(candidates[0]["id"])
+            result = str(candidates[0]["id"])
+            _resolve_lmstudio_model_cache[cache_key] = (result, time.time() + _RESOLVE_MODEL_TTL)
+            return result
     except Exception:
         pass
     # Strategy 2: /v1/models with Authorization (works for NVIDIA NIM and other remote APIs)
@@ -2003,18 +2014,24 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
             m["id"] for m in data.get("data", [])
             if not _SKIP.search(m.get("id", "")) and not _UUID_ONLY.match(m.get("id", ""))
         ]
+        result = ""
         # If the configured default_model is available, prefer it over auto-selection.
         if default_model and default_model in models:
-            return default_model
-        # Prefer named models (contain "/") — NIM public models are "org/name" format
-        named = [m for m in models if "/" in m]
-        if named:
-            return named[0]
-        if models:
-            return models[0]
+            result = default_model
+        else:
+            # Prefer named models (contain "/") — NIM public models are "org/name" format
+            named = [m for m in models if "/" in m]
+            if named:
+                result = named[0]
+            elif models:
+                result = models[0]
+        if result:
+            _resolve_lmstudio_model_cache[cache_key] = (result, time.time() + _RESOLVE_MODEL_TTL)
+            return result
     except Exception:
         pass
     # Strategy 3: explicit default_model for remote endpoints without discovery
+    _resolve_lmstudio_model_cache[cache_key] = (default_model, time.time() + _RESOLVE_MODEL_TTL)
     return default_model
 
 
@@ -5826,11 +5843,8 @@ def _extract_json_score(critique: str) -> float:
     return 5.0
 
 
-# Semaphore that serializes all LM Studio API calls (chat + plan loop).
-# Arc iGPU (Vulkan, shared VRAM) cannot safely run concurrent inference requests
-# from the same or different models — driver-level contention causes freezes.
-_LLM_SEM = threading.Semaphore(1)
-
+# All LM calls are serialized through LmClient._sem (class-level Semaphore(1)).
+# Arc iGPU (Vulkan, shared VRAM) cannot safely run concurrent inference requests.
 _lm_client: "LmClient | None" = None
 _lm_client_lock = threading.Lock()
 
@@ -5845,19 +5859,6 @@ def _get_lm_client(payload: dict[str, Any]) -> "LmClient":
             _lm_client = LmClient(base_url=base_url, api_key=api_key)
         return _lm_client
 
-
-def _llm_sem_acquire(timeout: float = 30.0) -> None:
-    """Acquire _LLM_SEM with a deadline. Raises RuntimeError if semaphore is busy."""
-    if not _LLM_SEM.acquire(timeout=timeout):
-        print(
-            f"WARNING: LLM semaphore busy after {timeout:.1f}s"
-            " — plan loop may be holding it.",
-            file=sys.stderr,
-        )
-        raise RuntimeError(
-            f"LLM semaphore busy after {timeout}s — LM Studio may be hung. "
-            "Try again in a moment."
-        )
 
 
 _SERVER_START_TIME: float = time.time()
@@ -7200,8 +7201,8 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             time.sleep(2.0)
 
         # --- Generate: single call with adaptive temperature ---
-        # parallel_candidates is ignored — _LLM_SEM serializes all LM calls anyway,
-        # making ThreadPoolExecutor useless. Adaptive temperature gives the right
+        # parallel_candidates is ignored — LmClient._sem serializes all LM calls
+        # anyway, making ThreadPoolExecutor useless. Adaptive temperature gives the right
         # exploration/exploitation balance without tripling wall-clock time.
         code = ""
         code_response = ""
@@ -7213,6 +7214,10 @@ def api_agent_plan_gen(config: MissionControlServerConfig, payload: dict[str, ob
             responses = [_plan_lm_call(payload, gen_sys, gen_user, max_tokens=_gen_max_tokens, timeout=_gen_timeout, temperature=_gen_temp)]
         except Exception as _lm_exc:  # noqa: BLE001
             lm_error = str(_lm_exc)[:300]
+            if _steer_directive and job_id:
+                with _plan_jobs_lock:
+                    if job_id in _plan_jobs:
+                        _plan_jobs[job_id]["steer"] = _steer_directive
             yield {"type": "error", "error": f"LM call failed at iteration {i}: {lm_error}"}
             break
 
