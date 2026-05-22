@@ -7,11 +7,8 @@ from typing import TYPE_CHECKING
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
 
 if TYPE_CHECKING:
-    from nemo_coding_platform.mission_control_server import (
-        HandoffJob,
-        HandoffJobManager,
-        MissionControlServerConfig,
-    )
+    from nemo_coding_platform.handoff_job_manager import HandoffJob, HandoffJobManager
+    from nemo_coding_platform.mission_control_server import MissionControlServerConfig
 
 
 def _job_runtime_id(job: "HandoffJob") -> str:
