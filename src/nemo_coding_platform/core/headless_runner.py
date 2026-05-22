@@ -48,6 +48,7 @@ from nemo_coding_platform.core.worktree_runtime import (
 )
 from nemo_coding_platform.core.nemo_learning import (
     build_project_context,
+    ingest_project_architecture,
     ingest_task_outcome,
 )
 
@@ -562,6 +563,25 @@ def execute_headless_handoff(
     )
     _anchor_docs = read_anchor_docs(request.repo_path)
 
+    # --- NEMO Learning: one-time project architecture ingestion ---
+    # ingest_project_architecture checks NEMO before calling the LLM — safe every run.
+    try:
+        _arch_key_files: dict[str, str] = {}
+        for _anchor_name in ("README.md", "CLAUDE.md"):
+            _anchor_path = Path(request.repo_path).resolve() / _anchor_name
+            if _anchor_path.is_file():
+                _arch_key_files[_anchor_name] = _anchor_path.read_text(encoding="utf-8", errors="replace")[:2000]
+        if _arch_key_files:
+            ingest_project_architecture(
+                adapter,
+                repo_path=str(request.repo_path),
+                key_files=_arch_key_files,
+                base_url=profile.base_url,
+                model=profile.model or "",
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
     # --- Planner phase: infer target files when none specified ---
     # A lightweight LLM call (30s timeout, 256 tokens) that reads the repo map
     # and returns which files need to be edited for this objective.
@@ -674,19 +694,6 @@ def execute_headless_handoff(
             )
         except Exception:  # noqa: BLE001
             pass  # Non-critical — workspace memory is additive
-
-    # --- NEMO Learning: store task outcome for cross-session learning ---
-    try:
-        ingest_task_outcome(
-            adapter,
-            objective=request.objective_summary or request.prd[:120],
-            repo_path=str(request.repo_path),
-            files_changed=list(mutation_result.changed_files or mutation_result.applied_files),
-            result_summary="mutation applied; validation pending",
-            success=True,
-        )
-    except Exception:  # noqa: BLE001
-        pass
 
     if _should_retry_chunked(request, mutation_result):
         retry_request = MutationRequest(
@@ -1018,6 +1025,29 @@ def execute_headless_handoff(
                 break
     adapter, result = adapter.call(NemoLifecyclePhase.BUILD, "record_context_feedback", was_useful=True)
     nemo_results.append(result)
+
+    # --- NEMO Learning: store final task outcome with correct success flag ---
+    try:
+        _final_files = list(effective_mutation_result.changed_files or effective_mutation_result.applied_files)
+        _repair_attempts = len(repair_plan.attempts) if repair_plan else 0
+        _stop = repair_result.stop_reason if repair_result else ""
+        ingest_task_outcome(
+            adapter,
+            objective=request.objective_summary or request.prd[:120],
+            repo_path=str(request.repo_path),
+            files_changed=_final_files,
+            result_summary=(
+                f"validation={'passed' if validation.passed else 'failed'} "
+                f"repair_attempts={_repair_attempts}"
+                + (f" stop_reason={_stop}" if _stop else "")
+            ),
+            success=validation.passed,
+            base_url=profile.base_url,
+            model=profile.model or "",
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     memory_traces = (
         NemoMemoryEvent("mem-1", run.id, "prime_context", "startup_context", "read_only", "Loaded startup context."),
         NemoMemoryEvent("mem-2", run.id, "build_context_portfolio", "context_economy", "read_only", f"Built context portfolio tokens={portfolio_result.payload.get('estimated_tokens', 0)}."),
