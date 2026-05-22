@@ -64,6 +64,7 @@ def test_lm_client_chat_raises_on_no_choices():
     mock_resp.read.return_value = fake_response
 
     with patch("urllib.request.urlopen", return_value=mock_resp):
+        from nemo_coding_platform.lm_client import LmClientError
         client = LmClient(base_url="http://localhost:1234/v1", api_key="test")
-        with pytest.raises(ValueError, match="no choices"):
+        with pytest.raises(LmClientError, match="no choices"):
             client.chat(messages=[{"role": "user", "content": "hi"}], timeout=5.0)
