@@ -8,8 +8,13 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 from typing import Any
+
+
+class LmClientError(RuntimeError):
+    """Raised for any LM Studio communication failure."""
 
 
 class LmClient:
@@ -74,49 +79,25 @@ class LmClient:
         )
         self._acquire(timeout=acquire_timeout)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    raw = resp.read().decode("utf-8")
+            except urllib.error.HTTPError as exc:
+                raise LmClientError(f"HTTP {exc.code} from LM Studio: {exc.reason}") from exc
+            except urllib.error.URLError as exc:
+                raise LmClientError(f"Cannot reach LM Studio ({self.base_url}): {exc.reason}") from exc
         finally:
             self._release()
         # Cooldown after release so other callers aren't blocked during the sleep.
         if with_cooldown:
             time.sleep(self.cooldown)
 
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LmClientError(f"LM Studio returned non-JSON response: {raw[:200]!r}") from exc
+
         choices = payload.get("choices") or []
         if not choices:
-            raise ValueError("LmClient.chat: no choices in response")
+            raise LmClientError(f"LM Studio returned no choices: {str(payload)[:200]}")
         return str(choices[0].get("message", {}).get("content", ""))
-
-    # ------------------------------------------------------------------
-    # Model resolver
-    # ------------------------------------------------------------------
-
-    def resolve_model(self) -> str | None:
-        """Return the best loaded chat model name, or None."""
-        mgmt_base = self.base_url.rsplit("/v1", 1)[0]
-        try:
-            req = urllib.request.Request(f"{mgmt_base}/api/v0/models")
-            with urllib.request.urlopen(req, timeout=5) as r:
-                models = json.loads(r.read().decode("utf-8")).get("data", [])
-            loaded = [
-                m for m in models
-                if m.get("state") == "loaded"
-                and m.get("type") in ("llm", "vlm")
-                and not any(x in m.get("id", "").lower() for x in ("embed", "rerank", "bge", "nomic"))
-            ]
-            loaded.sort(key=lambda m: m.get("loaded_context_length", 0), reverse=True)
-            return loaded[0]["id"] if loaded else None
-        except Exception:
-            pass
-        # Fallback: /v1/models
-        try:
-            req = urllib.request.Request(f"{self.base_url}/models")
-            with urllib.request.urlopen(req, timeout=5) as r:
-                models = json.loads(r.read().decode("utf-8")).get("data", [])
-            chat = [
-                m for m in models
-                if not any(x in m.get("id", "").lower() for x in ("embed", "rerank", "bge", "nomic"))
-            ]
-            return chat[0]["id"] if chat else None
-        except Exception:
-            return None

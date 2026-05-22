@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+try:
+    from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool as _mcp_call_nemo_tool  # type: ignore
+except ImportError:
+    _mcp_call_nemo_tool = None  # type: ignore[assignment]
+
 
 class NemoGateway:
     """Owns NEMO availability logic and wraps mcp_call_nemo_tool."""
@@ -43,7 +48,12 @@ class NemoGateway:
         **arguments: Any,
     ) -> dict[str, Any]:
         """Invoke a NEMO tool and append an audit entry to tool_calls."""
-        from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool  # type: ignore
+        if _mcp_call_nemo_tool is None:
+            raise ImportError(
+                "nemo_coding_platform.spacecode_mcp_tools is not installed — "
+                "cannot call NEMO MCP tools."
+            )
+        mcp_call_nemo_tool = _mcp_call_nemo_tool
 
         canonical = f"nemo_memory.{tool_name}"
         alias = f"spacecode.{tool_name}"

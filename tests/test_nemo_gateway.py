@@ -34,7 +34,7 @@ def test_nemo_gateway_call_invokes_mcp_when_configured():
     from nemo_coding_platform.nemo_gateway import NemoGateway
 
     fake_result = {"ok": True, "payload": {"context": "some context"}}
-    with patch("nemo_coding_platform.spacecode_mcp_tools.mcp_call_nemo_tool", return_value=fake_result) as mock_call:
+    with patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", return_value=fake_result) as mock_call:
         gw = NemoGateway(memory_db=None, mcp_url="http://127.0.0.1:8765/mcp/sse")
         tool_calls: list = []
         result = gw.call("context_bootstrap", "start", tool_calls, task="test task")
