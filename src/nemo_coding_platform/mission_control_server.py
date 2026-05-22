@@ -2366,10 +2366,6 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 raw = r.read().decode("utf-8")
-        except urllib.error.HTTPError:
-            raise
-        except urllib.error.URLError:
-            raise
         finally:
             client._release()
         try:
