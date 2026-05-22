@@ -59,6 +59,7 @@ from nemo_coding_platform.core.repo_map import build_repo_map, read_anchor_docs
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, default_nemo_mcp_url, discover_vscode_mcp_server
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
+from nemo_coding_platform.nemo_gateway import NemoGateway
 
 
 class HandoffJobStatus(StrEnum):
@@ -5094,53 +5095,12 @@ def _nemo_chat_tool_call(
     allowed_tools: set[str] | None = None,
     **arguments: Any,
 ) -> dict[str, Any]:
-    canonical_name = f"nemo_memory.{tool_name}"
-    alias_name = f"spacecode.{tool_name}"
-    if isinstance(allowed_tools, set) and tool_name not in allowed_tools:
-        tool_calls.append(
-            {
-                "id": f"tool-{uuid4().hex[:8]}",
-                "name": canonical_name,
-                "tool_name": tool_name,
-                "alias_name": alias_name,
-                "status": "skipped",
-                "summary": "Tool disabled for this chat session by MCP tool selector.",
-            }
-        )
-        return {}
-    if not _nemo_configured(config.memory_db, nemo_mcp_url):
-        tool_calls.append(
-            {
-                "id": f"tool-{uuid4().hex[:8]}",
-                "name": canonical_name,
-                "tool_name": tool_name,
-                "alias_name": alias_name,
-                "status": "skipped",
-                "summary": "NEMO not configured for this session (no memory_db and no mcp_url).",
-            }
-        )
-        return {}
-    result = mcp_call_nemo_tool(
-        tool_name,
-        lifecycle_phase=lifecycle_phase,
-        memory_db=str(config.memory_db) if config.memory_db else "",
-        mcp_url=(nemo_mcp_url or ""),
-        approve_review=bool((nemo_mcp_url or "").strip()),
-        **arguments,
+    gw = NemoGateway(
+        memory_db=config.memory_db,
+        mcp_url=nemo_mcp_url,
+        allowed_tools=allowed_tools,
     )
-    ok = bool(result.get("ok"))
-    payload = _normalize_nemo_tool_payload(result)
-    tool_calls.append(
-        {
-            "id": f"tool-{uuid4().hex[:8]}",
-            "name": canonical_name,
-            "tool_name": tool_name,
-            "alias_name": alias_name,
-            "status": "completed" if ok else "failed",
-            "summary": _nemo_tool_summary(tool_name, payload if ok else result),
-        }
-    )
-    return payload if ok else {}
+    return gw.call(tool_name, lifecycle_phase or "start", tool_calls, **arguments)
 
 
 def _normalize_nemo_tool_payload(result: dict[str, Any]) -> dict[str, Any]:
