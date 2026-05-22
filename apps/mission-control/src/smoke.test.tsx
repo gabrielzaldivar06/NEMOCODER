@@ -253,6 +253,24 @@ function buildRegistryArtifact(registryId: string, updatedAt: string): Persisted
   };
 }
 
+describe('plan job localStorage persistence', () => {
+  const KEY = 'sc_active_plan_job'
+  beforeEach(() => localStorage.clear())
+
+  it('stores and retrieves a plan job', () => {
+    localStorage.setItem(KEY, JSON.stringify({ jobId: 'plan-abc', scores: [5, 8], done: false, startedAt: Date.now() }))
+    const raw = localStorage.getItem(KEY)
+    expect(raw).not.toBeNull()
+    const parsed = JSON.parse(raw!)
+    expect(parsed.jobId).toBe('plan-abc')
+    expect(parsed.done).toBe(false)
+  })
+
+  it('returns null for missing key', () => {
+    expect(localStorage.getItem(KEY)).toBeNull()
+  })
+})
+
 describe("mission-control app", () => {
   it("renders the copied NEMO memory orbit from real dashboard-shaped data", () => {
     const nodes: NemoMemoryOrbitNode[] = [

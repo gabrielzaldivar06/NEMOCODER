@@ -572,6 +572,35 @@ function normalizeFilePreview(payload: FilePreview): FilePreview {
 const LEGACY_NEMO_SSE_URL = "http://127.0.0.1:8765/mcp/sse";
 const DEFAULT_NEMO_MCP_URL = "stdio://vscode/nemo";
 
+// ---------------------------------------------------------------------------
+// Plan job localStorage persistence helpers
+// ---------------------------------------------------------------------------
+const _PLAN_JOB_KEY = 'sc_active_plan_job';
+
+interface StoredPlanJob {
+  jobId: string;
+  scores: number[];
+  done: boolean;
+  startedAt: number;
+}
+
+function persistPlanJob(job: StoredPlanJob): void {
+  try { localStorage.setItem(_PLAN_JOB_KEY, JSON.stringify(job)); } catch {}
+}
+
+function loadPlanJob(): StoredPlanJob | null {
+  try {
+    const raw = localStorage.getItem(_PLAN_JOB_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredPlanJob;
+  } catch { return null; }
+}
+
+function clearPlanJob(): void {
+  try { localStorage.removeItem(_PLAN_JOB_KEY); } catch {}
+}
+// ---------------------------------------------------------------------------
+
 function normalizeNemoMcpUrl(value: string | undefined): string {
   const trimmed = (value ?? "").trim();
   return !trimmed || trimmed === LEGACY_NEMO_SSE_URL ? DEFAULT_NEMO_MCP_URL : trimmed;
@@ -959,6 +988,7 @@ export function App() {
   const [homeAgentDraft, setHomeAgentDraft] = useState<string>("");
   const [homeChatParams, setHomeChatParams] = useState<{ temperature: number; enableThinking: boolean; baseUrl: string; model: string }>({ temperature: 0.6, enableThinking: false, baseUrl: "", model: "" });
   const [browserArtifacts, setBrowserArtifacts] = useState<PersistedGeneratedArtifact[]>([]);
+  const [planLiveArtifact, setPlanLiveArtifact] = useState<GeneratedArtifact | null>(null);
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [queuedAgentPrompts, setQueuedAgentPrompts] = useState<string[]>([]);
   const [runTreeCollapsed, setRunTreeCollapsed] = useState<boolean>(false);
@@ -1906,6 +1936,9 @@ export function App() {
 
                 if (evt.type === "start") {
                   planJobId = String(evt.job_id || "");
+                  if (planJobId) {
+                    persistPlanJob({ jobId: planJobId, scores: [], done: false, startedAt: Date.now() });
+                  }
                   // Inject Stop + Steer controls as actions on the plan message
                   if (planJobId) {
                     setAgentMessages((prev) =>
@@ -1953,9 +1986,36 @@ export function App() {
                         : m
                     )
                   );
+                  const iterScore = typeof evt.score === 'number' ? evt.score : null;
+                  if (planJobId && iterScore !== null) {
+                    const existing = loadPlanJob();
+                    persistPlanJob({
+                      jobId: planJobId,
+                      scores: [...(existing?.scores ?? []), iterScore],
+                      done: false,
+                      startedAt: existing?.startedAt ?? Date.now(),
+                    });
+                  }
+                  // Update live artifact in Artifact Studio with best code so far
+                  const liveCode = String((evt as Record<string, unknown>).code || "");
+                  if (liveCode) {
+                    const lang = String((evt as Record<string, unknown>).lang || "python");
+                    setPlanLiveArtifact({
+                      id: "plan-live-preview",
+                      messageId: planMsgId,
+                      title: `⚡ ${objective.slice(0, 40)}`,
+                      kind: "code",
+                      language: lang,
+                      content: liveCode,
+                      tokenEstimate: Math.ceil(liveCode.length / 4),
+                    });
+                    // Auto-select is handled by MissionHome via planLiveArtifact prop + useEffect
+                  }
                 }
 
                 if (evt.type === "cancelled") {
+                  clearPlanJob();
+                  setPlanLiveArtifact(null);
                   setAgentMessages((prev) =>
                     prev.map((m) =>
                       m.id === planMsgId
@@ -1971,6 +2031,8 @@ export function App() {
                 }
 
                 if (evt.type === "done") {
+                  clearPlanJob();
+                  setPlanLiveArtifact(null);
                   const score = Number(evt.final_score ?? 0);
                   const iters = Number(evt.iterations_run ?? 0);
                   const completed = Boolean(evt.completed);
@@ -2938,6 +3000,21 @@ export function App() {
     restoreFromRaw(scoped); // null → setAgentMessages([]) for new workspaces
   }, [state.repo_path]);
 
+  // Surface abandoned plan jobs after a browser refresh (runs once on mount).
+  useEffect(() => {
+    const stored = loadPlanJob();
+    if (!stored || stored.done) return;
+    const ageMinutes = (Date.now() - stored.startedAt) / 60_000;
+    if (ageMinutes > 30) { clearPlanJob(); return; }
+    setAgentMessages((prev) => [...prev, {
+      id: `sys-abandoned-${Date.now()}`,
+      role: "assistant" as const,
+      content: `Plan \`${stored.jobId}\` was interrupted${stored.scores.length ? ` (scores: ${stored.scores.join(' → ')})` : ''}. It may still be running on the server.`,
+      tool_calls: [],
+      actions: [],
+    }]);
+  }, []);
+
   // Save chat session scoped to the active workspace.
   useEffect(() => {
     if (!state.repo_path) return;
@@ -3212,6 +3289,7 @@ export function App() {
           messages={agentMessages}
           browserArtifacts={browserArtifacts}
           onRemoveBrowserArtifact={(id) => setBrowserArtifacts((prev) => prev.filter((a) => a.id !== id))}
+          planLiveArtifact={planLiveArtifact}
           onDraftChange={setHomeAgentDraft}
           onSubmit={sendHomeAgentMessage}
           onStop={stopAgentMessage}
@@ -3513,7 +3591,7 @@ function latestHomeLayoutCommand(messages: AgentMessage[]): { command: HomeLayou
   return null;
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onRemoveBrowserArtifact, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onRemoveBrowserArtifact: (id: string) => void; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onParamsChange?: (params: import("./components/CommandDock").ChatParams) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onRemoveBrowserArtifact, planLiveArtifact, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onRemoveBrowserArtifact: (id: string) => void; planLiveArtifact?: GeneratedArtifact | null; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onParamsChange?: (params: import("./components/CommandDock").ChatParams) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
   const [layoutMode, setLayoutMode] = useState<HomeLayoutMode>("full-cockpit");
   const [detailJobId, setDetailJobId] = useState<string | null>(null);
   const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: true, telemetry: true });
@@ -3522,6 +3600,14 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
   const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite, clearArtifacts } = useGeneratedArtifacts({ messages, draft, onDraftChange, repoPath: state.repo_path });
   const [diskArtifacts, setDiskArtifacts] = useState<GeneratedArtifact[]>([]);
+
+  // Auto-select live artifact when it first appears during a plan loop
+  const prevHadLiveRef = useRef(false);
+  useEffect(() => {
+    const hasLive = Boolean(planLiveArtifact);
+    if (hasLive && !prevHadLiveRef.current) setActiveArtifactId("plan-live-preview");
+    prevHadLiveRef.current = hasLive;
+  }, [planLiveArtifact, setActiveArtifactId]);
   const deletedDiskIdsRef = useRef<Set<string>>(new Set());
   // Timestamp (ms) of when this workspace session started — only images created/modified AFTER
   // this point are shown, so artifacts from previous workspace sessions don't bleed through.
@@ -3557,7 +3643,10 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
     const timer = window.setInterval(load, 30_000);
     return () => window.clearInterval(timer);
   }, [state.repo_path]);
-  const artifacts = useMemo(() => [...browserArtifacts, ...diskArtifacts, ...generatedArtifacts], [browserArtifacts, diskArtifacts, generatedArtifacts]);
+  const artifacts = useMemo(() => {
+    const base = [...browserArtifacts, ...diskArtifacts, ...generatedArtifacts];
+    return planLiveArtifact ? [planLiveArtifact, ...base] : base;
+  }, [browserArtifacts, diskArtifacts, generatedArtifacts, planLiveArtifact]);
 
   const handleRemoveArtifact = (id: string) => {
     if (id.startsWith("disk-")) {
