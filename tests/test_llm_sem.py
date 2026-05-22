@@ -2,13 +2,14 @@
 import threading
 import sys
 import os
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 
 def test_llm_sem_acquire_timeout_raises():
     """_llm_sem_acquire must raise RuntimeError when semaphore is held."""
     import nemo_coding_platform.mission_control_server as mcs
-    import pytest
 
     acquired = threading.Event()
     release_flag = threading.Event()
@@ -28,6 +29,7 @@ def test_llm_sem_acquire_timeout_raises():
 
     release_flag.set()
     t.join(timeout=2)
+    assert not t.is_alive(), "holder thread did not release semaphore within 2s"
 
 
 def test_llm_sem_acquire_succeeds_when_free():

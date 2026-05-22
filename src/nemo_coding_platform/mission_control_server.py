@@ -5859,13 +5859,20 @@ def _extract_json_score(critique: str) -> float:
 # from the same or different models — driver-level contention causes freezes.
 _LLM_SEM = threading.Semaphore(1)
 
+
 def _llm_sem_acquire(timeout: float = 30.0) -> None:
     """Acquire _LLM_SEM with a deadline. Raises RuntimeError if semaphore is busy."""
     if not _LLM_SEM.acquire(timeout=timeout):
+        print(
+            f"WARNING: LLM semaphore busy after {timeout:.1f}s"
+            " — plan loop may be holding it.",
+            file=sys.stderr,
+        )
         raise RuntimeError(
             f"LLM semaphore busy after {timeout}s — LM Studio may be hung. "
             "Try again in a moment."
         )
+
 
 _SERVER_START_TIME: float = time.time()
 
@@ -5896,6 +5903,7 @@ def _plan_lm_call(payload: dict[str, Any], system: str, user: str, max_tokens: i
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
         method="POST",
     )
+    data: dict[str, object] = {}
     _llm_sem_acquire(timeout=60.0)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
