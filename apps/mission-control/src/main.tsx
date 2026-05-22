@@ -166,6 +166,7 @@ type HandoffJob = {
       note: string;
     };
   } | null;
+  auto_merged?: boolean;
   timeline?: Array<{
     kind: string;
     summary: string;
@@ -3245,6 +3246,7 @@ export function App() {
                     <span>Decision: {reviewDecisionLabel(run)}</span>
                     <span>Fase: {summarizePhase(run)}</span>
                     <span>{run.changed_files.length} archivo(s)</span>
+                    {matchingJob?.auto_merged && <span className="tree-run-auto-merged" title="Mergeado automáticamente a main">⚡ auto-merged</span>}
                     {run.risk_flags.length > 0 && <span className="tree-run-risks" title={run.risk_flags.join(", ")}>{run.risk_flags.length} riesgo(s): {run.risk_flags[0]}{run.risk_flags.length > 1 ? ` +${run.risk_flags.length - 1}` : ""}</span>}
                     <button className={`tree-expand-toggle ${isExpanded ? "open" : ""}`} onClick={() => setExpandedRunSources((current) => ({ ...current, [run.source_json]: !isExpanded }))}>
                       <ChevronDown size={12} /> {isExpanded ? "Ocultar archivos" : "Abrir archivos"}
