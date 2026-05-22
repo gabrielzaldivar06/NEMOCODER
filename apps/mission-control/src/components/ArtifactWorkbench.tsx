@@ -21,19 +21,23 @@ type ArtifactKindFilter = "all" | GeneratedArtifactKind;
 // sandbox="allow-scripts" gives the iframe a null origin, making localStorage throw SecurityError.
 const _STORAGE_POLYFILL = `<script>(function(){var _s={};var P={getItem:function(k){return Object.prototype.hasOwnProperty.call(_s,k)?_s[k]:null},setItem:function(k,v){_s[String(k)]=String(v)},removeItem:function(k){delete _s[String(k)]},clear:function(){_s={}},get length(){return Object.keys(_s).length},key:function(i){return Object.keys(_s)[i]??null}};try{localStorage.getItem('__p')}catch(e){try{Object.defineProperty(window,'localStorage',{value:P,writable:false,configurable:true})}catch(_){}try{Object.defineProperty(window,'sessionStorage',{value:P,writable:false,configurable:true})}catch(_){}}}());<\/script>`;
 
+// Console interceptor: overrides console.* in sandboxed iframes and relays messages to parent via postMessage.
+const _CONSOLE_INTERCEPTOR_SCRIPT = `<script>(function(){var _s=function(l,a){try{window.parent.postMessage({type:'console',level:l,args:Array.prototype.slice.call(a).map(function(x){try{return typeof x==='object'&&x!==null?JSON.stringify(x):String(x)}catch(e){return'[obj]'}})},'*')}catch(e){}};['log','warn','error','info','debug'].forEach(function(m){var o=console[m];console[m]=function(){_s(m,arguments);if(o)o.apply(console,arguments);};});window.onerror=function(msg,_,ln){_s('error',[msg+(ln?' L'+ln:'')]);return false;};window.addEventListener('unhandledrejection',function(e){_s('error',['Rejection: '+String(e.reason)]);});}());<\/script>`;
+
 function injectPolyfill(html: string): string {
-  if (html.includes("</head>")) return html.replace("</head>", _STORAGE_POLYFILL + "</head>");
-  if (html.includes("<body")) return html.replace("<body", _STORAGE_POLYFILL + "<body");
-  return _STORAGE_POLYFILL + html;
+  const injections = _STORAGE_POLYFILL + _CONSOLE_INTERCEPTOR_SCRIPT;
+  if (html.includes("</head>")) return html.replace("</head>", injections + "</head>");
+  if (html.includes("<body")) return html.replace("<body", injections + "<body");
+  return injections + html;
 }
 
 function artifactSrcDoc(artifact: GeneratedArtifact): string {
   if (artifact.kind === "svg") {
-    return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;min-height:100%;display:grid;place-items:center;background:#07101f;color:#e5edf8}svg{max-width:100%;max-height:100%;}</style></head><body>${artifact.content}</body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8">${_CONSOLE_INTERCEPTOR_SCRIPT}<style>html,body{margin:0;min-height:100%;display:grid;place-items:center;background:#07101f;color:#e5edf8}svg{max-width:100%;max-height:100%;}</style></head><body>${artifact.content}</body></html>`;
   }
   if (artifact.kind === "html") return injectPolyfill(artifact.content);
   if (artifact.kind === "react") {
-    return `<!doctype html><html><head><meta charset="utf-8"><script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script><script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script><script src="https://unpkg.com/@babel/standalone/babel.min.js"></script><style>html,body,#root{margin:0;min-height:100%;background:#07101f;color:#e5edf8;font-family:Inter,system-ui,sans-serif}</style></head><body><div id="root"></div><script type="text/babel">${artifact.content}\nReactDOM.render(React.createElement(App), document.getElementById("root"));</script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8">${_CONSOLE_INTERCEPTOR_SCRIPT}<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script><script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script><script src="https://unpkg.com/@babel/standalone/babel.min.js"></script><style>html,body,#root{margin:0;min-height:100%;background:#07101f;color:#e5edf8;font-family:Inter,system-ui,sans-serif}</style></head><body><div id="root"></div><script type="text/babel">${artifact.content}\nReactDOM.render(React.createElement(App), document.getElementById("root"));</script></body></html>`;
   }
   return "";
 }
@@ -50,6 +54,7 @@ function codeHighlightSrcDoc(artifact: GeneratedArtifact): string {
   code.hljs{background:transparent;padding:0;font-size:inherit;line-height:inherit}
   ::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:#0d1117}::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px}
 </style>
+${_CONSOLE_INTERCEPTOR_SCRIPT}
 </head><body>
 <pre><code class="language-${lang}">${escaped}</code></pre>
 <script>hljs.highlightAll();<\/script>
@@ -57,7 +62,7 @@ function codeHighlightSrcDoc(artifact: GeneratedArtifact): string {
 }
 
 function isRenderableArtifact(artifact: GeneratedArtifact | undefined): boolean {
-  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "code", "image", "video", "audio", "image_request", "browser"].includes(artifact.kind));
+  return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "code", "json", "image", "video", "audio", "image_request", "browser"].includes(artifact.kind));
 }
 
 function artifactFileExtension(artifact: GeneratedArtifact): string {
@@ -429,6 +434,8 @@ function MediaPreview({ artifact }: { artifact: GeneratedArtifact }) {
   </figure>;
 }
 
+let _mermaidInitialized = false;
+
 function MermaidPreview({ content }: { content: string }) {
   const [svg, setSvg] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -438,7 +445,10 @@ function MermaidPreview({ content }: { content: string }) {
     setSvg("");
     setError("");
     void import("mermaid").then((mermaid) => {
-      mermaid.default.initialize({ startOnLoad: false, theme: "dark" });
+      if (!_mermaidInitialized) {
+        mermaid.default.initialize({ startOnLoad: false, theme: "dark" });
+        _mermaidInitialized = true;
+      }
       return mermaid.default.render(`mission-artifact-${Date.now()}`, content);
     }).then((result) => {
       if (!cancelled) setSvg(result.svg);
@@ -450,6 +460,158 @@ function MermaidPreview({ content }: { content: string }) {
 
   if (error) return <pre className="artifact-mermaid-error"><code>{error}\n\n{content}</code></pre>;
   return <div className="artifact-mermaid" dangerouslySetInnerHTML={{ __html: svg || "" }} />;
+}
+
+// ---------------------------------------------------------------------------
+// RunOutputPanel — shows stdout/stderr/images after inline code execution
+// ---------------------------------------------------------------------------
+
+type RunOutput = {
+  exec_ok: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  duration_ms: number;
+  images: { name: string; data_url: string }[];
+};
+
+function RunOutputPanel({ output, onClear }: { output: RunOutput; onClear: () => void }) {
+  return (
+    <div className="artifact-run-panel">
+      <div className="artifact-run-header">
+        <span className={output.exec_ok ? "artifact-run-badge ok" : "artifact-run-badge fail"}>
+          {output.exec_ok ? "✓" : "✗"} exit {output.exit_code}
+        </span>
+        <span className="artifact-run-time">{output.duration_ms}ms</span>
+        <button onClick={onClear} className="artifact-run-clear" title="Clear output">✕</button>
+      </div>
+      <div className="artifact-run-body">
+        {output.stdout && <pre className="artifact-run-stdout">{output.stdout}</pre>}
+        {output.stderr && <pre className="artifact-run-stderr">{output.stderr}</pre>}
+        {output.images.map((img) => (
+          <img key={img.name} src={img.data_url} alt={img.name} className="artifact-run-image" />
+        ))}
+        {!output.stdout && !output.stderr && output.images.length === 0 && (
+          <div className="artifact-run-empty">No output — script ran silently.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ConsolePanel — captures console.* output from sandboxed artifact iframes
+// ---------------------------------------------------------------------------
+
+type ConsoleEntry = { level: string; args: string[]; ts: number };
+
+function ConsolePanel({ entries, onClear, onClose }: { entries: ConsoleEntry[]; onClear: () => void; onClose: () => void }) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [entries.length]);
+  return (
+    <div className="artifact-console-panel">
+      <div className="artifact-console-header">
+        <span>Console</span>
+        {entries.length > 0 && <span className="artifact-console-count">{entries.length}</span>}
+        <button onClick={onClear} title="Clear console" className="artifact-console-clear">Clear</button>
+        <button onClick={onClose} title="Close console" className="artifact-console-close">✕</button>
+      </div>
+      <div className="artifact-console-body">
+        {entries.length === 0 && <div className="artifact-console-empty">No output yet. console.log() from the artifact appears here.</div>}
+        {entries.map((entry, index) => (
+          <div key={index} className={`artifact-console-line artifact-console-${entry.level}`}>
+            <span className="artifact-console-level">{entry.level}</span>
+            <span className="artifact-console-text">{entry.args.join(" ")}</span>
+          </div>
+        ))}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// JsonExplorer — interactive collapsible JSON tree
+// ---------------------------------------------------------------------------
+
+function JsonNode({ value, depth = 0 }: { value: unknown; depth?: number }) {
+  const [collapsed, setCollapsed] = useState(depth > 1);
+
+  if (value === null) return <span className="json-null">null</span>;
+  if (typeof value === "boolean") return <span className="json-bool">{String(value)}</span>;
+  if (typeof value === "number") return <span className="json-num">{String(value)}</span>;
+  if (typeof value === "string") {
+    const display = value.length > 120 ? `"${value.slice(0, 120)}…"` : `"${value}"`;
+    return <span className="json-str" title={value.length > 120 ? value : undefined}>{display}</span>;
+  }
+  if (depth > 18) return <span className="json-deep">[…]</span>;
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="json-bracket">[]</span>;
+    return (
+      <span className="json-expandable">
+        <button className="json-toggle" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Expand" : "Collapse"}>{collapsed ? "▶" : "▼"}</button>
+        <span className="json-bracket">[</span>
+        {collapsed ? (
+          <button className="json-summary" onClick={() => setCollapsed(false)}>{value.length} item{value.length !== 1 ? "s" : ""}</button>
+        ) : (
+          <>
+            <div className="json-children">
+              {value.map((item, i) => (
+                <div key={i} className="json-row">
+                  <span className="json-index">{i}</span>
+                  <span className="json-colon">: </span>
+                  <JsonNode value={item} depth={depth + 1} />
+                  {i < value.length - 1 && <span className="json-comma">,</span>}
+                </div>
+              ))}
+            </div>
+            <span className="json-bracket">]</span>
+          </>
+        )}
+      </span>
+    );
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return <span className="json-bracket">{"{}"}</span>;
+    return (
+      <span className="json-expandable">
+        <button className="json-toggle" onClick={() => setCollapsed((c) => !c)} title={collapsed ? "Expand" : "Collapse"}>{collapsed ? "▶" : "▼"}</button>
+        <span className="json-bracket">{"{"}</span>
+        {collapsed ? (
+          <button className="json-summary" onClick={() => setCollapsed(false)}>{entries.length} key{entries.length !== 1 ? "s" : ""}</button>
+        ) : (
+          <>
+            <div className="json-children">
+              {entries.map(([key, val], i) => (
+                <div key={key} className="json-row">
+                  <span className="json-key">"{key}"</span>
+                  <span className="json-colon">: </span>
+                  <JsonNode value={val} depth={depth + 1} />
+                  {i < entries.length - 1 && <span className="json-comma">,</span>}
+                </div>
+              ))}
+            </div>
+            <span className="json-bracket">{"}"}</span>
+          </>
+        )}
+      </span>
+    );
+  }
+
+  return <span className="json-unknown">{String(value)}</span>;
+}
+
+function JsonExplorer({ content }: { content: string }) {
+  const [parsed, parseError] = useMemo<[unknown, string | null]>(() => {
+    try { return [JSON.parse(content), null]; }
+    catch (e) { return [null, e instanceof Error ? e.message : "Invalid JSON"]; }
+  }, [content]);
+
+  if (parseError) return <pre className="artifact-json-error"><code>JSON parse error: {parseError}{"\n\n"}{content}</code></pre>;
+  return <div className="artifact-json-explorer"><JsonNode value={parsed} depth={0} /></div>;
 }
 
 function ArtifactStandbyCanvas() {
@@ -468,6 +630,39 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
   const [libraryQuery, setLibraryQuery] = useState<string>("");
   const [kindFilter, setKindFilter] = useState<ArtifactKindFilter>("all");
   const stageRef = useRef<HTMLDivElement>(null);
+  const [consoleEntries, setConsoleEntries] = useState<ConsoleEntry[]>([]);
+  const [showConsole, setShowConsole] = useState(false);
+
+  // Receive console messages from sandboxed iframes
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (!e.data || (e.data as Record<string, unknown>).type !== "console") return;
+      const { level, args } = e.data as { level?: unknown; args?: unknown };
+      setConsoleEntries((prev) => [
+        ...prev.slice(-199),
+        { level: String(level ?? "log"), args: Array.isArray(args) ? (args as unknown[]).map(String) : [String(args)], ts: Date.now() },
+      ]);
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
+  // Clear console entries when switching artifacts
+  useEffect(() => { setConsoleEntries([]); }, [activeId]);
+
+  // REPL state
+  const [editableCode, setEditableCode] = useState<string | null>(null);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [runOutput, setRunOutput] = useState<RunOutput | null>(null);
+  const [runRunning, setRunRunning] = useState(false);
+
+  // Reset REPL state when switching artifacts
+  useEffect(() => {
+    setEditableCode(null);
+    setIsEditMode(false);
+    setRunOutput(null);
+  }, [activeId]);
+
   const filterOptions = useMemo(() => artifactFilterOptions(artifacts), [artifacts]);
   const filteredArtifacts = useMemo(() => {
     const query = libraryQuery.trim().toLowerCase();
@@ -483,6 +678,29 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
     .filter((artifact) => artifact.versionGroup === activeArtifact.versionGroup)
     .sort((left, right) => (left.version ?? 0) - (right.version ?? 0)) : [];
   const previousArtifact = previousArtifactVersion(activeArtifact, versionSiblings);
+
+  const RUNNABLE_LANGS = new Set(["python", "py", "javascript", "js", "bash", "sh", "sql"]);
+  const isRunnable = Boolean(activeArtifact?.kind === "code" && RUNNABLE_LANGS.has((activeArtifact.language ?? "").toLowerCase()));
+
+  const handleRun = useCallback(async () => {
+    if (!activeArtifact || runRunning) return;
+    const codeToRun = editableCode ?? activeArtifact.content;
+    setRunRunning(true);
+    try {
+      const res = await fetch("/api/code/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: codeToRun, language: activeArtifact.language || "python" }),
+      });
+      const data = await res.json() as RunOutput;
+      setRunOutput(data);
+    } catch (e) {
+      setRunOutput({ exec_ok: false, stdout: "", stderr: String(e), exit_code: -1, duration_ms: 0, images: [] });
+    } finally {
+      setRunRunning(false);
+    }
+  }, [activeArtifact, editableCode, runRunning]);
+
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
 
@@ -539,6 +757,21 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
           <button onClick={copyArtifact} disabled={!activeArtifact} title="Copiar artifact"><Copy size={13} /><span>{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy?" : "Copy"}</span></button>
           <button onClick={downloadArtifact} disabled={!activeArtifact} title="Descargar artifact"><Download size={13} /><span>Save</span></button>
           <button onClick={() => activeArtifact && onAttachToPrompt(activeArtifact)} disabled={!activeArtifact} title="Adjuntar al siguiente prompt"><Paperclip size={13} /><span>Attach</span></button>
+          {activeArtifact && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react" || activeArtifact.kind === "code") && (
+            <button onClick={() => setShowConsole((s) => !s)} className={showConsole ? "active" : ""} title="Toggle console output from artifact">
+              <Code2 size={13} /><span>Console{consoleEntries.length > 0 ? ` (${consoleEntries.length})` : ""}</span>
+            </button>
+          )}
+          {isRunnable && (
+            <button onClick={() => { setIsEditMode((m) => { if (!m) setEditableCode(activeArtifact?.content ?? ""); return !m; }); }} className={isEditMode ? "active" : ""} title={isEditMode ? "Switch to preview" : "Edit code"}>
+              <RefreshCw size={13} /><span>{isEditMode ? "Preview" : "Edit"}</span>
+            </button>
+          )}
+          {isRunnable && (
+            <button onClick={() => void handleRun()} disabled={runRunning} className="artifact-run-btn" title={`Run ${activeArtifact?.language ?? "code"}`}>
+              <Zap size={13} /><span>{runRunning ? "Running…" : "▶ Run"}</span>
+            </button>
+          )}
           {onClearAll && artifacts.length > 0 && (
             <button className="danger" onClick={() => { if (window.confirm("¿Limpiar todos los artifacts guardados?")) onClearAll(); }} title="Limpiar todos los artifacts">
               <Trash2 size={13} /><span>Clear all</span>
@@ -558,13 +791,17 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
             </div>
           </div>
           <div className="artifact-tabs" aria-label="Artifacts disponibles">
-            {filteredArtifacts.map((artifact) => (
-              <button key={artifact.id} className={artifact.id === activeArtifact?.id ? "active" : ""} onClick={() => onSelect(artifact.id)} title={artifact.title}>
-                <span>{artifact.version ? `v${artifact.version} · ${artifact.kind}` : artifact.kind}</span>
-                <strong>{artifact.title}</strong>
-                <small>{artifact.favorite ? "Pinned" : `#${shortArtifactHash(artifact)}`}</small>
-              </button>
-            ))}
+            {filteredArtifacts.map((artifact) => {
+              const isLive = artifact.id === "plan-live-preview";
+              return (
+                <button key={artifact.id} className={`${artifact.id === activeArtifact?.id ? "active" : ""}${isLive ? " artifact-tab-live" : ""}`} onClick={() => onSelect(artifact.id)} title={artifact.title}>
+                  {isLive && <span className="artifact-live-badge">LIVE</span>}
+                  <span>{artifact.version ? `v${artifact.version} · ${artifact.kind}` : artifact.kind}</span>
+                  <strong>{artifact.title}</strong>
+                  <small>{isLive ? "generating…" : artifact.favorite ? "Pinned" : `#${shortArtifactHash(artifact)}`}</small>
+                </button>
+              );
+            })}
             {filteredArtifacts.length === 0 && <div className="artifact-library-empty">No artifacts match this view.</div>}
           </div>
           {versionSiblings.length > 1 && <div className="artifact-version-strip" aria-label="Versiones del artifact activo">
@@ -605,6 +842,14 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <BrowserLiveView content={activeArtifact.content} />
             ) : viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
               <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={artifactSrcDoc(activeArtifact)} />
+            ) : viewMode === "preview" && activeArtifact.kind === "code" && isEditMode ? (
+              <textarea
+                className="artifact-code-editor"
+                value={editableCode ?? activeArtifact.content}
+                onChange={(e) => setEditableCode(e.target.value)}
+                spellCheck={false}
+                aria-label="Edit code artifact"
+              />
             ) : viewMode === "preview" && activeArtifact.kind === "code" ? (
               <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={codeHighlightSrcDoc(activeArtifact)} />
             ) : viewMode === "preview" && (activeArtifact.kind === "image" || activeArtifact.kind === "video" || activeArtifact.kind === "audio") ? (
@@ -615,6 +860,8 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <MermaidPreview content={activeArtifact.content} />
             ) : viewMode === "preview" && activeArtifact.kind === "image_request" ? (
               <ImageRequestPreview artifact={activeArtifact} />
+            ) : viewMode === "preview" && activeArtifact.kind === "json" ? (
+              <JsonExplorer content={activeArtifact.content} />
             ) : viewMode === "compare" && previousArtifact ? (
               <ArtifactCompareView previous={previousArtifact} current={activeArtifact} />
             ) : viewMode === "inspect" ? (
@@ -640,6 +887,10 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
               <pre><code>{activeArtifact.content}</code></pre>
             )}
           </div>
+          {runOutput && <RunOutputPanel output={runOutput} onClear={() => setRunOutput(null)} />}
+          {showConsole && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react" || activeArtifact.kind === "code") && (
+            <ConsolePanel entries={consoleEntries} onClear={() => setConsoleEntries([])} onClose={() => setShowConsole(false)} />
+          )}
         </div>}
       </> : <ArtifactStandbyCanvas />}
     </aside>

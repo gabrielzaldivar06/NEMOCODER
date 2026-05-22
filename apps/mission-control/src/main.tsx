@@ -1917,11 +1917,14 @@ export function App() {
         body: JSON.stringify(planPayload),
       })
         .then(async (resp) => {
-          const reader = resp.body!.getReader();
+          if (!resp.body) throw new Error("No response body for SSE stream");
+          const reader = resp.body.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
           const iterations: string[] = [];
           let planJobId = "";
+          const planStartedAt = Date.now();
+          const planScores: number[] = [];
 
           while (true) {
             const { value, done } = await reader.read();
@@ -1989,13 +1992,8 @@ export function App() {
                   );
                   const iterScore = typeof evt.score === 'number' ? evt.score : null;
                   if (planJobId && iterScore !== null) {
-                    const existing = loadPlanJob();
-                    persistPlanJob({
-                      jobId: planJobId,
-                      scores: [...(existing?.scores ?? []), iterScore],
-                      done: false,
-                      startedAt: existing?.startedAt ?? Date.now(),
-                    });
+                    planScores.push(iterScore);
+                    persistPlanJob({ jobId: planJobId, scores: planScores, done: false, startedAt: planStartedAt });
                   }
                   // Update live artifact in Artifact Studio with best code so far
                   const liveCode = String((evt as Record<string, unknown>).code || "");
@@ -2086,7 +2084,9 @@ export function App() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ job_id: jobId }),
-        }).catch(() => null);
+        })
+          .then((r) => { if (!r.ok) setStatus(`Cancel failed: HTTP ${r.status}`); })
+          .catch((err: Error) => setStatus(`Cancel error: ${err.message}`));
       }
       return;
     }
