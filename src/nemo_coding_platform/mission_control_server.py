@@ -128,6 +128,7 @@ class HandoffJob:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     timeline: list[dict[str, object]] = field(default_factory=list)
+    auto_merged: bool = False
     _tl_event_count: int = 0
 
     @classmethod
@@ -149,6 +150,7 @@ class HandoffJob:
             created_at=str(payload.get("created_at") or datetime.now(timezone.utc).isoformat()),
             updated_at=str(payload.get("updated_at") or datetime.now(timezone.utc).isoformat()),
             timeline=list(payload.get("timeline") or []),
+            auto_merged=bool(payload.get("auto_merged", False)),
         )
 
     def to_dict(self, *, include_logs: bool = True) -> dict[str, object]:
@@ -169,6 +171,7 @@ class HandoffJob:
             "stagnant_heartbeats": self.stagnant_heartbeats,
             "permission_request": self.permission_request,
             "timeline": list(self.timeline),
+            "auto_merged": self.auto_merged,
         }
         if include_logs:
             payload["logs"] = list(self.logs)
@@ -668,6 +671,58 @@ class HandoffJobManager:
                 job.logs.append("restored snapshot missing run_json")
         job.updated_at = datetime.now(timezone.utc).isoformat()
 
+    def _auto_merge_on_completion(self, config: "MissionControlServerConfig", job: HandoffJob) -> None:
+        """Merge the job's worktree to main when auto_merge=true and result is clean."""
+        if not job.payload.get("auto_merge"):
+            return
+        if job.returncode != 0:
+            self._append_log(job, "auto_merge skipped: returncode != 0")
+            return
+        run_path = Path(job.run_json)
+        if not run_path.exists():
+            self._append_log(job, "auto_merge skipped: run_json not found")
+            return
+        try:
+            result_data = load_headless_result_json(run_path)
+        except Exception as exc:  # noqa: BLE001
+            self._append_log(job, f"auto_merge skipped: cannot load run_json — {exc}")
+            return
+        plan = build_merge_plan(result_data)
+        if not plan.mergeable:
+            self._append_log(job, f"auto_merge skipped: not mergeable — {', '.join(plan.risk_flags) or 'no files to merge'}")
+            return
+        if plan.risk_flags:
+            self._append_log(job, f"auto_merge skipped: risk_flags present — {', '.join(plan.risk_flags)}")
+            return
+        from nemo_coding_platform.core.worktree_runtime import cleanup_git_worktree, merge_worktree_to_main
+        branch = _job_worktree_branch(job)
+        wt_path = _job_worktree_path(config, job)
+        objective = str(job.payload.get("objective") or job.job_id)[:80]
+        merged = merge_worktree_to_main(Path(config.repo_path), branch, f"auto-merge: {objective}")
+        if merged:
+            cleanup_git_worktree(Path(config.repo_path), wt_path, branch)
+            job.auto_merged = True
+            self._append_log(job, f"auto_merge succeeded: branch={branch} → main, files={len(plan.files)}")
+            self._persist_job(job)
+            _nemo_url = str(job.payload.get("nemo_mcp_url") or getattr(config, "nemo_mcp_url", "") or "")
+            _nemo_db = str(getattr(config, "memory_db", "") or "")
+            if _nemo_configured(_nemo_db, _nemo_url):
+                try:
+                    mcp_call_nemo_tool(
+                        "cognitive_ingest",
+                        lifecycle_phase="close",
+                        memory_db=_nemo_db,
+                        mcp_url=_nemo_url,
+                        content=f"Auto-merged job {job.job_id}: {objective[:60]}, branch={branch}, {len(plan.files)} file(s) changed",
+                        memory_type="task_outcome",
+                        tags=["auto_merge", "completed", "merged"],
+                        context=f"Worktree branch {branch} merged to main automatically. Files: {[item.path for item in plan.files[:10]]}",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            self._append_log(job, f"auto_merge failed: merge_worktree_to_main returned False for branch={branch}")
+
     def _heartbeat_tick(self, config: "MissionControlServerConfig", job: HandoffJob) -> None:
         self._append_log(job, self._heartbeat_snapshot(config, job))
         stalled_reason = self._stall_reason(config, job)
@@ -990,6 +1045,7 @@ class HandoffJobManager:
                 return
             self._set_status(job, "completed" if job.returncode == 0 else "failed")
             self._append_log(job, f"job finished returncode={job.returncode}")
+            self._auto_merge_on_completion(config, job)
         except OSError as error:
             if job.heartbeat_stop is not None:
                 job.heartbeat_stop.set()
