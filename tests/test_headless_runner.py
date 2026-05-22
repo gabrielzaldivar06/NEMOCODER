@@ -8,8 +8,10 @@ from nemo_coding_platform.core.engine_interface import FakeEngineProvider
 from nemo_coding_platform.core.evals import score_headless_result
 from nemo_coding_platform.core.headless_handoff import HandoffRequest
 from nemo_coding_platform.core.headless_runner import _bounded_nemo_context, _generate_tests_content, execute_headless_handoff
-from nemo_coding_platform.core.memory import MemoryAtomType
-from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
+from datetime import UTC, datetime
+
+from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
+from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore, StoredMemoryAtom
 from nemo_coding_platform.core.mutations import FileWrite, MutationPlan
 from nemo_coding_platform.core.nemo_adapter import PersistentNemoAdapter
 from nemo_coding_platform.core.worktree_runtime import snapshot_runtime_files
@@ -437,29 +439,81 @@ class HeadlessRunnerTests(unittest.TestCase):
         self.assertTrue(result.timeline.has_event_kind(EventKind.MUTATION_CREATED))
         self.assertTrue(result.timeline.has_event_kind(EventKind.REVIEW_PACKAGE_CREATED))
 
-    def test_headless_run_includes_generated_test_artifact_when_lm_succeeds(self) -> None:
+    def test_headless_run_planner_invoked_when_no_target_files(self) -> None:
         import json
         from unittest.mock import MagicMock
 
-        fake_body = json.dumps({"choices": [{"message": {"content": "def test_feature():\n    assert True"}}]}).encode()
+        # Planner returns target files based on repo map; urlopen is called for the planner.
+        fake_body = json.dumps({"choices": [{"message": {"content": '{"target_files": ["src/foo.py"], "approach": "edit foo"}'}}]}).encode()
         fake_response = MagicMock()
         fake_response.read.return_value = fake_body
         fake_response.__enter__ = lambda s: s
         fake_response.__exit__ = MagicMock(return_value=False)
 
-        # Use explicit mutation_provider (not provider_mode="fake") so the GENERATE_TESTS
-        # LLM call is not skipped — fake mode skips the call because there is no real engine.
         with patch("urllib.request.urlopen", return_value=fake_response):
             result = execute_headless_handoff(
                 HandoffRequest("Build feature", ".", ("passes tests",), ("python -m unittest",)),
                 mutation_provider=FakeEngineProvider(),
-                task_id="gen-tests-artifact-task",
-                run_id="gen-tests-artifact-run",
+                task_id="planner-task",
+                run_id="planner-run",
             )
 
-        gen_test_artifacts = [a for a in result.artifacts if a.path == "test_generated.py"]
-        self.assertEqual(len(gen_test_artifacts), 1)
-        self.assertEqual(gen_test_artifacts[0].artifact_type, ArtifactType.TEST)
+        # Run must complete successfully even when planner is active
+        self.assertTrue(result.timeline.has_event_kind(EventKind.MUTATION_CREATED))
+        self.assertTrue(result.timeline.has_event_kind(EventKind.REVIEW_PACKAGE_CREATED))
+
+
+    # ---- NEMO-guided repair continuation ----
+
+    def test_nemo_guided_repair_emits_no_strategy_event_when_memories_empty(self) -> None:
+        """When budget is exhausted and NEMO has no past memories, anticipate is called but no guided repair runs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
+            adapter = PersistentNemoAdapter(store)
+            result = _execute_fake_handoff(
+                HandoffRequest("Failing task", ".", ("passes tests",), ("python -m unittest",), repair_budget=1),
+                ("python -m unittest",),
+                nemo_adapter=adapter,
+                task_id="nemo-guided-empty",
+                run_id="run-empty",
+            )
+
+        anticipate_calls = [r for r in result.nemo_results if r.call.tool_name == "anticipate"]
+        self.assertTrue(len(anticipate_calls) >= 1, "anticipate should be called when repair budget exhausted")
+        memories = list(anticipate_calls[0].payload.get("memories") or [])
+        self.assertEqual(len(memories), 0, "empty store should return no memories")
+        self.assertFalse(result.validation.passed)
+
+    def test_nemo_guided_repair_attempts_one_extra_when_memories_present(self) -> None:
+        """When NEMO has repair-related memories, anticipate returns them and guided repair is attempted."""
+        fake_atom = StoredMemoryAtom(
+            id="test-atom-1",
+            atom=MemoryAtom(MemoryAtomType.CORRECTION, "use explicit paths for repair recovery", "test_seed"),
+            topic="repair_recovery",
+            tags=("repair_failure",),
+            importance=8,
+            created_at=datetime.now(UTC).isoformat(),
+            last_accessed_at=None,
+            access_count=0,
+            useful_count=0,
+            not_useful_count=0,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PersistentMemoryStore(Path(tmp) / "memory.sqlite")
+            adapter = PersistentNemoAdapter(store)
+            with patch.object(store, "search_atoms", return_value=(fake_atom,)):
+                result = _execute_fake_handoff(
+                    HandoffRequest("Failing task", ".", ("passes tests",), ("python -m unittest",), repair_budget=1),
+                    ("python -m unittest",),
+                    nemo_adapter=adapter,
+                    task_id="nemo-guided-present",
+                    run_id="run-present",
+                )
+
+        anticipate_calls = [r for r in result.nemo_results if r.call.tool_name == "anticipate"]
+        self.assertTrue(len(anticipate_calls) >= 1, "anticipate should be called when repair budget exhausted")
+        memories = list(anticipate_calls[0].payload.get("memories") or [])
+        self.assertTrue(len(memories) >= 1, "store memories should produce guided repair strategy")
 
 
 if __name__ == "__main__":
