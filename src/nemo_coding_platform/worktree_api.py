@@ -46,6 +46,38 @@ def api_worktree_diff(
     }
 
 
+def api_worktree_diff_stat(
+    config: "MissionControlServerConfig",
+    job_id: str,
+    jobs: "HandoffJobManager",
+) -> dict[str, object]:
+    """Live diff summary suitable for polling/SSE — files + summary line, no full diff body."""
+    try:
+        job = jobs.get(job_id)
+    except FileNotFoundError:
+        return {"error": f"job not found: {job_id}"}
+    from nemo_coding_platform.core.worktree_runtime import worktree_diff_stat
+    branch = _job_worktree_branch(job)
+    wt_path = _job_worktree_path(config, job)
+    if not wt_path.exists():
+        return {
+            "files": [],
+            "summary": "",
+            "file_count": 0,
+            "branch": branch,
+            "runtime_id": _job_runtime_id(job),
+            "worktree_exists": False,
+        }
+    stat = worktree_diff_stat(Path(config.repo_path), branch)
+    return {
+        **stat,
+        "branch": branch,
+        "runtime_id": _job_runtime_id(job),
+        "worktree_exists": True,
+        "status": job.status,
+    }
+
+
 def api_worktree_merge(
     config: "MissionControlServerConfig",
     job_id: str,

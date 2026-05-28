@@ -85,6 +85,38 @@ def worktree_diff(repo_path: Path, branch_name: str, base_branch: str = "main") 
     return result.stdout
 
 
+def worktree_diff_stat(repo_path: Path, branch_name: str, base_branch: str = "main") -> dict[str, object]:
+    """Lightweight summary of branch changes: file count + per-file stat lines.
+
+    Used for live polling during long jobs without paying the full diff cost.
+    """
+    result = subprocess.run(
+        ["git", "diff", "--stat", "--no-color", f"{base_branch}...{branch_name}"],
+        cwd=str(repo_path),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    stat_lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+    files: list[dict[str, object]] = []
+    summary_line = ""
+    for line in stat_lines:
+        if "|" in line:
+            path_part, _, stat_part = line.partition("|")
+            files.append({
+                "path": path_part.strip(),
+                "stat": stat_part.strip(),
+            })
+        elif "changed" in line and ("insertion" in line or "deletion" in line):
+            summary_line = line.strip()
+    return {
+        "files": files,
+        "summary": summary_line,
+        "file_count": len(files),
+        "raw": result.stdout,
+    }
+
+
 def merge_worktree_to_main(repo_path: Path, branch_name: str, message: str = "") -> bool:
     """No-fast-forward merge of worktree branch into current HEAD of repo_path."""
     commit_msg = message or f"merge worktree {branch_name}"

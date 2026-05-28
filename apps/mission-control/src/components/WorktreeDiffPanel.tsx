@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { GitMerge, Trash2, RefreshCw } from "lucide-react";
 
 interface Props {
   jobId: string;
+  isLive?: boolean;
   onMerged?: () => void;
   onRejected?: () => void;
 }
@@ -15,17 +16,59 @@ interface WorktreeDiffData {
   error?: string;
 }
 
-export function WorktreeDiffPanel({ jobId, onMerged, onRejected }: Props) {
+interface WorktreeDiffStatData {
+  files: Array<{ path: string; stat: string }>;
+  summary: string;
+  file_count: number;
+  branch: string;
+  worktree_exists: boolean;
+  status?: string;
+  error?: string;
+}
+
+export function WorktreeDiffPanel({ jobId, isLive = false, onMerged, onRejected }: Props) {
   const [diff, setDiff] = useState("");
   const [branch, setBranch] = useState("");
   const [worktreeExists, setWorktreeExists] = useState(false);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<"idle" | "merging" | "merged" | "rejected">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [liveStat, setLiveStat] = useState<WorktreeDiffStatData | null>(null);
+  const lastStatSig = useRef<string>("");
 
   useEffect(() => {
     if (jobId) load();
   }, [jobId]);
+
+  // Live polling of diff-stat while job is running. Refreshes the full diff only
+  // when the stat changes (file count or summary line). Avoids constantly pulling
+  // multi-MB diffs during a long job.
+  useEffect(() => {
+    if (!jobId || !isLive) return;
+    let cancelled = false;
+    const pollStat = async () => {
+      try {
+        const res = await fetch(`/api/run/${jobId}/worktree-diff-stat`);
+        const data: WorktreeDiffStatData = await res.json();
+        if (cancelled) return;
+        if (data.error) return;
+        setLiveStat(data);
+        const sig = `${data.file_count}|${data.summary}`;
+        if (sig !== lastStatSig.current) {
+          lastStatSig.current = sig;
+          load();
+        }
+      } catch {
+        // best-effort — keep polling
+      }
+    };
+    pollStat();
+    const id = setInterval(pollStat, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [jobId, isLive]);
 
   const load = async () => {
     setLoading(true);
@@ -95,6 +138,12 @@ export function WorktreeDiffPanel({ jobId, onMerged, onRejected }: Props) {
     <div className="worktree-diff-panel">
       <header className="worktree-diff-header">
         <code className="branch-label">{branch}</code>
+        {isLive && <span className="worktree-live-dot" title="Polling diff every 15s" />}
+        {liveStat?.summary && (
+          <span className="worktree-live-summary" title={liveStat.summary}>
+            {liveStat.file_count} file{liveStat.file_count === 1 ? "" : "s"} · {liveStat.summary}
+          </span>
+        )}
         <button className="icon-btn" onClick={load} title="Refresh diff">
           <RefreshCw size={12} />
         </button>
@@ -102,7 +151,9 @@ export function WorktreeDiffPanel({ jobId, onMerged, onRejected }: Props) {
       {diff ? (
         <pre className="diff-output">{diff}</pre>
       ) : (
-        <div className="diff-empty">No changes in this worktree.</div>
+        <div className="diff-empty">
+          {isLive ? "Waiting for first changes…" : "No changes in this worktree."}
+        </div>
       )}
       <div className="worktree-actions">
         <button
