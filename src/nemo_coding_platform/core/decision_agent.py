@@ -8,12 +8,15 @@ Public API:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from nemo_coding_platform.core.self_modification import SelfModRequest, SelfModTaskType
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
@@ -44,7 +47,7 @@ _SYNTHESIS_SYS = (
     "Analyze NEMO memory signal and identify the single highest-ROI code change to make. "
     "Respond ONLY with valid JSON matching this exact schema:\n"
     '{"dominant_pattern": str, '
-    '"task_type": "bug_fix"|"architecture_hardening"|"refactor"|"test_coverage", '
+    '"task_type": "bug_fix"|"architecture_hardening"|"refactor"|"test_coverage"|"tool_expansion"|"documentation", '
     '"target_files": [str], '
     '"proposed_description": str, '
     '"confidence": float 0.0-1.0, '
@@ -101,7 +104,8 @@ def _lm_call(
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
         return data["choices"][0]["message"]["content"].strip()
-    except Exception:
+    except Exception as exc:
+        logger.debug("_lm_call failed: %s", exc)
         return ""
 
 
@@ -123,7 +127,8 @@ def _collect_signal(
     lookback = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
     parts: list[str] = []
 
-    on_event and on_event({"type": "signal_read", "detail": "reading recent failures"})
+    if on_event:
+        on_event({"type": "signal_read", "detail": "reading recent failures"})
     failures = _nemo("memory_chronicle", nemo_mcp_url,
         date_from=lookback, limit=30, tags_include=["repair_failure", "plan_failure"])
     mems = failures.get("memories") or failures.get("results") or []
@@ -133,7 +138,8 @@ def _collect_signal(
             for m in mems[:15] if isinstance(m, dict)
         ))
 
-    on_event and on_event({"type": "signal_read", "detail": "reading critic calibration data"})
+    if on_event:
+        on_event({"type": "signal_read", "detail": "reading critic calibration data"})
     cal = _nemo("search_memories", nemo_mcp_url,
         query=f"critic calibration {lang_filter}", limit=10,
         tags_include=["critic_calibration", lang_filter], min_importance=3, compact=True)
@@ -144,7 +150,8 @@ def _collect_signal(
             for m in cal_mems[:8] if isinstance(m, dict)
         ))
 
-    on_event and on_event({"type": "signal_read", "detail": "reading improvement patterns"})
+    if on_event:
+        on_event({"type": "signal_read", "detail": "reading improvement patterns"})
     contr = _nemo("search_memories", nemo_mcp_url,
         query=f"improvement patterns {lang_filter}", limit=8,
         tags_include=["contrastive", lang_filter], min_importance=6, compact=True)
@@ -155,7 +162,8 @@ def _collect_signal(
             for m in contr_mems[:5] if isinstance(m, dict)
         ))
 
-    on_event and on_event({"type": "signal_read", "detail": "reading recurring error anchors"})
+    if on_event:
+        on_event({"type": "signal_read", "detail": "reading recurring error anchors"})
     acc = _nemo("search_memories", nemo_mcp_url,
         query="recurring failure practice anchor", limit=6,
         tags_include=["failure_accumulator"], min_importance=6, compact=True)
@@ -201,10 +209,12 @@ def analyze_nemo_signal(
     try:
         signal_block = _collect_signal(nemo_mcp_url, lang_filter, on_event)
         if not signal_block.strip():
-            on_event and on_event({"type": "fallback", "detail": "NEMO signal empty — using fallback"})
+            if on_event:
+                on_event({"type": "fallback", "detail": "NEMO signal empty — using fallback"})
             return _FALLBACK_REPORT
 
-        on_event and on_event({"type": "synthesizing", "detail": "running LLM synthesis on signal"})
+        if on_event:
+            on_event({"type": "synthesizing", "detail": "running LLM synthesis on signal"})
         user_prompt = (
             "Analyze this NEMO signal from Space Code's plan loop and identify "
             "the single highest-ROI code change:\n\n"
@@ -218,16 +228,19 @@ def analyze_nemo_signal(
         raw = _lm_call(_SYNTHESIS_SYS, user_prompt, lm_base_url, lm_model, max_tokens=512)
         report = _parse_synthesis_response(raw) if raw else None
         if report is None:
-            on_event and on_event({"type": "fallback", "detail": "LLM synthesis failed — using fallback"})
+            if on_event:
+                on_event({"type": "fallback", "detail": "LLM synthesis failed — using fallback"})
             return _FALLBACK_REPORT
-        on_event and on_event({
+        if on_event:
+            on_event({
             "type": "synthesis_done",
             "confidence": report.confidence,
             "dominant_pattern": report.dominant_pattern,
         })
         return report
     except Exception as exc:
-        on_event and on_event({"type": "error", "detail": str(exc)[:200]})
+        if on_event:
+            on_event({"type": "error", "detail": str(exc)[:200]})
         return _FALLBACK_REPORT
 
 
