@@ -3251,9 +3251,51 @@ export function App() {
 
 
   useEffect(() => {
-    if (!activeJob || !["starting", "running"].includes(activeJob.status)) return;
-    const timer = window.setInterval(() => pollJob(activeJob), 2000);
-    return () => window.clearInterval(timer);
+    if (!activeJob || !["starting", "running", "awaiting_permission"].includes(activeJob.status)) return;
+    const jobId = activeJob.job_id;
+    // SSE replaces 2s polling. Backend pushes incremental status/log/permission/returncode
+    // events plus a final stream_end. Falls back to slow polling if the stream errors.
+    const es = new EventSource(`/api/job/${jobId}/state-stream`);
+    let fallbackTimer: number | undefined;
+    let cancelled = false;
+    es.onmessage = (e) => {
+      try {
+        const evt = JSON.parse(e.data);
+        if (evt.kind === "snapshot" && evt.job) {
+          setActiveJob(evt.job);
+        } else if (evt.kind === "status") {
+          setActiveJob((prev) => prev && prev.job_id === jobId ? { ...prev, status: String(evt.status) } : prev);
+        } else if (evt.kind === "returncode") {
+          setActiveJob((prev) => prev && prev.job_id === jobId ? { ...prev, returncode: evt.returncode } : prev);
+        } else if (evt.kind === "permission_request") {
+          setActiveJob((prev) => prev && prev.job_id === jobId ? { ...prev, permission_request: evt.permission_request } : prev);
+        } else if (evt.kind === "log" && typeof evt.line === "string") {
+          setActiveJob((prev) => {
+            if (!prev || prev.job_id !== jobId) return prev;
+            const nextLogs = [...(prev.logs ?? []), evt.line];
+            // Keep logs bounded — frontend doesn't need full 10k tail in memory.
+            return { ...prev, logs: nextLogs.length > 2000 ? nextLogs.slice(-2000) : nextLogs };
+          });
+        } else if (evt.kind === "stream_end") {
+          es.close();
+          // Refresh full mission state once on terminal to pick up new runs, readiness, etc.
+          pollJob(activeJob);
+        }
+      } catch {
+        // ignore malformed event
+      }
+    };
+    es.onerror = () => {
+      es.close();
+      if (cancelled) return;
+      // Fallback: revert to slow polling so we don't lose updates on a flaky proxy.
+      fallbackTimer = window.setInterval(() => pollJob(activeJob), 5000);
+    };
+    return () => {
+      cancelled = true;
+      es.close();
+      if (fallbackTimer !== undefined) window.clearInterval(fallbackTimer);
+    };
   }, [activeJob?.job_id, activeJob?.status]);
 
   useEffect(() => {
@@ -3585,6 +3627,7 @@ export function App() {
                     <div className="review-diff-row">
                       <WorktreeDiffPanel
                         jobId={selectedJob?.job_id ?? ""}
+                        isLive={selectedJob?.status === "running" || selectedJob?.status === "starting"}
                         onMerged={() => {
                           if (selectedJob?.job_id) setReviewedJobIds((prev) => new Set([...prev, selectedJob.job_id]));
                           refreshState();

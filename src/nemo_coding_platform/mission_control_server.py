@@ -69,6 +69,7 @@ from nemo_coding_platform.worktree_api import (
     _job_worktree_path,
     _job_worktree_branch,
     api_worktree_diff,
+    api_worktree_diff_stat,
     api_worktree_merge,
     api_worktree_cleanup,
     api_run_reject,
@@ -7348,6 +7349,116 @@ def api_run_timeline(
     return {"job_id": job_id, "status": status, "timeline": [], "event_count": 0}
 
 
+def api_run_quality_scorecard(
+    config: "MissionControlServerConfig",
+    job_id: str,
+    jobs: "HandoffJobManager",
+) -> dict[str, object]:
+    """Per-run quality breakdown for the JobDetailPanel scorecard widget.
+
+    Returns readiness, validation, repair (attempts/budget/stop_reason/score/tokens),
+    subtasks (from timeline), and repair_quality_score history. All data is already
+    persisted in the run JSON — this endpoint just shapes it for the UI.
+    """
+    with jobs._lock:
+        job = jobs._jobs.get(job_id)
+        if not job:
+            return {"error": f"job not found: {job_id}"}
+        run_json_path = Path(job.run_json) if job.run_json else None
+    if not run_json_path or not run_json_path.exists():
+        return {"job_id": job_id, "available": False}
+    try:
+        run_data = json.loads(run_json_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {"job_id": job_id, "available": False}
+
+    readiness = run_data.get("readiness") or {}
+    validation = run_data.get("validation") or {}
+    validation_results = validation.get("results", []) if isinstance(validation, dict) else []
+    validation_passed = bool(
+        validation_results
+        and all(r.get("status") in ("passed", "skipped") for r in validation_results if isinstance(r, dict))
+    )
+    failed_validations = [
+        {
+            "command": (r.get("command", {}) or {}).get("command"),
+            "status": r.get("status"),
+            "returncode": r.get("returncode"),
+        }
+        for r in validation_results
+        if isinstance(r, dict) and r.get("status") not in ("passed", "skipped")
+    ]
+
+    repair_plan = run_data.get("repair_plan") or {}
+    repair_budget = (repair_plan.get("budget") or {}).get("max_attempts") if isinstance(repair_plan.get("budget"), dict) else None
+    attempts = repair_plan.get("attempts") or []
+    repair_result = run_data.get("repair_result") or {}
+    best_score = repair_result.get("best_score") if isinstance(repair_result, dict) else None
+    stop_reason = repair_result.get("stop_reason") if isinstance(repair_result, dict) else None
+    tokens_consumed = repair_result.get("tokens_consumed") if isinstance(repair_result, dict) else None
+
+    timeline = run_data.get("timeline") or {}
+    events = timeline.get("events") if isinstance(timeline, dict) else timeline
+    if not isinstance(events, list):
+        events = []
+    subtasks: list[dict[str, object]] = []
+    quality_scores: list[dict[str, object]] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        kind = str(ev.get("kind") or "")
+        payload = ev.get("payload") or {}
+        if kind == "subtask_start" and isinstance(payload, dict):
+            subtasks.append({
+                "index": payload.get("index"),
+                "total": payload.get("total"),
+                "title": payload.get("title") or ev.get("summary"),
+                "ts": ev.get("ts"),
+            })
+        elif kind == "repair_quality_score" and isinstance(payload, dict):
+            quality_scores.append({
+                "score": payload.get("score"),
+                "stop_reason": payload.get("stop_reason"),
+                "ts": ev.get("ts"),
+            })
+
+    mutation_result = run_data.get("mutation_result") or {}
+    changed_files = mutation_result.get("changed_files") or mutation_result.get("applied_files") or []
+
+    return {
+        "job_id": job_id,
+        "available": True,
+        "readiness": {
+            "score": readiness.get("score"),
+            "grade": readiness.get("grade"),
+            "reasons": readiness.get("reasons") or [],
+            "validation_passed": readiness.get("validation_passed"),
+            "has_checkpoint": readiness.get("has_checkpoint"),
+            "has_review_package": readiness.get("has_review_package"),
+            "memory_writeback_present": readiness.get("memory_writeback_present"),
+            "mutation_present": readiness.get("mutation_present"),
+        },
+        "validation": {
+            "passed": validation_passed,
+            "failed": failed_validations,
+            "total_checks": len(validation_results),
+        },
+        "repair": {
+            "attempts_used": len(attempts) if isinstance(attempts, list) else 0,
+            "budget": repair_budget,
+            "stop_reason": stop_reason,
+            "best_score": best_score,
+            "tokens_consumed": tokens_consumed,
+            "attempt_reasons": [
+                a.get("reason") for a in attempts if isinstance(a, dict)
+            ] if isinstance(attempts, list) else [],
+        },
+        "subtasks": subtasks,
+        "quality_scores": quality_scores,
+        "changed_files_count": len(changed_files) if isinstance(changed_files, list) else 0,
+    }
+
+
 def api_run_public_html_files(
     config: "MissionControlServerConfig",
     job_id: str,
@@ -7505,6 +7616,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             job_id = route[len("/api/run/"): -len("/worktree-diff")].strip("/")
             self._handle(lambda _: api_worktree_diff(self.server.config, job_id, self.server.jobs), {})
             return
+        if route.startswith("/api/run/") and route.endswith("/worktree-diff-stat"):
+            job_id = route[len("/api/run/"): -len("/worktree-diff-stat")].strip("/")
+            self._handle(lambda _: api_worktree_diff_stat(self.server.config, job_id, self.server.jobs), {})
+            return
         if route.startswith("/api/run/") and route.endswith("/timeline/stream"):
             job_id = route[len("/api/run/"): -len("/timeline/stream")].strip("/")
             self._handle_timeline_sse(job_id)
@@ -7516,6 +7631,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         if route.startswith("/api/run/") and route.endswith("/public-html-files"):
             job_id = route[len("/api/run/"): -len("/public-html-files")].strip("/")
             self._handle(lambda _: api_run_public_html_files(self.server.config, job_id, self.server.jobs), {})
+            return
+        if route.startswith("/api/run/") and route.endswith("/quality-scorecard"):
+            job_id = route[len("/api/run/"): -len("/quality-scorecard")].strip("/")
+            self._handle(lambda _: api_run_quality_scorecard(self.server.config, job_id, self.server.jobs), {})
             return
         if route == "/api/agent/browser-sessions":
             self._handle(lambda _: api_browser_sessions(self.server.config), {})
@@ -7563,6 +7682,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             offset = int(qs.get("offset", ["0"])[0])
             self._handle(lambda _: api_job_log(self.server, job_id, offset=offset), {})
+            return
+        if route.startswith("/api/job/") and route.endswith("/state-stream"):
+            job_id = route[len("/api/job/"): -len("/state-stream")].strip("/")
+            self._handle_job_state_sse(job_id)
             return
         if route == "/api/files":
             from urllib.parse import parse_qs
@@ -7947,6 +8070,104 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
                 return
 
             time.sleep(_POLL)
+
+    def _handle_job_state_sse(self, job_id: str) -> None:
+        """Stream incremental job state (status, returncode, permission_request, new log
+        lines) until the job reaches a terminal state. Replaces high-frequency polling
+        of the full /api/job endpoint — long jobs no longer require the frontend to
+        repeatedly download the entire mission state."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+        def _send(data: dict[str, object]) -> bool:
+            try:
+                line = ("data: " + json.dumps(data, sort_keys=True) + "\n\n").encode("utf-8")
+                self.wfile.write(line)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return False
+
+        _TERMINAL_STATES = {
+            HandoffJobStatus.COMPLETED,
+            HandoffJobStatus.FAILED,
+            HandoffJobStatus.PERMISSION_DENIED,
+            HandoffJobStatus.CANCELLED,
+            HandoffJobStatus.ORPHANED,
+            "paused",
+        }
+        jobs = self.server.jobs
+        log_offset = 0
+        last_status = ""
+        last_perm_sig = ""
+        last_returncode: object = "__sentinel__"
+
+        # Initial snapshot
+        with jobs._lock:
+            job = jobs._jobs.get(job_id)
+            if job is None:
+                _send({"kind": "stream_end", "status": "not_found"})
+                return
+            snapshot = job.to_dict(include_logs=True)
+        if not _send({"kind": "snapshot", "job": snapshot}):
+            return
+        log_offset = len(snapshot.get("logs") or [])
+        last_status = str(snapshot.get("status") or "")
+        last_returncode = snapshot.get("returncode")
+        perm = snapshot.get("permission_request")
+        last_perm_sig = json.dumps(perm, sort_keys=True) if perm else ""
+
+        if last_status in _TERMINAL_STATES:
+            _send({"kind": "stream_end", "status": last_status})
+            return
+
+        while True:
+            with jobs._lock:
+                job = jobs._jobs.get(job_id)
+                if job is None:
+                    _send({"kind": "stream_end", "status": "not_found"})
+                    return
+                current_status = str(job.status)
+                current_returncode = job.returncode
+                current_perm = job.permission_request
+                current_logs = list(job.logs[log_offset:])
+                current_error = job.error
+                current_auto_merged = job.auto_merged
+            log_offset += len(current_logs)
+            for line in current_logs:
+                if not _send({"kind": "log", "line": line}):
+                    return
+            if current_status != last_status:
+                last_status = current_status
+                if not _send({"kind": "status", "status": current_status}):
+                    return
+            if current_returncode != last_returncode:
+                last_returncode = current_returncode
+                if not _send({"kind": "returncode", "returncode": current_returncode}):
+                    return
+            perm_sig = json.dumps(current_perm, sort_keys=True) if current_perm else ""
+            if perm_sig != last_perm_sig:
+                last_perm_sig = perm_sig
+                if not _send({"kind": "permission_request", "permission_request": current_perm}):
+                    return
+            if current_status in _TERMINAL_STATES:
+                _send({
+                    "kind": "stream_end",
+                    "status": current_status,
+                    "returncode": current_returncode,
+                    "error": current_error,
+                    "auto_merged": current_auto_merged,
+                })
+                return
+            time.sleep(2.0)
 
     def do_POST(self) -> None:
         if not self._check_rate_limit():
