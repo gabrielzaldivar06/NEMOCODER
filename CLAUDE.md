@@ -20,8 +20,9 @@ curl http://127.0.0.1:5173 -I
 # 3. NEMO MCP vivo?
 curl http://127.0.0.1:8765/mcp/sse -H "Accept: text/event-stream" -I
 
-# 4. LM Studio modelo activo?
-curl http://localhost:1234/v1/models | python -m json.tool
+# 4. LLM endpoint (lee model_base_url del settings y haz curl al endpoint elegido)
+#    Local:  curl http://localhost:1234/v1/models
+#    Remoto: curl -H "Authorization: Bearer $API_KEY" https://integrate.api.nvidia.com/v1/models
 ```
 
 **NO asumir que algo está corriendo. Verificar antes de afirmar.**
@@ -57,7 +58,7 @@ Si el puerto ya responde, el proceso YA ESTÁ corriendo. No abrir instancias dup
 | Backend Python | 8787 | ✅ UP | Arrancado por el usuario con `start-mvp-local.ps1` |
 | Frontend Vite (Mission Control) | 5173 | ✅ UP | React/Vite en `apps/mission-control/` |
 | NEMO MCP SSE | 8765 | ✅ UP | PID 28048, VS Code extension |
-| LM Studio | 1234 | ✅ UP | Modelo activo: `opus4.7-gods.ghost.codex-4b.gguf` |
+| LLM endpoint | usuario | ✅ Configurable | Ver "LLM Endpoint" abajo — el usuario elige local (LM Studio :1234) **o** remoto (NVIDIA NIM / OpenAI-compatible) |
 | Reranker bge-reranker-v2-m3 | 8080 | ✅ UP | llama-server, parte del pipeline RAG de NEMO |
 | SSE `/api/agent/plan` | — | ✅ Verificado | status=200, content-type=text/event-stream, primer evento `{type:"start"}` confirmado desde browser |
 
@@ -79,9 +80,10 @@ NEMO MCP — DOS MODOS:
   stdio://vscode/nemo              ← cuando VS Code está corriendo (rápido)
   http://127.0.0.1:8765/mcp/sse   ← SSE standalone (siempre disponible)
 
-LM Studio (port 1234)
-  OpenAI-compatible API
-  Modelo auto-detectado con _resolve_lmstudio_model()
+LLM endpoint (elegido por usuario en settings.json → model_base_url):
+  • Local:  http://localhost:1234/v1   ← LM Studio, modelo auto-detectado
+  • Remoto: https://integrate.api.nvidia.com/v1   ← NVIDIA NIM
+  • Otros:  cualquier OpenAI-compatible (OpenAI, OpenRouter, Together, etc.)
 ```
 
 El backend NO sirve archivos estáticos del frontend. El frontend tiene su propio servidor Vite en 5173.
@@ -121,8 +123,10 @@ El servidor se arranca con `--runtimes .spacecode-runtimes`, por lo tanto lee ES
 
 Campos clave:
 - `nemo_mcp_url`: `"stdio://vscode/nemo"` — URL del NEMO MCP
-- `default_model`: puede estar desactualizado — ignorar, usar `_resolve_lmstudio_model()`
-- `model_base_url`: `"http://localhost:1234/v1"` — LM Studio
+- `model_base_url`: **elegido por el usuario** — `"http://localhost:1234/v1"` (LM Studio local) o `"https://integrate.api.nvidia.com/v1"` (NVIDIA NIM) o cualquier endpoint OpenAI-compatible
+- `default_model`: nombre del modelo cuando el endpoint NO es LM Studio local (e.g. `"moonshotai/kimi-k2.6"` para NIM). Para LM Studio local se ignora — usar `_resolve_lmstudio_model()`
+- `api_key`: solo necesario para endpoints remotos (NIM, OpenAI, etc.) — LM Studio local no requiere key
+- `model_roles`: dict `{editor, planner, reviewer, summarizer}` para asignar modelos por rol
 
 `.nemo-runtimes/mission-control/settings.json` tiene `nemo_mcp_url: http://127.0.0.1:8765/mcp/sse` — usado en contextos sin VS Code. **No es el que lee el servidor normal.**
 
@@ -143,30 +147,55 @@ El audit en `docs/prd/nemo-mcp-operational-audit-2026-05-10.md` certifica que to
 
 ---
 
-## Modelos LM Studio — Siempre Agnóstico
+## LLM Endpoint — Elección del Usuario
 
-**NUNCA** hardcodear nombres de modelo.
+Space Code soporta **dos modos** de inferencia LLM. **NO** hay endpoint hardcodeado en código — el usuario elige vía `model_base_url` en `settings.json`.
 
-Función correcta:
-```python
-_resolve_lmstudio_model(base_url)  # mission_control_server.py ~L1568
+### Modo A: Local (LM Studio en :1234)
+
+```json
+{
+  "model_base_url": "http://localhost:1234/v1",
+  "default_model": "",          // ignorado — auto-resolved
+  "api_key": ""                  // no necesario
+}
 ```
-Filtra `embed|rerank|bge|nomic`, retorna el primer modelo chat disponible.
 
-En `_plan_lm_call`:
-```python
-model = _resolve_lmstudio_model(base_url) or _chat_model(payload)
+- **Resolver automático**: `_resolve_lmstudio_model(base_url)` ([mission_control_server.py:1122](src/nemo_coding_platform/mission_control_server.py#L1122)) usa `/api/v0/models` (LM Studio management API) → filtra `state=loaded` + tipo `llm|vlm` → ordena por `loaded_context_length` descendente → elige el más capaz cargado. Fallback a `/v1/models` si el endpoint no existe.
+- Filtra siempre `embed|rerank|bge|nomic` (embedding/reranker no son chat models).
+- **NUNCA** hardcodear nombres de modelo en código — siempre `_resolve_lmstudio_model()` o `model_roles[role]` del settings.
+
+### Modo B: Remoto (NVIDIA NIM, OpenAI, OpenRouter, etc.)
+
+```json
+{
+  "model_base_url": "https://integrate.api.nvidia.com/v1",
+  "default_model": "moonshotai/kimi-k2.6",
+  "api_key": "nvapi-...",
+  "model_roles": {
+    "editor": "moonshotai/kimi-k2.6",
+    "planner": "moonshotai/kimi-k2.6",
+    "reviewer": "moonshotai/kimi-k2.6",
+    "summarizer": "moonshotai/kimi-k2.6"
+  }
+}
 ```
 
-Modelos conocidos del usuario (2026-05-13 ses2):
-- `qwen3.5-9b-deepseek-v4-flash` — **9B Q6_K, activo** ✓ — thinking model (emite `reasoning_content`), tool-aware, context 8774. Emite JSON de tool calls correctamente.
-- `qwen3.6-40b-claude-4.6-opus-deckard-heretic-uncensored-thinking-neo-code-di-imatrix-max` — 40B Q4_K_S, disponible (~22GB, puede no caber en VRAM del Arc iGPU)
-- `opus4.7-gods.ghost.codex-4b.gguf` — 4B Q8_0, también cargado pero el resolver lo ignora (menor context)
-- `qwen3.6-35b-a3b-tq3_4s` — 35B MOE, listado pero falla al cargar (~200s timeout)
+- El usuario define `default_model` explícitamente (no hay auto-detect remoto).
+- `model_roles` permite distinguir modelo por rol (editor/planner/reviewer/summarizer).
+- `api_key` se inyecta como `Authorization: Bearer <key>` automáticamente.
+
+### Cambio de modo
+
+Cambiar `model_base_url` en `.spacecode-runtimes/mission-control/settings.json` y reiniciar el backend. **No requiere cambios de código.** El frontend lee el campo y lo muestra como label en `HandoffComposer`.
+
+### Modelos LM Studio del usuario (referencia histórica para Modo A)
+
+- `qwen3.5-9b-deepseek-v4-flash` — 9B Q6_K, thinking model, tool-aware, context 8774
+- `qwen3.6-40b-claude-4.6-opus-...` — 40B Q4_K_S, ~22GB (depende de VRAM)
+- `opus4.7-gods.ghost.codex-4b` — 4B Q8_0, menor context
 - `text-embedding-qwen3-embedding-4b` — embedding, filtrado automáticamente
-- `gemma-4-e4b-it-uncensored-max-opus-4.7-i1` — 4B VLM, disponible
-
-**Resolver mejorado (ses2):** `_resolve_lmstudio_model` ahora usa `/api/v0/models` (LM Studio management API) para filtrar solo modelos `state=loaded` y tipo `llm|vlm`, ordenando por `loaded_context_length` descendente — elige automáticamente el más capaz entre los cargados. Fallback a `/v1/models` si el endpoint no existe. `mgmt_base` extrae el host raíz quitando `/v1` del path.
+- `gemma-4-e4b-it-uncensored-max-opus-4.7-i1` — 4B VLM (visual)
 
 ---
 
@@ -424,8 +453,8 @@ Los 3 endpoints del merge gate requieren reiniciar el backend (`start-mvp-local.
 ### ❌ Arrancar el backend Python desde Claude
 `Start-Process` mata el proceso hijo inmediatamente. El frontend Vite SÍ se puede arrancar desde Claude (Bash background), el backend NO.
 
-### ❌ Hardcodear nombres de modelos
-`nvidia.agentic.coder-4b` está en settings pero NO es el modelo activo. Siempre `_resolve_lmstudio_model()`.
+### ❌ Hardcodear nombres de modelos o forzar un endpoint
+El `model_base_url` y `default_model` son **elección del usuario** (ver "LLM Endpoint" arriba). Nunca asumir LM Studio local sin verificar settings. Para modelos: en Modo A usar `_resolve_lmstudio_model()`; en Modo B respetar `model_roles[role]` o `default_model` del settings.
 
 ### ❌ Tocar la integración NEMO MCP
 Agregar `try/except` alrededor de `_nemo()` en calls principales, cambiar `_require_nemo_mcp_url`, modificar timeouts MCP — PROHIBIDO.
@@ -462,7 +491,6 @@ El campo `nemo.available` del health check verifica la BD SQLite (`memory_db`). 
 
 - Backend: Python 3.11+, `http.server.ThreadingHTTPServer`, sin frameworks externos.
 - Frontend: React 18 + TypeScript + Vite (puerto 5173).
-- LM Studio: `http://localhost:1234/v1` (OpenAI-compatible API).
+- LLM: OpenAI-compatible — local (LM Studio :1234, Vulkan/Arc iGPU) o remoto (NVIDIA NIM, OpenAI, etc.), elegido por settings.
 - NEMO MCP: protocolo MCP sobre stdio (VS Code extension) o SSE (`http://127.0.0.1:8765/mcp/sse`).
-- Intel Arc iGPU (Meteor Lake) con Vulkan backend en LM Studio.
 - Windows 11, PowerShell 7+.
