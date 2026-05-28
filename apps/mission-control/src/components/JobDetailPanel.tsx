@@ -1,9 +1,11 @@
 import { X, GitBranch, Clock, CheckCircle2, XCircle } from "lucide-react";
+import { TimelinePanel } from "./TimelinePanel";
+import { QualityScorecard } from "./QualityScorecard";
 
 type DetailJob = {
   job_id: string; task_id: string; run_id: string;
   status: string; returncode: number | null;
-  objective?: string | null; logs: string[];
+  objective?: string | null;
   permission_request?: {
     categories: string[]; rationale: string;
     requires_user_approval: string[];
@@ -48,9 +50,9 @@ export function JobDetailPanel({ jobId, jobs, runs, onClose, onMerge, onApprove,
     !job.permission_request?.decision;
   const canMerge = job.status === "completed" && run?.review_status === "awaiting_review";
   const isSuccess = job.status === "completed" && (job.returncode === 0 || job.returncode === null);
+  const isLive = job.status === "running" || job.status === "starting";
   const objective = job.objective ?? run?.objective ?? job.job_id;
-  const recentLogs = job.logs.slice(-10);
-  const statusClass = needsApproval ? "warn" : isSuccess ? "success" : job.status === "running" ? "running" : "error";
+  const statusClass = needsApproval ? "warn" : isSuccess ? "success" : isLive ? "running" : "error";
 
   return (
     <div className="job-detail-panel">
@@ -90,16 +92,9 @@ export function JobDetailPanel({ jobId, jobs, runs, onClose, onMerge, onApprove,
         </div>
       )}
 
-      {recentLogs.length > 0 && (
-        <div className="job-detail-log">
-          <div className="job-detail-section-label">Log reciente</div>
-          <div className="job-detail-log-body">
-            {recentLogs.map((line, i) => (
-              <div key={i} className="job-detail-log-line">{line}</div>
-            ))}
-          </div>
-        </div>
-      )}
+      <TimelinePanel jobId={job.job_id} isLive={isLive} jobStatus={job.status} />
+
+      <QualityScorecard jobId={job.job_id} jobStatus={job.status} />
 
       <div className="job-detail-actions">
         {canMerge && run && (

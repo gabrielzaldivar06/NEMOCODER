@@ -6152,3 +6152,251 @@ textarea:focus-visible,
 .da-status-icon.ready { color: #fbbf24; }
 .da-status-icon.done { color: #4ade80; }
 .da-status-icon.failed { color: #f87171; }
+
+/* ── NEMO-guided repair strategy preview ─────────────────────────────────────── */
+.timeline-event.nemo_guided_repair_start { background: #0f1a2e; border-left: 3px solid #6366f1; }
+.timeline-event.nemo_guided_repair_succeeded { background: #0a1f0d; border-left: 3px solid #4ade80; }
+.timeline-event.nemo_guided_repair_failed { background: #1f0a0a; border-left: 3px solid #f87171; }
+.timeline-nemo-strategy {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 4px;
+  font-size: 11px;
+  color: #c7d2fe;
+}
+.timeline-nemo-strategy-header {
+  font-weight: 600;
+  color: #a5b4fc;
+  margin-bottom: 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.timeline-nemo-strategy ul { margin: 0; padding-left: 16px; line-height: 1.4; }
+.timeline-nemo-strategy li { margin: 2px 0; }
+
+/* ── Repair quality score badge ──────────────────────────────────────────────── */
+.timeline-quality-score {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+}
+.quality-score-bar {
+  position: relative;
+  width: 80px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.quality-score-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, #f87171 0%, #fbbf24 50%, #4ade80 100%);
+}
+.quality-score-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.timeline-quality-score.good .quality-score-value { color: #4ade80; }
+.timeline-quality-score.mid .quality-score-value { color: #fbbf24; }
+.timeline-quality-score.low .quality-score-value { color: #f87171; }
+.quality-score-reason {
+  font-size: 10px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* ── Worktree diff live indicator ────────────────────────────────────────────── */
+.worktree-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4ade80;
+  display: inline-block;
+  animation: da-blink 1.6s ease-in-out infinite;
+  margin-left: 6px;
+}
+.worktree-live-summary {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+  flex: 1;
+}
+
+/* ── Quality scorecard ───────────────────────────────────────────────────────── */
+.quality-scorecard {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: #0d1117;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #c9d1d9;
+}
+.quality-scorecard.loading { opacity: 0.5; }
+.qs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.qs-title {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  color: #e2e8f0;
+}
+.qs-grade-pill {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+.qs-grade-pill.good { background: #052e16; color: #4ade80; border: 1px solid #166534; }
+.qs-grade-pill.mid { background: #2d1a00; color: #fbbf24; border: 1px solid #b45309; }
+.qs-grade-pill.low { background: #2d0a0a; color: #f87171; border: 1px solid #b91c1c; }
+.qs-grade-pill.neutral { background: #1f2937; color: #94a3b8; border: 1px solid #374151; }
+.qs-section {
+  margin: 6px 0;
+  padding-top: 6px;
+  border-top: 1px solid #1f2937;
+}
+.qs-section:first-of-type { border-top: 0; padding-top: 0; }
+.qs-section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.qs-section-aux {
+  margin-left: auto;
+  text-transform: none;
+  font-weight: 400;
+  letter-spacing: normal;
+  color: #6b7280;
+}
+.qs-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px 12px;
+  margin-bottom: 6px;
+}
+.qs-readiness-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+}
+.qs-readiness-row.good { color: #4ade80; }
+.qs-readiness-row.low { color: #f87171; }
+.qs-readiness-row.neutral { color: #94a3b8; }
+.qs-score-bar {
+  position: relative;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+}
+.qs-score-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #f87171 0%, #fbbf24 50%, #4ade80 100%);
+}
+.qs-score-label {
+  position: absolute;
+  right: 4px;
+  font-size: 9px;
+  color: #fff;
+  text-shadow: 0 0 2px rgba(0,0,0,0.7);
+  font-variant-numeric: tabular-nums;
+}
+.qs-failed-cmd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #f87171;
+  padding: 2px 0;
+}
+.qs-failed-cmd code {
+  background: rgba(248, 113, 113, 0.08);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 9px;
+}
+.qs-failed-rc { color: #94a3b8; font-size: 9px; }
+.qs-repair-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: #c9d1d9;
+}
+.qs-repair-row strong { color: #e2e8f0; }
+.qs-best-score.good strong { color: #4ade80; }
+.qs-best-score.mid strong { color: #fbbf24; }
+.qs-best-score.low strong { color: #f87171; }
+.qs-stop-reason {
+  margin-top: 4px;
+  font-size: 10px;
+  color: #fbbf24;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.qs-stop-reason code {
+  background: rgba(251, 191, 36, 0.1);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+.qs-score-sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 32px;
+  padding: 4px 0;
+}
+.qs-spark-bar {
+  flex: 1;
+  min-width: 6px;
+  border-radius: 2px 2px 0 0;
+}
+.qs-spark-bar.good { background: #4ade80; }
+.qs-spark-bar.mid { background: #fbbf24; }
+.qs-spark-bar.low { background: #f87171; }
+.qs-subtask-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.qs-subtask-list li {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: #c9d1d9;
+}
+.qs-st-idx {
+  font-variant-numeric: tabular-nums;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+.qs-st-title { flex: 1; }
