@@ -7,10 +7,12 @@ from typing import Callable
 from nemo_coding_platform.core.engine_interface import EngineProvider, MutationRequest, MutationResult, apply_mutation_request
 from nemo_coding_platform.core.mutations import QualityMutationEngine
 from nemo_coding_platform.core.repair import RepairBudget, RepairPlan
+from nemo_coding_platform.core.token_counter import count_tokens
 from nemo_coding_platform.core.validation import ValidationSuiteResult, simulate_validation
 from nemo_coding_platform.core.context_compaction import compact_context, prune_tool_output
 from nemo_coding_platform.core.post_mutation_lint import lint_changed_files, format_lint_evidence
 from nemo_coding_platform.core.nemo_patterns import nemo_before_attempt, nemo_after_failure, nemo_after_success
+from nemo_coding_platform.core.product import AutonomyLevel
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +72,7 @@ def run_repair_loop(
     task_id: str = "",
     critique_fn: Callable[[str, str, str], float] | None = None,
     quality_threshold: float = 0.0,
+    autonomy_level: AutonomyLevel | None = None,
 ) -> RepairRunResult:
     plan = RepairPlan(budget)
     validation = initial_validation
@@ -79,7 +82,6 @@ def run_repair_loop(
     best_score: float = 0.0
     start_time = time.time()
     _tokens_consumed = 0
-    _CHARS_PER_TOKEN = 4  # standard heuristic
     _last_token_source = "estimated"
     while plan.can_record_attempt():
         _repair_mode = not validation.passed
@@ -154,7 +156,7 @@ def run_repair_loop(
                 (r.output for r in validation.results if not r.passed and r.output),
                 "",
             )
-            error_snippet = first_failed_output.strip()[:200] if first_failed_output else ""
+            error_snippet = first_failed_output.strip()[:600] if first_failed_output else ""
             nemo_query = f"repair: {failed} — {error_snippet}" if error_snippet else f"repair failure: {failed}"
         nemo_snippet = nemo_before_attempt(
             nemo_adapter,
@@ -192,13 +194,17 @@ def run_repair_loop(
         # --- Context Compaction (inspired by opencode) ---
         repair_context = compact_context(repair_context)
 
-        remaining_timeout_seconds = base_request.timeout_seconds
+        # Adaptive timeout: give later repair attempts up to 1.5× base timeout,
+        # capped by remaining time budget. First attempt uses base timeout (scale=1.0).
+        _attempt_scale = min(1.5, 1.0 + (len(plan.attempts) - 1) * 0.1)
+        _scaled_timeout = base_request.timeout_seconds * _attempt_scale
+        remaining_timeout_seconds = _scaled_timeout
         if time_limit_seconds is not None:
             remaining_budget = time_limit_seconds - (time.time() - start_time)
             if remaining_budget <= 0:
                 stop_reason = "repair_time_budget_exhausted"
                 break
-            remaining_timeout_seconds = min(base_request.timeout_seconds, max(1.0, remaining_budget))
+            remaining_timeout_seconds = min(_scaled_timeout, max(1.0, remaining_budget))
         
         if _quality_mode:
             repair_objective = (
@@ -237,15 +243,23 @@ def run_repair_loop(
             nemo_after_failure(nemo_adapter, raw_validation_evidence, task_id, attempt_number)
 
         if not mutation.changed_files and not mutation.applied_files:
-            stop_reason = "repair_noop"
+            if mutation.returncode is None and "timed out" in mutation.stderr:
+                stop_reason = "engine_timeout"
+            else:
+                stop_reason = "repair_noop"
             break
-        # Prefer provider-reported token usage; fallback to heuristic estimate.
+        if autonomy_level == AutonomyLevel.MANUAL and len(plan.attempts) >= 1:
+            stop_reason = "requires_human_supervision"
+            break
+        # Prefer provider-reported token usage; fallback to tiktoken (with smarter
+        # heuristic as last resort). chars/4 under-counts reasoning models by 2-3×
+        # because reasoning_content is invisible but still billed.
         if mutation.token_usage and mutation.token_usage.total_tokens > 0:
             _tokens_consumed += mutation.token_usage.total_tokens
             _last_token_source = "real"
         else:
             last_diff = mutations[-1].diff_artifact if mutations else ""
-            _tokens_consumed += (len(repair_context) + len(last_diff)) // _CHARS_PER_TOKEN
+            _tokens_consumed += count_tokens(repair_context) + count_tokens(last_diff)
             _last_token_source = "estimated"
         validation = validator() if validator else simulate_validation(commands, fail_validation)
         if validation.passed and critique_fn is not None:
@@ -269,12 +283,13 @@ def run_repair_loop(
         )
     if validation.passed and quality_threshold > 0 and 0 < best_score < quality_threshold:
         stop_reason = "quality_below_threshold"
-    if validation.passed and mutations:
-        last_failed_cmd = ", ".join(result.command.command for result in initial_validation.results if not result.passed) or "validation"
-        nemo_after_success(
-            nemo_adapter,
-            f"fixed: {base_request.objective}. error_was: {last_failed_cmd}. diff: {mutations[-1].diff_artifact[:500]}",
-            task_id,
-        )
+    if validation.passed:
+        if mutations:
+            last_failed_cmd = ", ".join(result.command.command for result in initial_validation.results if not result.passed) or "validation"
+            diff_snippet = mutations[-1].diff_artifact[:500]
+            outcome_msg = f"fixed: {base_request.objective}. error_was: {last_failed_cmd}. diff: {diff_snippet}"
+        else:
+            outcome_msg = f"passed_first_try: {base_request.objective}"
+        nemo_after_success(nemo_adapter, outcome_msg, task_id)
     return RepairRunResult(plan, tuple(mutations), validation, stop_reason, tokens_consumed=_tokens_consumed, best_score=best_score)
 
