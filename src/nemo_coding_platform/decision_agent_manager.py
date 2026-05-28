@@ -46,14 +46,19 @@ class DecisionAgentJob:
     error: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    _emit_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def _emit(self, event: dict[str, Any]) -> None:
-        event.setdefault("seq", len(self.events))
-        event.setdefault("ts", datetime.now(timezone.utc).isoformat())
-        self.events.append(event)
-        self.updated_at = event["ts"]
+        with self._emit_lock:
+            event.setdefault("seq", len(self.events))
+            event.setdefault("ts", datetime.now(timezone.utc).isoformat())
+            self.events.append(event)
+            self.updated_at = event["ts"]
 
     def to_dict(self) -> dict[str, Any]:
+        with self._emit_lock:
+            events_snapshot = self.events[-50:]
+            updated_at = self.updated_at
         report_dict: dict[str, Any] | None = None
         if self.synthesis_report:
             r = self.synthesis_report
@@ -68,12 +73,12 @@ class DecisionAgentJob:
         return {
             "job_id": self.job_id,
             "status": self.status.value,
-            "events": self.events[-50:],
+            "events": events_snapshot,
             "synthesis_report": report_dict,
             "run_json": self.run_json,
             "error": self.error,
             "created_at": self.created_at,
-            "updated_at": self.updated_at,
+            "updated_at": updated_at,
         }
 
 
@@ -121,18 +126,18 @@ class DecisionAgentManager:
     def apply(self, job_id: str, memory_db: str) -> dict[str, Any]:
         with self._lock:
             job = self._job
-        if job is None or job.job_id != job_id:
-            raise FileNotFoundError(f"No decision agent job found: {job_id}")
-        if job.status != DecisionAgentStatus.AWAITING_REVIEW:
-            raise PermissionError(
-                f"Job {job_id} is not awaiting review (status: {job.status})"
-            )
-        if not job.run_json:
-            raise FileNotFoundError("run_json not set for this job")
-        result = self_mod_apply(job.run_json, approve_review=True, memory_db=memory_db)
-        with self._lock:
-            job.status = DecisionAgentStatus.COMPLETED
-            job._emit({"type": "applied", "detail": "changes merged to main branch"})
+            if job is None or job.job_id != job_id:
+                raise FileNotFoundError(f"No decision agent job found: {job_id}")
+            if job.status != DecisionAgentStatus.AWAITING_REVIEW:
+                raise PermissionError(
+                    f"Job {job_id} is not awaiting review (status: {job.status})"
+                )
+            if not job.run_json:
+                raise FileNotFoundError("run_json not set for this job")
+            run_json = job.run_json
+            job.status = DecisionAgentStatus.COMPLETED  # atomic claim — prevents double-apply
+        result = self_mod_apply(run_json, approve_review=True, memory_db=memory_db)
+        job._emit({"type": "applied", "detail": "changes merged to main branch"})
         return result
 
     def _run_loop(
