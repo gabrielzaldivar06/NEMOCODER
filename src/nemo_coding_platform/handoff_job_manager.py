@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
 import threading
 import time
+
+logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -30,6 +33,15 @@ _TIMELINE_PERSIST_BATCH = 5
 JOB_LOG_LIMIT = 10_000
 JOB_HEARTBEAT_SECONDS = 20.0
 JOB_STALL_HEARTBEATS = 8
+# Stall is declared only when BOTH conditions hold: runtime artifacts unchanged
+# for JOB_STALL_HEARTBEATS ticks AND stdout silent for at least this many seconds.
+# Prevents false-positive stall kills on thinking models that emit reasoning_content
+# without touching files during a long LLM call.
+JOB_STDOUT_QUIET_SECONDS = 180.0
+# Fast poll interval for mid-run permission detection. Decoupled from the 20s
+# heartbeat so user approval prompts surface within ~2s instead of ~20s — critical
+# in long jobs where multiple permissions can stack up.
+PERMISSION_WATCHER_SECONDS = 2.0
 LEGACY_NEMO_SSE_URL = "http://127.0.0.1:8765/mcp/sse"
 
 
@@ -99,6 +111,7 @@ class HandoffJob:
     process: subprocess.Popen[str] | None = None
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    permission_watcher_thread: threading.Thread | None = None
     run_thread: threading.Thread | None = None
     error: str | None = None
     last_runtime_signature: str = ""
@@ -108,7 +121,9 @@ class HandoffJob:
     updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     timeline: list[dict[str, object]] = field(default_factory=list)
     auto_merged: bool = False
+    last_stdout_ts: float = 0.0  # epoch seconds; updated by _pipe_reader on every line
     _tl_event_count: int = 0
+    _tool_audit_offset: int = 0  # lines consumed from tool-audit.jsonl for this job
 
     @classmethod
     def from_snapshot(cls, payload: dict[str, Any]) -> "HandoffJob":
@@ -278,6 +293,31 @@ class HandoffJobManager:
                 error_code="invalid_job_status",
             )
         req_dict = job.permission_request or {}
+
+        # ── Mid-run case: write response file, restore status to running ──────
+        if req_dict.get("mid_run"):
+            request_id = str(req_dict.get("request_id", ""))
+            risk_val = req_dict.get("risk") or req_dict.get("categories", ["unknown"])[0]
+            try:
+                cat = (PermissionCategory(risk_val),) if risk_val else ()
+            except ValueError:
+                cat = ()
+            decision = PermissionDecision(
+                decided_at=datetime.now(_tz.utc).isoformat(),
+                decided_by="mid_run_signal",
+                approved=True,
+                categories=cat,
+                note=note,
+            )
+            with self._lock:
+                job.status = "running"
+                job.permission_request = {**req_dict, "decision": decision.to_dict()}
+            self._persist_job(job)
+            self._write_mid_run_response(config, request_id, approved=True, note=note)
+            self._append_log(job, f"mid-run permission granted: req_id={request_id} note={note!r}")
+            return job
+        # ── Pre-run case (original flow) ──────────────────────────────────────
+
         all_cats = tuple(
             PermissionCategory(v)
             for v in (req_dict.get("categories") or [])
@@ -310,7 +350,7 @@ class HandoffJobManager:
         run_thread.start()
         return job
 
-    def deny_permission(self, job_id: str, note: str = "") -> "HandoffJob":
+    def deny_permission(self, job_id: str, note: str = "", config: "MissionControlServerConfig | None" = None) -> "HandoffJob":
         from datetime import timezone as _tz
         from nemo_coding_platform.core.permission_engine import PermissionDecision, PermissionCategory
         from nemo_coding_platform.mission_control_server import ApiRequestError  # lazy
@@ -322,6 +362,32 @@ class HandoffJobManager:
                 error_code="invalid_job_status",
             )
         req_dict = job.permission_request or {}
+
+        # ── Mid-run case: write deny response, subprocess continues (tool denied) ─
+        if req_dict.get("mid_run"):
+            request_id = str(req_dict.get("request_id", ""))
+            risk_val = req_dict.get("risk") or req_dict.get("categories", ["unknown"])[0]
+            try:
+                cat = (PermissionCategory(risk_val),) if risk_val else ()
+            except ValueError:
+                cat = ()
+            decision = PermissionDecision(
+                decided_at=datetime.now(_tz.utc).isoformat(),
+                decided_by="mid_run_signal",
+                approved=False,
+                categories=cat,
+                note=note,
+            )
+            with self._lock:
+                job.status = "running"
+                job.permission_request = {**req_dict, "decision": decision.to_dict()}
+            self._persist_job(job)
+            if config is not None:
+                self._write_mid_run_response(config, request_id, approved=False, note=note)
+            self._append_log(job, f"mid-run permission denied: req_id={request_id} note={note!r}")
+            return job
+        # ── Pre-run case (original flow) ─────────────────────────────────────
+
         all_cats = tuple(
             PermissionCategory(v)
             for v in (req_dict.get("categories") or [])
@@ -358,13 +424,26 @@ class HandoffJobManager:
         # Recover the original repo_path from the source job's run JSON.
         # source.payload is empty after server restart so we cannot rely on it.
         source_repo_path: str | None = None
+        source_sandbox_path: str | None = None
         if source.run_json:
             try:
                 src_data = _json.loads(Path(source.run_json).read_text(encoding="utf-8"))
                 source_repo_path = src_data.get("task", {}).get("repo_path")
+                source_sandbox_path = src_data.get("run", {}).get("sandbox_path")
             except Exception:
                 pass
         effective_repo = Path(source_repo_path) if source_repo_path else Path(config.repo_path)
+
+        # Detect whether the source run was paused (has a resume token in continuation-state.json).
+        has_resume_token = False
+        if source_sandbox_path:
+            try:
+                cont_state_path = Path(source_sandbox_path) / "continuation-state.json"
+                if cont_state_path.exists():
+                    cont_state = _json.loads(cont_state_path.read_text(encoding="utf-8"))
+                    has_resume_token = bool(cont_state.get("resume_token"))
+            except Exception:
+                pass
 
         # Merge existing worktree so the new run starts from an up-to-date main branch.
         try:
@@ -397,6 +476,30 @@ class HandoffJobManager:
             # Also reset validation to none so Mission Control build commands don't apply.
             continuation_payload.setdefault("validation_policy", "none")
             continuation_payload["validation_commands"] = ["validation skipped by policy:none"]
+
+        if has_resume_token and source.run_json:
+            # Paused run — use long-handoff-continue to resume from checkpoint.
+            from nemo_coding_platform.mission_control_server import _objective, _provider_mode, _timeout_seconds  # lazy
+            objective = _objective(continuation_payload)
+            provider = _provider_mode(continuation_payload)
+            timeout = _timeout_seconds(continuation_payload)
+            run_suffix = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            short_id = uuid4().hex[:8]
+            job_id = f"cont-job-{run_suffix}-{short_id}"
+            task_id = f"cont-task-{run_suffix}-{short_id}"
+            run_id = f"cont-run-{run_suffix}-{short_id}"
+            run_json = config.runtimes_path / "continuations" / f"{_safe_stem(task_id)}-{_safe_stem(run_id)}.json"
+            run_json.parent.mkdir(parents=True, exist_ok=True)
+            command = self._build_continue_command(config, continuation_payload, Path(source.run_json), objective, provider, timeout, task_id, run_id, run_json)
+            job = HandoffJob(job_id, task_id, run_id, str(run_json), "starting", command, dict(continuation_payload), ["starting continuation from paused run"])
+            with self._lock:
+                self._jobs[job_id] = job
+            self._persist_job(job)
+            run_thread = threading.Thread(target=self._run_job, args=(config, job), daemon=True)
+            job.run_thread = run_thread
+            run_thread.start()
+            return job
+
         return self.start(config, continuation_payload)
 
     def _build_continue_command(
@@ -714,12 +817,134 @@ class HandoffJobManager:
                         tags=["auto_merge", "completed", "merged"],
                         context=f"Worktree branch {branch} merged to main automatically. Files: {[item.path for item in plan.files[:10]]}",
                     )
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("NEMO cognitive_ingest failed for auto-merge job %s: %s", job.job_id, exc)
         else:
             self._append_log(job, f"auto_merge failed: merge_worktree_to_main returned False for branch={branch}")
 
+    @staticmethod
+    def _mid_run_perm_dir(config: "MissionControlServerConfig") -> Path:
+        return Path(config.repo_path) / ".spacecode-runtimes" / "mcp"
+
+    @staticmethod
+    def _write_mid_run_response(
+        config: "MissionControlServerConfig",
+        request_id: str,
+        *,
+        approved: bool,
+        note: str = "",
+    ) -> None:
+        perm_dir = HandoffJobManager._mid_run_perm_dir(config)
+        perm_dir.mkdir(parents=True, exist_ok=True)
+        record = {
+            "approved": approved,
+            "note": note,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        (perm_dir / f"response-perm-{request_id}.json").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+
+    def _check_mid_run_permissions(
+        self, config: "MissionControlServerConfig", job: HandoffJob
+    ) -> None:
+        """Detect pending mid-run permission requests written by mcp_server.py."""
+        if job.status != "running":
+            return
+        perm_dir = self._mid_run_perm_dir(config)
+        if not perm_dir.exists():
+            return
+        for pending_file in sorted(perm_dir.glob("pending-perm-*.json")):
+            try:
+                data = json.loads(pending_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if data.get("job_id") != job.job_id:
+                continue
+            req_id = str(data.get("request_id") or pending_file.stem.removeprefix("pending-perm-"))
+            # Skip if already tracking this request
+            if (job.permission_request or {}).get("request_id") == req_id:
+                return
+            mid_run_request: dict[str, object] = {
+                "mid_run": True,
+                "request_id": req_id,
+                "job_id": job.job_id,
+                "categories": [data.get("risk", "unknown")],
+                "rationale": f'Agent wants to call "{data.get("tool", "?")}" (risk: {data.get("risk", "?")})',
+                "requires_user_approval": [data.get("risk", "unknown")],
+                "tool": data.get("tool"),
+                "risk": data.get("risk"),
+                "tool_args_preview": data.get("tool_args_preview", {}),
+                "ts": data.get("ts"),
+            }
+            with self._lock:
+                job.permission_request = mid_run_request
+                job.status = "awaiting_permission"
+            self._persist_job(job)
+            self._append_log(
+                job,
+                f"mid-run permission requested: tool={data.get('tool')} risk={data.get('risk')} req_id={req_id}",
+            )
+            return
+
+    def _sync_tool_audit_events(
+        self, config: "MissionControlServerConfig", job: HandoffJob
+    ) -> None:
+        """Read new entries from tool-audit.jsonl for this job and add them to job.timeline."""
+        import os as _os
+        audit_path = Path(
+            _os.environ.get("SPACE_CODE_MCP_AUDIT_LOG", ".spacecode-runtimes/mcp/tool-audit.jsonl")
+        )
+        if not audit_path.is_absolute():
+            audit_path = Path(config.repo_path) / audit_path
+        if not audit_path.exists():
+            return
+        try:
+            lines = audit_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        new_events: list[dict[str, object]] = []
+        for raw in lines[job._tool_audit_offset:]:
+            job._tool_audit_offset += 1
+            if not raw.strip():
+                continue
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("job_id") != job.job_id:
+                continue
+            audit = entry.get("tool_call_audit") or {}
+            outcome = str(entry.get("outcome", ""))
+            tool_name = str(audit.get("tool", "?"))
+            risk = str(audit.get("risk", "?"))
+            # Skip noisy read-only tools; include writes and denied actions
+            if outcome == "allowed" and risk == "read_only":
+                continue
+            summary = f"{tool_name} — {outcome}"
+            seq = len(job.timeline) + len(new_events)
+            new_events.append({
+                "kind": "tool_use",
+                "summary": summary,
+                "phase": "execute",
+                "sequence": seq,
+                "ts": str(entry.get("ts", "")),
+                "payload": {
+                    "tool": tool_name,
+                    "risk": risk,
+                    "outcome": outcome,
+                    "allowed": bool(audit.get("allowed", outcome == "allowed")),
+                },
+            })
+        if new_events:
+            with self._lock:
+                job.timeline.extend(new_events)
+                job._tl_event_count += len(new_events)
+                job.updated_at = datetime.now(timezone.utc).isoformat()
+
     def _heartbeat_tick(self, config: "MissionControlServerConfig", job: HandoffJob) -> None:
+        self._check_mid_run_permissions(config, job)
+        self._sync_tool_audit_events(config, job)
         self._append_log(job, self._heartbeat_snapshot(config, job))
         stalled_reason = self._stall_reason(config, job)
         if stalled_reason and job.process and job.process.poll() is None:
@@ -729,6 +954,9 @@ class HandoffJobManager:
             self._set_status(job, "failed")
 
     def _stall_reason(self, config: "MissionControlServerConfig", job: HandoffJob) -> str | None:
+        # Never stall-kill while waiting for user to approve/deny a mid-run request.
+        if job.status == "awaiting_permission":
+            return None
         runtime_path = self._runtime_path(config, job)
         run_path = Path(job.run_json)
         if runtime_path is None or not runtime_path.exists() or run_path.exists():
@@ -747,10 +975,22 @@ class HandoffJobManager:
 
         if job.stagnant_heartbeats < JOB_STALL_HEARTBEATS:
             return None
+        # Dual-signal: artifacts AND stdout must both be silent. Thinking models
+        # (qwen3.5, kimi, DeepSeek-R1 family) can emit reasoning_content for
+        # minutes without writing files — killing them mid-think wastes budget.
+        last_stdout = getattr(job, "last_stdout_ts", 0.0) or 0.0
+        stdout_silence = time.time() - last_stdout if last_stdout > 0 else None
+        if stdout_silence is not None and stdout_silence < JOB_STDOUT_QUIET_SECONDS:
+            # Artifacts stagnant but stdout is still active — agent is thinking,
+            # not stalled. Don't kill it.
+            return None
+        silence_label = (
+            f"{int(stdout_silence)}s" if stdout_silence is not None else "no stdout activity recorded"
+        )
         return (
             "stall detected: runtime artifacts unchanged for "
-            f"{job.stagnant_heartbeats} heartbeats (~{int(job.stagnant_heartbeats * JOB_HEARTBEAT_SECONDS)}s); "
-            "terminating job to fail closed"
+            f"{job.stagnant_heartbeats} heartbeats (~{int(job.stagnant_heartbeats * JOB_HEARTBEAT_SECONDS)}s) "
+            f"AND stdout silent for {silence_label}; terminating job to fail closed"
         )
 
     def _start_heartbeat(self, config: "MissionControlServerConfig", job: HandoffJob) -> None:
@@ -769,6 +1009,29 @@ class HandoffJobManager:
         job.heartbeat_thread = heartbeat_thread
         heartbeat_thread.start()
 
+        def _permission_watcher_loop() -> None:
+            # Fast poll for pending mid-run permission requests. The heartbeat loop
+            # also checks this every 20s, but for long jobs a 2s poll surfaces the
+            # request to the UI almost instantly instead of stalling the agent.
+            while job.process and job.process.poll() is None:
+                if stop_event.wait(PERMISSION_WATCHER_SECONDS):
+                    break
+                if not job.process or job.process.poll() is not None:
+                    break
+                if job.status == "running":
+                    try:
+                        self._check_mid_run_permissions(config, job)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("permission watcher tick failed for %s", job.job_id, exc_info=True)
+
+        watcher = threading.Thread(
+            target=_permission_watcher_loop,
+            daemon=True,
+            name=f"perm-{job.job_id}",
+        )
+        job.permission_watcher_thread = watcher
+        watcher.start()
+
     def _join_heartbeat(self, job: HandoffJob) -> None:
         heartbeat_thread = job.heartbeat_thread
         if heartbeat_thread is not None and heartbeat_thread.is_alive():
@@ -776,6 +1039,12 @@ class HandoffJobManager:
             if heartbeat_thread.is_alive():
                 logger.warning("heartbeat_thread for %s did not stop in 5s", job.job_id)
         job.heartbeat_thread = None
+        watcher = job.permission_watcher_thread
+        if watcher is not None and watcher.is_alive():
+            watcher.join(timeout=3)
+            if watcher.is_alive():
+                logger.warning("permission_watcher_thread for %s did not stop in 3s", job.job_id)
+        job.permission_watcher_thread = None
         job.heartbeat_stop = None
 
     def _runtime_path(self, config: "MissionControlServerConfig", job: HandoffJob) -> Path | None:
@@ -885,12 +1154,18 @@ class HandoffJobManager:
         else:
             command.extend(("--memory-db", str(config.memory_db)))
         mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
-        if mcp_url:
+        # Only wire NEMO MCP when using the subprocess provider — fake/test providers
+        # don't call an LLM so they don't need cross-session memory, and connecting to
+        # NEMO SSE would add 60-90s of NEMO bootstrap latency for no benefit.
+        if mcp_url and provider == "subprocess":
             # stdio://vscode/nemo only works inside VS Code — child subprocesses need HTTP SSE
             if mcp_url.lower() == VSCODE_STDIO_NEMO_URL:
                 mcp_url = LEGACY_NEMO_SSE_URL
             command.extend(("--mcp-url", mcp_url))
             command.extend(("--mcp-prefix", str(payload.get("nemo_mcp_prefix") or "nemo.")))
+        else:
+            # Non-subprocess providers (fake, test) or no NEMO URL — run without MCP
+            command.append("--allow-non-mcp")
         base_url_run = str(payload.get("base_url") or payload.get("model_base_url") or "http://127.0.0.1:1234/v1")
         model_run = str(payload.get("model") or payload.get("default_model") or "").strip() or _resolve_lmstudio_model(base_url_run)
         command.extend(("--model-profile", model_run))
@@ -975,7 +1250,7 @@ class HandoffJobManager:
             env.setdefault("LMSTUDIO_API_KEY", _settings_api_key)
         _nemo_url = str(_nemo_settings.get("nemo_mcp_url") or "")
         _nemo_db = str(config.memory_db) if config.memory_db else ""
-        if _nemo_configured(config.memory_db, _nemo_url):
+        if config.memory_db is not None and _nemo_configured(config.memory_db, _nemo_url):
             try:
                 mcp_call_nemo_tool(
                     "context_bootstrap",
@@ -987,9 +1262,32 @@ class HandoffJobManager:
                     token_budget=400,
                     compact=True,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("NEMO context_bootstrap failed for job %s: %s", job.job_id, exc)
+            # Pre-load task-specific memories (code patterns, past corrections) so the
+            # subprocess inherits a warmed NEMO context relevant to this exact task.
+            try:
+                _anticipate_result = mcp_call_nemo_tool(
+                    "anticipate",
+                    lifecycle_phase="start",
+                    memory_db=_nemo_db,
+                    mcp_url=_nemo_url,
+                    context=f"handoff task: {str(job.payload.get('objective') or 'handoff job')[:200]}",
+                    limit=5,
+                    tags_include=["code_pattern", "correction", "plan_loop_success"],
+                )
+                _anticipated = (_anticipate_result or {}).get("memories") or []
+                if _anticipated:
+                    logger.info(
+                        "NEMO anticipate: %d relevant memories pre-loaded for job %s",
+                        len(_anticipated), job.job_id,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("NEMO anticipate (non-critical) failed for job %s: %s", job.job_id, exc)
         _write_current_job_context(config, job.job_id)
+        with self._lock:
+            if job.status in {"cancelled", "paused"}:
+                return
         try:
             job.process = subprocess.Popen(
                 job.command,
@@ -998,6 +1296,7 @@ class HandoffJobManager:
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=env,
+                close_fds=True,  # prevent inheriting parent's pipe handles on Windows
             )
             self._set_status(job, "running")
             self._append_log(job, f"process started pid={job.process.pid}")
@@ -1011,6 +1310,7 @@ class HandoffJobManager:
                     try:
                         for raw_line in _stdout:
                             line = raw_line.rstrip("\r\n")
+                            job.last_stdout_ts = time.time()
                             if line.startswith(NEMO_EVENT_PREFIX):
                                 try:
                                     event = json.loads(line[len(NEMO_EVENT_PREFIX):])
@@ -1039,9 +1339,9 @@ class HandoffJobManager:
                     _stdout.close()
                 except Exception:
                     pass
-                _reader.join(timeout=60.0)
+                _reader.join(timeout=15.0)
                 if _reader.is_alive():
-                    logger.warning("pipe_reader for %s did not drain in 60s", job.job_id)
+                    logger.warning("pipe_reader for %s did not drain in 15s", job.job_id)
             else:
                 job.returncode = job.process.wait()
             if job.heartbeat_stop is not None:
@@ -1062,7 +1362,7 @@ class HandoffJobManager:
             self._append_log(job, str(error))
         finally:
             _write_current_job_context(config, None)
-            if _nemo_configured(config.memory_db, _nemo_url):
+            if config.memory_db is not None and _nemo_configured(config.memory_db, _nemo_url):
                 try:
                     mcp_call_nemo_tool(
                         "store_conversation",
@@ -1073,7 +1373,7 @@ class HandoffJobManager:
                         role="assistant",
                         session_id=job.job_id,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("NEMO store_conversation failed for job %s: %s", job.job_id, exc)
             if job.run_thread is threading.current_thread():
                 job.run_thread = None
