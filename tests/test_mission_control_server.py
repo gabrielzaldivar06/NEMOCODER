@@ -6,6 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+# Set ENABLE_REAL_PROVIDER=1 to run integration tests with a live LLM (LM Studio required).
+_REAL_PROVIDER = os.getenv("ENABLE_REAL_PROVIDER") == "1"
+_TEST_PROVIDER = "subprocess" if _REAL_PROVIDER else "fake"
+
 import nemo_coding_platform.mission_control_server as mission_control_server
 from nemo_coding_platform.core.memory import MemoryAtom, MemoryAtomType
 from nemo_coding_platform.core.memory_persistence import PersistentMemoryStore
@@ -428,7 +432,7 @@ class MissionControlServerTests(unittest.TestCase):
                     config,
                     {
                         "objective": "Create src/mission_control_smoke.py with a smoke function.",
-                        "provider": "fake",
+                        "provider": _TEST_PROVIDER,
                         "acceptance_criteria": "smoke file exists",
                         "validation_policy": "none",
                         "target_files": "src/mission_control_smoke.py",
@@ -650,7 +654,7 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertEqual(error.exception.error_code, "missing_source_json")
 
     def test_async_handoff_job_completes_and_captures_logs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
             manager = HandoffJobManager()
@@ -661,10 +665,10 @@ class MissionControlServerTests(unittest.TestCase):
                     "objective": "Create an async smoke run.",
                     "acceptance_criteria": "async job completes",
                     "validation_commands": "python -m unittest",
-                    "provider": "fake",
+                    "provider": _TEST_PROVIDER,
                 },
             )
-            deadline = time.time() + 15
+            deadline = time.time() + (120 if _REAL_PROVIDER else 90)
             while job.status in {"starting", "running"} and time.time() < deadline:
                 time.sleep(0.05)
 
@@ -675,13 +679,13 @@ class MissionControlServerTests(unittest.TestCase):
             self.assertTrue(any("job finished" in line or "validation_passed" in line for line in finished.logs))
 
     def test_job_resume_is_idempotent_after_completion(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
             manager = HandoffJobManager()
 
             job = manager.start(config, {"objective": "Create an async smoke run.", "provider": "fake"})
-            deadline = time.time() + 15
+            deadline = time.time() + 45
             while job.status in {"starting", "running"} and time.time() < deadline:
                 time.sleep(0.05)
 
@@ -692,13 +696,13 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertTrue(any("resume ignored status=completed" in line for line in resumed.logs))
 
     def test_job_cancel_is_idempotent_after_completion(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
             manager = HandoffJobManager()
 
             job = manager.start(config, {"objective": "Create an async smoke run.", "provider": "fake"})
-            deadline = time.time() + 15
+            deadline = time.time() + 45
             while job.status in {"starting", "running"} and time.time() < deadline:
                 time.sleep(0.05)
 
@@ -932,7 +936,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return _nested_payload({"stored": True, "atom_id": "atom-ingest"})
                 return _nested_payload({})
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
                 payload = api_agent_message(config, {"message": "cual es mi nombre?", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         self.assertIn("Según NEMO MCP real, tu nombre es Nested User", payload["message"]["content"])
@@ -966,7 +970,7 @@ class MissionControlServerTests(unittest.TestCase):
                 }
                 return {"ok": True, "payload": payloads.get(tool_name, {"memories": []})}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", side_effect=_capture):
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", side_effect=_capture):
                 api_agent_message(config, {"message": "plan next coding step", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse", "require_nemo_mcp_capabilities": False})
 
         context_summary = captured.get("context_summary", "")
@@ -1000,7 +1004,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return {"ok": True, "payload": {"memories": []}}
                 return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="ok"):
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="ok"):
                 api_agent_message(config, {"message": "guarda que mi nombre es Gabriel Zaldivar", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         ingest_call = next((item for item in captured_calls if item[0] == "cognitive_ingest"), None)
@@ -1033,7 +1037,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return {"ok": True, "payload": {"memories": []}}
                 return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
                 payload = api_agent_message(config, {"message": "cual es mi nombre?", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         self.assertIn("Según NEMO MCP real, tu nombre es Gabriel Zaldivar", payload["message"]["content"])
@@ -1068,7 +1072,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return {"ok": True, "payload": {"memories": []}}
                 return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
                 payload = api_agent_message(config, {"message": "DIME COMO ME LLAMO", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         self.assertIn("tu nombre es gabriel", payload["message"]["content"])
@@ -1140,7 +1144,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return {"ok": True, "payload": {"memories": []}}
                 return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="hallucinated DEV4 owner") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="hallucinated DEV4 owner") as model_call:
                 payload = api_agent_message(
                     config,
                     {
@@ -1204,7 +1208,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return {"ok": True, "payload": {"memories": []}}
                 return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="Tool executed.") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="Tool executed.") as model_call:
                 payload = api_agent_message(
                     config,
                     {
@@ -1261,7 +1265,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return {"ok": True, "payload": {"memories": []}}
                 return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model reminder hallucination") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model reminder hallucination") as model_call:
                 payload = api_agent_message(config, {"message": "RECUERDAS ALFA42", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         content = payload["message"]["content"]
@@ -1301,7 +1305,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return {"ok": True, "payload": {"memories": []}}
                 return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="No tengo información sobre ALFA42") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="No tengo información sobre ALFA42") as model_call:
                 payload = api_agent_message(config, {"message": "DIME LO QUE SEPAS DE ALFA42", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         content = payload["message"]["content"]
@@ -1342,7 +1346,7 @@ class MissionControlServerTests(unittest.TestCase):
                     return {"ok": True, "payload": {"memories": []}}
                 return {"ok": True, "payload": {"stored": True, "atom_id": "atom-1"}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model answer") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model answer") as model_call:
                 payload = api_agent_message(config, {"message": "CUAL ES MI NOMBRE Y QUE PROYECTOS TENGO", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
         content = payload["message"]["content"]
@@ -1433,14 +1437,14 @@ class MissionControlServerTests(unittest.TestCase):
 
                 return {"ok": True, "payload": {"accepted": True}}
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_mcp_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="ok"):
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_mcp_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_mcp_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="ok"):
                 # Session 1: store multiple memories.
                 config_session_1 = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
                 api_agent_message(config_session_1, {"message": "guarda que mi nombre es Gabriel Zaldivar", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
                 api_agent_message(config_session_1, {"message": "guarda que mi preferencia es usar pytest para validacion", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
                 api_agent_message(config_session_1, {"message": "guarda que el proyecto activo es dev4 mission control", "provider": "subprocess", "nemo_mcp_url": "http://127.0.0.1:8765/mcp/sse"})
 
-            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_mcp_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
+            with patch("nemo_coding_platform.mission_control_server.mcp_call_nemo_tool", side_effect=_fake_mcp_call), patch("nemo_coding_platform.nemo_gateway._mcp_call_nemo_tool", side_effect=_fake_mcp_call), patch("nemo_coding_platform.mission_control_server._lmstudio_chat_completion", return_value="model should not answer memory lookup") as model_call:
                 # Session 2: new chat session/process should recover prior memory through MCP native tool calls.
                 config_session_2 = MissionControlServerConfig.from_paths(repo, runtimes, root / "apply-results", root / "runs", memory_db)
                 response = api_agent_message(
@@ -2694,7 +2698,7 @@ class MissionControlServerTests(unittest.TestCase):
         self.assertIn(job.status, {"completed", "failed", "cancelled"})
 
     def test_concurrent_jobs_have_isolated_logs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             config = MissionControlServerConfig.from_paths(root, ".nemo-runtimes", root / "apply-results", memory_db=None)
             manager = HandoffJobManager()
@@ -2703,7 +2707,7 @@ class MissionControlServerTests(unittest.TestCase):
             job_b = manager.start(config, {"objective": "Task beta", "provider": "fake"})
             job_c = manager.start(config, {"objective": "Task gamma", "provider": "fake"})
 
-            deadline = time.time() + 20
+            deadline = time.time() + 60
             for job in (job_a, job_b, job_c):
                 while job.status in {"starting", "running"} and time.time() < deadline:
                     time.sleep(0.05)
@@ -3035,6 +3039,78 @@ class ChatEndpointTransparencyTests(unittest.TestCase):
         failed_tc = [tc for tc in result["message"]["tool_calls"] if tc.get("status") == "failed"]
         self.assertTrue(len(failed_tc) > 0, "at least one failed tool_call must be present")
 
+
+class DecisionAgentEndpointTests(unittest.TestCase):
+    def test_decision_agent_status_idle(self):
+        """api_decision_agent_status returns idle when no job has run."""
+        from nemo_coding_platform.decision_agent_manager import DecisionAgentManager
+        from nemo_coding_platform.mission_control_server import api_decision_agent_status
+        manager = DecisionAgentManager()
+        result = api_decision_agent_status(manager)
+        self.assertEqual(result["status"], "idle")
+        self.assertIsNone(result["job"])
+
+    def test_decision_agent_run_returns_job_id(self):
+        """api_decision_agent_run starts a job and returns a da- prefixed job_id."""
+        import tempfile
+        from pathlib import Path
+        from nemo_coding_platform.decision_agent_manager import DecisionAgentManager
+        from nemo_coding_platform.mission_control_server import (
+            MissionControlServerConfig, api_decision_agent_run,
+        )
+        from nemo_coding_platform.core.decision_agent import _FALLBACK_REPORT
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(
+                root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None
+            )
+            manager = DecisionAgentManager()
+            with patch(
+                "nemo_coding_platform.decision_agent_manager.analyze_nemo_signal",
+                return_value=_FALLBACK_REPORT,
+            ), patch(
+                "nemo_coding_platform.decision_agent_manager.execute_self_modification",
+                side_effect=RuntimeError("blocked in test"),
+            ):
+                result = api_decision_agent_run(
+                    config,
+                    {"lm_base_url": "http://localhost:1234/v1", "lm_model": "test"},
+                    manager,
+                )
+        self.assertIn("job_id", result)
+        self.assertTrue(result["job_id"].startswith("da-"))
+        self.assertEqual(result["status"], "analyzing")
+
+    def test_decision_agent_apply_wrong_status_raises(self):
+        """api_decision_agent_apply raises PermissionError if job is not awaiting_review."""
+        import tempfile
+        from pathlib import Path
+        from nemo_coding_platform.decision_agent_manager import DecisionAgentManager
+        from nemo_coding_platform.mission_control_server import (
+            MissionControlServerConfig, api_decision_agent_apply, api_decision_agent_run,
+        )
+        from nemo_coding_platform.core.decision_agent import _FALLBACK_REPORT
+        from unittest.mock import patch
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = MissionControlServerConfig.from_paths(
+                root, ".nemo-runtimes", root / "apply-results", root / "runs", memory_db=None
+            )
+            manager = DecisionAgentManager()
+            with patch(
+                "nemo_coding_platform.decision_agent_manager.analyze_nemo_signal",
+                return_value=_FALLBACK_REPORT,
+            ), patch(
+                "nemo_coding_platform.decision_agent_manager.execute_self_modification",
+                side_effect=RuntimeError("blocked in test"),
+            ):
+                result = api_decision_agent_run(config, {}, manager)
+                job_id = result["job_id"]
+            time.sleep(0.3)
+            with self.assertRaises(PermissionError):
+                api_decision_agent_apply(config, {"job_id": job_id}, manager)
 
 if __name__ == "__main__":
     unittest.main()

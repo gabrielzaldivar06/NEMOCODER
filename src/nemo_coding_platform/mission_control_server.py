@@ -4,6 +4,7 @@ import ast
 import base64
 import json
 import html
+import logging
 import os
 import re
 import shutil
@@ -59,6 +60,8 @@ from nemo_coding_platform.core.repo_map import build_repo_map, read_anchor_docs
 from nemo_coding_platform.core.validation import validation_commands_for_policy
 from nemo_coding_platform.core.vscode_mcp_config import VSCODE_STDIO_NEMO_URL, default_nemo_mcp_url, discover_vscode_mcp_server
 from nemo_coding_platform.spacecode_mcp_tools import mcp_call_nemo_tool
+from nemo_coding_platform.decision_agent_manager import DecisionAgentManager
+from nemo_coding_platform.core.decision_agent import DecisionAgentStatus
 from nemo_coding_platform.nemo_gateway import NemoGateway
 from nemo_coding_platform.lm_client import LmClient
 from nemo_coding_platform.worktree_api import (
@@ -107,6 +110,8 @@ from nemo_coding_platform.handoff_job_manager import (
     HandoffJobManager,
 )
 
+logger = logging.getLogger(__name__)
+
 NEMO_EVENT_PREFIX = "NEMO_EVENT:"
 _TIMELINE_PERSIST_BATCH = 5
 
@@ -139,6 +144,8 @@ _DEFAULT_SESSION_NEMO_TOOLS: tuple[str, ...] = (
     "anticipate",
     "store_conversation",
     "cognitive_ingest",
+    "salience_score",
+    "create_correction",
 )
 
 
@@ -969,13 +976,15 @@ def _nemo_adapter(
     *,
     nemo_mcp_url: str | None = None,
     nemo_mcp_prefix: str = "nemo.",
-) -> PersistentNemoAdapter | McpNemoAdapter | None:
+) -> PersistentNemoAdapter | McpNemoAdapter:
     normalized_mcp_url = str(nemo_mcp_url or "").strip()
     if normalized_mcp_url:
         return McpNemoAdapter(normalized_mcp_url, tool_prefix=nemo_mcp_prefix)
-    if memory_db is None:
-        return None
-    return PersistentNemoAdapter(PersistentMemoryStore(memory_db))
+    if memory_db is not None:
+        return PersistentNemoAdapter(PersistentMemoryStore(memory_db))
+    # No explicit config — default to the standard NEMO SSE endpoint so
+    # cross-session learning always has a path (matches subprocess behavior).
+    return McpNemoAdapter(LEGACY_NEMO_SSE_URL, tool_prefix=nemo_mcp_prefix)
 
 
 def _require_nemo_mcp_for_execution(
@@ -1099,7 +1108,7 @@ def _chat_base_url(payload: dict[str, object]) -> str:
     return value.strip().rstrip("/")
 
 
-_resolve_lmstudio_model_cache: dict[str, tuple[str, float]] = {}
+_resolve_lmstudio_model_cache: dict[str, tuple[str, int, float]] = {}  # key → (model_id, context_length, expires)
 _resolve_lmstudio_model_cache_lock = threading.Lock()
 _RESOLVE_MODEL_TTL = 60.0  # seconds — model changes don't happen mid-plan
 _RESOLVE_MODEL_SKIP = re.compile(r"embed|rerank|bge|nomic", re.I)
@@ -1124,7 +1133,7 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
     cache_key = f"{base_url}|{api_key}|{default_model}"
     with _resolve_lmstudio_model_cache_lock:
         cached = _resolve_lmstudio_model_cache.get(cache_key)
-        if cached is not None and time.time() < cached[1]:
+        if cached is not None and time.time() < cached[2]:
             return cached[0]
     base = base_url.rstrip("/")
     # Management API lives at the root, not under /v1
@@ -1143,9 +1152,11 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
         ]
         if candidates:
             candidates.sort(key=lambda m: int(m.get("loaded_context_length") or 0), reverse=True)
-            result = str(candidates[0]["id"])
+            best = candidates[0]
+            result = str(best["id"])
+            ctx_len = int(best.get("loaded_context_length") or 0)
             with _resolve_lmstudio_model_cache_lock:
-                _resolve_lmstudio_model_cache[cache_key] = (result, time.time() + _RESOLVE_MODEL_TTL)
+                _resolve_lmstudio_model_cache[cache_key] = (result, ctx_len, time.time() + _RESOLVE_MODEL_TTL)
             return result
     except (OSError, urllib.error.URLError, json.JSONDecodeError, KeyError) as exc:
         logger.debug("LM Studio mgmt API unavailable (%s): %s", mgmt_base, exc)
@@ -1174,7 +1185,7 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
                 result = models[0]
         if result:
             with _resolve_lmstudio_model_cache_lock:
-                _resolve_lmstudio_model_cache[cache_key] = (result, time.time() + _RESOLVE_MODEL_TTL)
+                _resolve_lmstudio_model_cache[cache_key] = (result, 0, time.time() + _RESOLVE_MODEL_TTL)
             return result
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         logger.debug("model list via /v1/models failed (%s): %s", base, exc)
@@ -1183,8 +1194,22 @@ def _resolve_lmstudio_model(base_url: str, *, api_key: str = "lm-studio", defaul
     # resolve on the next call if LM Studio comes back online within the TTL window.
     if default_model:
         with _resolve_lmstudio_model_cache_lock:
-            _resolve_lmstudio_model_cache[cache_key] = (default_model, time.time() + _RESOLVE_MODEL_TTL)
+            _resolve_lmstudio_model_cache[cache_key] = (default_model, 0, time.time() + _RESOLVE_MODEL_TTL)
     return default_model
+
+
+def _model_context_length(base_url: str) -> int:
+    """Return the loaded_context_length for the best chat model at base_url, or 0 if unknown."""
+    cache_key = f"{base_url}|lm-studio|"
+    with _resolve_lmstudio_model_cache_lock:
+        cached = _resolve_lmstudio_model_cache.get(cache_key)
+        if cached is not None and time.time() < cached[2]:
+            return cached[1]
+    # Not cached — trigger a resolve so the cache is populated
+    _resolve_lmstudio_model(base_url)
+    with _resolve_lmstudio_model_cache_lock:
+        cached = _resolve_lmstudio_model_cache.get(cache_key)
+        return cached[1] if cached else 0
 
 
 _VLM_KEYWORDS = re.compile(r"vision|multimodal|vl\b|vlm\b|-vl-|-vlm-|fuyu|llava|intern.?vl|qwen.*vl|phi.*visual|phi.*multi", re.I)
@@ -1450,7 +1475,7 @@ def _lmstudio_chat_completion(payload: dict[str, object], user_message: str, con
                     "ROUTING RULES — FOLLOW EXACTLY:\n"
                     "- Web search, URL navigation, web scraping, login, form filling, any website interaction: ALWAYS use browser_task with the real target URL. Never write a Python/requests script for this.\n"
                     "- Source file changes (create/edit .py, .ts, .js, .tsx, .go, .rs, etc.): ALWAYS use handoff_start. Never write source code inline.\n"
-                    "- Standalone Python scripts, matplotlib charts, Python CLI tools: use plan_generate. plan_generate runs PYTHON code in a subprocess — NOT HTML.\n"
+                    "- Standalone executable scripts (Python, C++, Go, Rust, JavaScript/Node, Bash, SQL), matplotlib charts, data analysis, simulations, algorithms: use plan_generate. plan_generate compiles/runs code in a subprocess — NOT HTML.\n"
                     "- Visual/interactive artifacts (HTML game, HTML dashboard, HTML page, SVG, Mermaid diagram, React component, image prompt): generate inline using the artifact fences below. NEVER route these to plan_generate.\n"
                     "- Conversation, questions, status queries: respond directly in text.\n"
                     "CRITICAL: NEVER ask '¿Quieres ejecutar...?' or 'Do you want me to...?' — trigger the tool IMMEDIATELY. The user asked for the action, not a proposal.\n"
@@ -1602,7 +1627,14 @@ def _chat_max_tokens(payload: dict[str, object]) -> int:
     budget = _positive_int(payload.get("token_budget"), 128000, minimum=4096, maximum=512000)
     fallback = min(max(budget // 4, DEFAULT_CHAT_MAX_TOKENS), MAX_CHAT_MAX_TOKENS)
     value = payload.get("max_tokens", payload.get("chat_max_tokens", os.environ.get("NEMO_CHAT_MAX_TOKENS", fallback)))
-    return _positive_int(value, fallback, minimum=1024, maximum=MAX_CHAT_MAX_TOKENS)
+    requested = _positive_int(value, fallback, minimum=1024, maximum=MAX_CHAT_MAX_TOKENS)
+    # Cap to half the model's actual context window so we always leave room for input.
+    # Only applies when the model context is known (local LM Studio endpoint).
+    ctx_len = _model_context_length(_chat_base_url(payload))
+    if ctx_len > 0:
+        model_cap = max(1024, ctx_len // 2)
+        return min(requested, model_cap)
+    return requested
 
 
 def _agent_context_char_budget(payload: dict[str, object], mode_context_chars: int, mode_default: int = DEFAULT_CONTEXT_WINDOW_TOKENS) -> int:
@@ -3409,6 +3441,31 @@ def api_kpis(config: MissionControlServerConfig) -> dict[str, object]:
     }
 
 
+def api_open_folder(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
+    """Open a folder (or select a file) in the OS file manager."""
+    import subprocess as _sub
+    path_str = str(payload.get("path") or "")
+    if not path_str:
+        artifacts_dir = config.runtimes_path / "mission-control" / "artifacts" / "images" / "plans"
+        path_str = str(artifacts_dir)
+    target = Path(path_str)
+    try:
+        import sys as _sys
+        if _sys.platform == "win32":
+            if target.is_file():
+                _sub.Popen(["explorer", "/select,", str(target)])
+            else:
+                target.mkdir(parents=True, exist_ok=True)
+                _sub.Popen(["explorer", str(target)])
+        elif _sys.platform == "darwin":
+            _sub.Popen(["open", str(target.parent if target.is_file() else target)])
+        else:
+            _sub.Popen(["xdg-open", str(target.parent if target.is_file() else target)])
+        return {"ok": True, "path": str(target)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def api_cleanup(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
     dry_run = bool(payload.get("dry_run", True))
     max_age_days = int(payload.get("max_age_days") or 7)
@@ -4506,6 +4563,56 @@ def _is_identity_query(message: str) -> bool:
     )
 
 
+_CORRECTION_PHRASES = (
+    # Spanish
+    "no, eso está mal", "no, está mal", "te equivocaste", "en realidad es",
+    "en realidad no", "eso es incorrecto", "eso no es correcto", "estás equivocado",
+    "estás equivocada", "no es así", "incorrecto", "me equivoqué antes",
+    "no, la función", "no, el método", "no, el archivo", "no, el campo",
+    "corrígete", "corrección:", "eso no es", "eso no era",
+    # English
+    "no, that's wrong", "that's incorrect", "you're wrong", "you made a mistake",
+    "actually it's", "actually it is", "actually, it", "no, the function",
+    "no, the method", "no, the file", "correction:", "that is wrong",
+    "not quite right", "that's not right", "you got that wrong",
+)
+
+_CORRECTION_RE = re.compile(
+    r"\b(no[,.]?\s+(eso|that|está|the|la|el|le)\b|"
+    r"en realidad\b|actually\b|te equivoca|you('re| are) wrong|"
+    r"incorrecto|incorrect|corrección|correction:)",
+    re.IGNORECASE,
+)
+
+
+def _is_correction(message: str) -> bool:
+    """Return True when the message looks like a user correction of a prior assistant claim."""
+    text = message.lower().strip()
+    # Short messages with correction markers are reliable signals
+    if any(text.startswith(p) for p in _CORRECTION_PHRASES):
+        return True
+    # Regex check for mid-sentence corrections (longer messages)
+    if len(text) > 20 and _CORRECTION_RE.search(text):
+        return True
+    return False
+
+
+def _correction_context_from_message(message: str) -> tuple[str, str]:
+    """Extract (wrong_assumption, correct_answer) from a correction message.
+
+    Returns a best-effort pair; both fields may be the full message when the
+    structure is ambiguous — NEMO still benefits from the full text.
+    """
+    text = message.strip()
+    # Pattern: "no, X es/is Y" or "en realidad X es Y"
+    for sep in (" es ", " is ", " = ", " -> ", ": ", " → "):
+        if sep in text.lower():
+            parts = text.split(sep, 1)
+            if len(parts) == 2 and len(parts[1]) > 2:
+                return parts[0].strip(), parts[1].strip()
+    return text, text
+
+
 def _extract_declared_user_name(message: str) -> str:
     text = message.strip()
     patterns = (
@@ -5155,10 +5262,12 @@ ROUTING RULES — read before choosing a tool:
    Use when the user asks to implement, fix bugs, or change repo source code.
    params: objective (required), acceptance (required), target_files (optional)
 
-2. plan_generate — iterative PYTHON script generation (headless scripts ONLY — no images)
-   Use ONLY for Python scripts, matplotlib charts, data analysis, or Python CLI programs that run HEADLESS.
-   DO NOT use for: image generation, HTML, browser apps, desktop GUIs.
-   For images → generate_image.
+2. plan_generate — iterative code generation with automated execution and critique
+   Use for ANY standalone executable program or script: Python, C++, Go, Rust, JavaScript/Node, Bash, SQL.
+   Great for: algorithms, simulations, data analysis, CLI tools, game engines, math demos, benchmarks.
+   DO NOT use for: HTML/web apps, browser GUIs, image generation, source file edits (use handoff_start).
+   For images → generate_image. For HTML → inline artifact fence.
+   The language is auto-detected from the objective — just describe what you want.
    params: objective (required), max_iterations (default 5), quality_threshold (default 7.5)
 
 3. job_status — query the status of a running background job
@@ -5319,8 +5428,34 @@ _SHELL_PROGRAMS: frozenset[str] = frozenset({
     "tsc", "vite", "uvicorn", "gunicorn", "flask", "fastapi", "curl", "wget",
     "ls", "dir", "cat", "echo", "cp", "mv", "rm", "mkdir", "touch", "find",
     "grep", "rg", "sed", "awk", "tar", "zip", "unzip", "ssh", "scp",
-    "rustup", "cargo", "dotnet", "mvn", "gradle", "cmake",
+    "rustup", "dotnet", "mvn", "gradle", "cmake",
+    # C/C++ compilers and build tools
+    "gcc", "g++", "clang", "clang++", "cc", "c++", "ld", "ar", "nm",
+    # Python quality tools
+    "mypy", "black", "ruff", "flake8", "pylint", "isort", "bandit",
+    # JS/TS quality tools
+    "eslint", "prettier", "tslint", "biome",
+    # Infra / cloud
+    "terraform", "kubectl", "helm", "aws", "az", "gcloud", "heroku", "vercel",
+    # Package managers
+    "brew", "apt", "apt-get", "yum", "dnf", "pacman", "choco", "winget", "scoop",
+    # Windows shells
+    "powershell", "pwsh",
 })
+# Patterns that indicate source code rather than a shell command.
+# Conservative: false negatives (missing a Run button) are cheaper than false positives.
+_NOT_SHELL_RE = re.compile(
+    r"[{}]"                     # C/C++ struct/block braces
+    r"|;\s*$"                   # trailing semicolon (C statement)
+    r"|::"                      # C++ scope resolution operator
+    r"|->"                      # pointer member access
+    r"|[+\-*%]="                # compound assignment: +=, -=, *=, %=
+    r"|==|!="                   # equality operators
+    r"|\b(?:int|float|double|bool|char|void|long|short|unsigned|signed|"
+    r"struct|class|enum|typedef|template|auto|typename|namespace|"
+    r"using|extern|register|volatile|inline|fn\s+\w+\s*\(|def\s+\w+\s*\()\b",
+    re.IGNORECASE,
+)
 # Execution-intent verbs the user may write before the command.
 _EXEC_VERB_RE = re.compile(
     r"(?:^|\s)(?:ejecuta|execute|run|corre|correr|ejecutar|lanza|lanzar|arranca|arrancar"
@@ -5328,17 +5463,48 @@ _EXEC_VERB_RE = re.compile(
     r"|levanta|lanza)\s+([^\n,;.?!]{2,120})",
     re.IGNORECASE,
 )
-# Fenced code blocks (bash/sh/shell/zsh/ps1/cmd or plain).
+# Fenced code blocks (bash/sh/shell/zsh/ps1/cmd or unlabeled).
 _CODE_BLOCK_RE = re.compile(r"```(?:bash|sh|shell|zsh|cmd|powershell|ps1|)?\s*\n?(.*?)\n?```", re.DOTALL)
 # Inline backtick code.
 _INLINE_CODE_RE = re.compile(r"`([^`\n]{2,120})`")
 
 
 def _looks_like_shell_cmd(text: str) -> bool:
-    """Return True if text looks like a runnable shell command."""
+    """Return True if text looks like a runnable shell command.
+
+    Intentionally conservative — false negatives (no Run button) are far less
+    harmful than false positives (Run button on a C++ snippet like
+    'Rect { float x, y, w, h; }' or 'position += velocity * dt').
+    """
     text = text.strip().lstrip("$ ")
-    first = text.split()[0].lower().lstrip("./") if text.split() else ""
-    return first in _SHELL_PROGRAMS or (len(text) > 3 and " " in text and not text.startswith("<"))
+    if not text:
+        return False
+    parts = text.split()
+    first = parts[0].lower().lstrip("./") if parts else ""
+
+    # Reject comment lines (C++, C block, or Python/shell comments)
+    if text.startswith(("//", "/*", "#")):
+        return False
+
+    # Fast path: starts with a known shell program
+    if first in _SHELL_PROGRAMS:
+        return True
+
+    # Explicit executable path (./script.sh, /usr/bin/python, ~/bin/tool)
+    # Note: "//" is a C++ comment, not a path
+    if parts[0].startswith(("./", "~/")) or (parts[0].startswith("/") and not parts[0].startswith("//")):
+        return True
+
+    # Reject anything that looks like source code
+    if _NOT_SHELL_RE.search(text):
+        return False
+
+    # Reject bare compiler flags with no executable (e.g. "-Wall -Wextra")
+    if text.startswith("-"):
+        return False
+
+    # Unknown first word — stay conservative
+    return False
 
 
 def _extract_cmd_from_user_message(message: str) -> "str | None":
@@ -5619,6 +5785,376 @@ def _llm_tool_call_to_action(
     return None
 
 
+# ── Response cache ─────────────────────────────────────────────────────────────
+# Idempotent chat queries (no URLs, no actions, ordinary chat mode) are cached
+# for _CHAT_CACHE_TTL seconds to avoid redundant NEMO + LLM round-trips.
+_CHAT_CACHE: dict[str, tuple[dict[str, object], float]] = {}
+_CHAT_CACHE_LOCK = threading.Lock()
+_CHAT_CACHE_TTL = 120  # seconds
+_CHAT_CACHE_MAX = 50
+
+
+def _chat_cache_key(payload: dict[str, object], message: str) -> str:
+    raw = f"{_chat_base_url(payload)}:{message}"
+    return sha256(raw.encode()).hexdigest()
+
+
+def _get_chat_cache(key: str) -> dict[str, object] | None:
+    with _CHAT_CACHE_LOCK:
+        entry = _CHAT_CACHE.get(key)
+        if entry is None:
+            return None
+        result, ts = entry
+        if time.time() - ts > _CHAT_CACHE_TTL:
+            del _CHAT_CACHE[key]
+            return None
+        return result
+
+
+def _set_chat_cache(key: str, result: dict[str, object]) -> None:
+    with _CHAT_CACHE_LOCK:
+        if len(_CHAT_CACHE) >= _CHAT_CACHE_MAX:
+            oldest = min(_CHAT_CACHE, key=lambda k: _CHAT_CACHE[k][1])
+            del _CHAT_CACHE[oldest]
+        _CHAT_CACHE[key] = (result, time.time())
+
+
+def _is_cacheable_chat(message: str, actions: list[dict[str, object]], chat_mode: str) -> bool:
+    """Return True for pure-text idempotent responses with no side-effects."""
+    if chat_mode != "chat":
+        return False
+    if _extract_http_urls(message):
+        return False
+    if actions:
+        return False
+    return True
+
+
+# ── Streaming chat SSE ─────────────────────────────────────────────────────────
+
+def _iter_chat_sse(
+    config: MissionControlServerConfig,
+    payload: dict[str, object],
+    server: "MissionControlHttpServer | None",
+) -> "Generator[dict[str, object], None, None]":
+    """Generator yielding SSE event dicts for /api/agent/message with Accept: text/event-stream."""
+    from typing import Generator  # local import avoids circular; typing is stdlib
+    t0 = time.perf_counter()
+    settings = _load_settings(config)
+    payload = {**settings, **payload}
+    message = _message(payload)
+    nemo_mcp_url = _require_nemo_mcp_url(payload)
+    if nemo_mcp_url == LEGACY_NEMO_SSE_URL and settings.get("nemo_mcp_url") == VSCODE_STDIO_NEMO_URL:
+        nemo_mcp_url = VSCODE_STDIO_NEMO_URL
+    selected_nemo_tools = _selected_nemo_tools(payload)
+    chat_mode = _chat_mode(payload, message, None)
+    mode_profile = _chat_mode_profile(chat_mode)
+    portfolio_budget = max(256, mode_profile["portfolio_budget"])
+    run_deep_context = chat_mode in {"research", "execution"}
+    tool_calls: list[dict[str, object]] = []
+
+    # ── 1. context_bootstrap — loads prime_context + mini portfolio in one call ─
+    yield {"type": "tool_start", "name": "nemo_memory.context_bootstrap"}
+    _ts = time.perf_counter()
+    bootstrap_payload = _nemo_chat_tool_call(
+        config, tool_calls, "context_bootstrap",
+        lifecycle_phase="start",
+        nemo_mcp_url=nemo_mcp_url,
+        allowed_tools=selected_nemo_tools,
+        task=message, topic="Mission Control conversation",
+        token_budget=portfolio_budget, limit=8,
+    )
+    yield {"type": "tool_done", "name": "nemo_memory.context_bootstrap", "ms": int((time.perf_counter() - _ts) * 1000)}
+    # NOTE: prime_context is intentionally skipped here — context_bootstrap already
+    # calls it internally, so running it again would double-load the same memories.
+
+    # ── 2. Explicit memory search for direct lookup requests ──────────────────
+    run_memory_lookup = _is_nemo_memory_lookup_request(message)
+    if run_memory_lookup:
+        _lookup_query = _extract_nemo_lookup_query(message)
+        if _lookup_query:
+            yield {"type": "tool_start", "name": "nemo_memory.search_memories"}
+            _ts = time.perf_counter()
+            _nemo_chat_tool_call(
+                config, tool_calls, "search_memories",
+                lifecycle_phase="review",
+                nemo_mcp_url=nemo_mcp_url,
+                allowed_tools=selected_nemo_tools,
+                query=_lookup_query, limit=min(5, mode_profile["search_limit"]),
+                compact=True, database_filter="ai_memories",
+            )
+            yield {"type": "tool_done", "name": "nemo_memory.search_memories", "ms": int((time.perf_counter() - _ts) * 1000)}
+
+    # ── 3. Research mode: build_context_portfolio + anticipate (parallel) ─────
+    anticipate_payload: dict[str, Any] = {}
+    if run_deep_context:
+        _deep_t0 = time.perf_counter()
+        yield {"type": "tool_start", "name": "nemo_memory.build_context_portfolio"}
+        yield {"type": "tool_start", "name": "nemo_memory.anticipate"}
+
+        _portfolio_result: dict[str, Any] = {}
+        _anticipate_result: dict[str, Any] = {}
+        _port_calls: list[dict[str, object]] = []
+        _ant_calls: list[dict[str, object]] = []
+
+        def _run_portfolio() -> None:
+            _portfolio_result.update(
+                _nemo_chat_tool_call(
+                    config, _port_calls, "build_context_portfolio",
+                    lifecycle_phase="plan",
+                    nemo_mcp_url=nemo_mcp_url,
+                    allowed_tools=selected_nemo_tools,
+                    task=message, topic="Mission Control conversation",
+                    token_budget=portfolio_budget, limit=40,
+                )
+            )
+
+        def _run_anticipate() -> None:
+            _anticipate_result.update(
+                _nemo_chat_tool_call(
+                    config, _ant_calls, "anticipate",
+                    lifecycle_phase="plan",
+                    nemo_mcp_url=nemo_mcp_url,
+                    allowed_tools=selected_nemo_tools,
+                    task=message, limit=mode_profile["anticipate_limit"],
+                )
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as _ex:
+            _fp = _ex.submit(_run_portfolio)
+            _fa = _ex.submit(_run_anticipate)
+            _fp.result()
+            _fa.result()
+
+        tool_calls.extend(_port_calls)
+        tool_calls.extend(_ant_calls)
+        anticipate_payload = _anticipate_result
+        _deep_ms = int((time.perf_counter() - _deep_t0) * 1000)
+        yield {"type": "tool_done", "name": "nemo_memory.build_context_portfolio", "ms": _deep_ms}
+        yield {"type": "tool_done", "name": "nemo_memory.anticipate", "ms": _deep_ms}
+        # Teach NEMO which portfolio was used so future retrievals improve.
+        _portfolio_id = _portfolio_result.get("portfolio_id") or _portfolio_result.get("id")
+        if _portfolio_id:
+            try:
+                _nemo_chat_tool_call(
+                    config, tool_calls, "record_context_feedback",
+                    lifecycle_phase="review",
+                    nemo_mcp_url=nemo_mcp_url,
+                    allowed_tools=selected_nemo_tools,
+                    portfolio_id=str(_portfolio_id), was_useful=True, token_delta=0,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ── 4. Build context summary ───────────────────────────────────────────────
+    _cognitive_parts: list[str] = []
+    if isinstance(bootstrap_payload, dict):
+        bootstrap_context = _bootstrap_context_text(bootstrap_payload).strip()
+        if bootstrap_context:
+            _cognitive_parts.append(f"Bootstrapped NEMO context: {bootstrap_context}")
+    _cognitive_parts.append(_nemo_bootstrap_packet(tool_calls))
+    cognitive_preload = "\n".join(_cognitive_parts)
+    context_summary = _agent_context_summary(
+        None, (), (), False,
+        cognitive_preload=cognitive_preload,
+        max_context_chars=_agent_context_char_budget(
+            payload, mode_profile["context_chars"], mode_profile["context_window_tokens"]
+        ),
+    )
+
+    # ── 5. LLM streaming ──────────────────────────────────────────────────────
+    active_endpoint = _chat_base_url(payload)
+    active_model = _resolve_lmstudio_model(active_endpoint) or _chat_model(payload)
+    _max_out = _chat_max_tokens(payload)
+    # Conservative tokens/sec estimate for Arc iGPU: ~8 tok/s for large models, faster for small.
+    # context_length < 8000 ≈ 4B model (~20 tok/s), otherwise assume 8 tok/s for safety.
+    _ctx = _model_context_length(active_endpoint)
+    _tps_est = 20.0 if 0 < _ctx < 8000 else 8.0
+    _estimated_seconds = max(5, int(_max_out / _tps_est))
+    yield {"type": "llm_start", "model": active_model, "endpoint": active_endpoint,
+           "max_tokens": _max_out, "estimated_seconds": _estimated_seconds}
+
+    history = [
+        h for h in (payload.get("history") or [])
+        if isinstance(h, dict) and h.get("role") in {"user", "assistant"}
+        and isinstance(h.get("content"), str)
+    ]
+    full_content = ""
+    stream_error: str | None = None
+    try:
+        # Build the same chat body as _lmstudio_chat_completion then stream it
+        verified_tools = _verified_nemo_tool_list()
+        runtime_read_only, declared_write_or_destructive = _runtime_verified_nemo_tools(payload)
+        native_mcp_url = str(payload.get("nemo_mcp_url") or "").strip()
+        native_mode = "enabled" if native_mcp_url else "disabled"
+        runtime_read_text = ", ".join(runtime_read_only) if runtime_read_only else "none"
+        runtime_write_text = ", ".join(declared_write_or_destructive) if declared_write_or_destructive else "none"
+        _sys_msgs = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the Space Code Mission Control coding agent for the local-first Space Code platform. "
+                    "Space Code is the software-engineering product (planning, coding, testing, review, apply). "
+                    "NEMO MCP is the memory/context plane used by this product; it is not the product itself. "
+                    "Do not describe yourself as a generic messaging system. "
+                    "Answer in the user's language. Be concise, direct, and operational — never ask for confirmation before acting. "
+                    "IMPORTANT: The Mission Control server bootstrapped NEMO context before calling you and included the real results below. "
+                    "Treat that packet as authoritative memory for this response. Do NOT claim you personally called the tools, but do use the bootstrapped context directly. "
+                    "When the user asks you to save, store, or remember something, confirm it is already saved (the server did it). "
+                    "Do not claim you applied code unless an explicit apply action did it. "
+                    "Never invent MCP/NEMO tool names or capabilities outside the verified catalog below. "
+                    "Never answer with only a raw tool name such as get_current_time, search_memories, or context_bootstrap; explain the actual answer or next action in natural language.\n\n"
+                    "ROUTING RULES — FOLLOW EXACTLY:\n"
+                    "- Web search, URL navigation, web scraping, login, form filling, any website interaction: ALWAYS use browser_task with the real target URL. Never write a Python/requests script for this.\n"
+                    "- Source file changes (create/edit .py, .ts, .js, .tsx, .go, .rs, etc.): ALWAYS use handoff_start. Never write source code inline.\n"
+                    "- Standalone executable scripts (Python, C++, Go, Rust, JavaScript/Node, Bash, SQL), matplotlib charts, data analysis, simulations, algorithms: use plan_generate. plan_generate compiles/runs code in a subprocess — NOT HTML.\n"
+                    "- Visual/interactive artifacts (HTML game, HTML dashboard, HTML page, SVG, Mermaid diagram, React component, image prompt): generate inline using the artifact fences below. NEVER route these to plan_generate.\n"
+                    "- Conversation, questions, status queries: respond directly in text.\n"
+                    "CRITICAL: NEVER ask '¿Quieres ejecutar...?' or 'Do you want me to...?' — trigger the tool IMMEDIATELY. The user asked for the action, not a proposal.\n"
+                    "BREVITY RULE: Keep responses under 80 words. When triggering a tool, embed the JSON and add ONE short sentence. No pseudocode, no lists."
+                ),
+            },
+            {
+                "role": "system",
+                "content": (
+                    "ARTIFACT STUDIO OUTPUT CONTRACT:\n"
+                    "When the user asks for an HTML chart, interactive dashboard, HTML game, HTML visualization, SVG diagram, Mermaid diagram, React component, interface mockup, visual report, image prompt, or other WEB-RENDERABLE artifact, produce a typed fenced code block so Mission Control can render and version it.\n"
+                    "EXCEPTION: matplotlib charts, Python data analysis scripts, or anything that saves a PNG/JPG/SVG file — those MUST use plan_generate instead of artifact fences.\n\n"
+                    "Supported artifact fences (for visual/renderable content ONLY — NOT for source files, NOT for matplotlib/Python scripts):\n"
+                    "- ```html_artifact for complete self-contained HTML documents (games, dashboards, tools) with inline CSS/JS. SANDBOX RULES: no localStorage/sessionStorage (use JS variables instead), no external CDN scripts (embed all JS inline), no alert/confirm/prompt.\n"
+                    "- ```svg_artifact for SVG with viewBox and xmlns.\n"
+                    "- ```mermaid for diagrams.\n"
+                    "- ```react_artifact for self-contained React components exposing function App().\n"
+                    "- ```image_request for JSON image-generation prompts.\n\n"
+                    "IMPORTANT: These artifact fences are ONLY for renderable artifacts. "
+                    "For source files (.py, .ts, .js, etc.) use handoff_start instead — never write them inline. "
+                    "For images, emit image_request JSON with prompt, negative_prompt, size, style, steps, and cfg when useful; Mission Control can send it to a local image backend. "
+                    "Optionally put a title marker as the first line, for example <!-- ARTIFACT:Metrics Dashboard:html -->.\n"
+                    "Keep artifact code self-contained and compatible with a sandboxed preview."
+                ),
+            },
+            {"role": "system", "content": f"[SERVER-SIDE ONLY — YOU CANNOT CALL THESE] NEMO MCP tools already executed by the backend before this response: {verified_tools}. These are informational only. Never embed NEMO tool names in your response."},
+            {"role": "system", "content": f"NEMO MCP native mode: {native_mode}. URL: {native_mcp_url or 'not configured'}"},
+            {"role": "system", "content": f"[SERVER-SIDE ONLY] Runtime-verified NEMO READ tools (executed by backend, not you): {runtime_read_text}"},
+            {"role": "system", "content": f"[SERVER-SIDE ONLY] NEMO WRITE tools (executed by backend, not you): {runtime_write_text}"},
+            {"role": "system", "content": _AGENT_TOOL_CATALOG},
+            {"role": "system", "content": context_summary},
+            *[{"role": turn["role"], "content": turn["content"]} for turn in history[-10:]],
+            {"role": "user", "content": message},
+        ]
+        _extra: dict[str, Any] = {
+            "model": _chat_model(payload),
+            "tools": _AGENT_TOOL_SCHEMAS,
+            "tool_choice": "auto",
+        }
+        if payload.get("enable_thinking"):
+            _extra["enable_thinking"] = True
+
+        client = _get_lm_client(payload)
+        for delta in client.chat_stream(
+            _sys_msgs,
+            temperature=float(payload.get("chat_temperature", payload.get("temperature", 0.2))),
+            max_tokens=_chat_max_tokens(payload),
+            timeout=min(max(_timeout_seconds(payload), 1.0), 180.0),
+            acquire_timeout=30.0,
+            extra_body=_extra,
+        ):
+            full_content += delta
+            yield {"type": "token", "delta": delta}
+    except Exception as _e:  # noqa: BLE001
+        stream_error = str(_e)
+        logger.warning("SSE chat stream error: %s", _e)
+        if not full_content:
+            yield {"type": "error", "error": stream_error}
+            return
+
+    # ── 6. Parse actions from full response ───────────────────────────────────
+    actions: list[dict[str, object]] = []
+    _pre_actions: list[AgentAction] = []
+    for _inv in _parse_llm_tool_calls(full_content):
+        _action = _llm_tool_call_to_action(_inv, server, payload)
+        if _action:
+            _pre_actions.append(_action)
+    _ACTION_KINDS_GUARD = {"plan_generate", "handoff_start"}
+    if all(a.get("kind") in _ACTION_KINDS_GUARD for a in _pre_actions) and _pre_actions:
+        _prose = _THINK_RE.sub("", full_content)
+        _prose_lines = [ln for ln in _prose.splitlines() if not ln.strip().startswith("{")]
+        _prose = " ".join(_prose_lines)
+        if len(_prose.split()) > 50:
+            _pre_actions = []
+    actions.extend(_pre_actions)
+
+    # Layer 2: command extraction
+    if not any(a.get("kind") == "terminal_run" for a in actions):
+        for _cmd in _extract_cmds_from_response(full_content):
+            actions.append(_make_terminal_action(_cmd, "Run"))
+
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+    # ── 7. Fire NEMO post-processing in a background thread ───────────────────
+    def _post_nemo() -> None:
+        try:
+            _nemo_chat_tool_call(
+                config, [], "store_conversation",
+                lifecycle_phase="end",
+                nemo_mcp_url=nemo_mcp_url,
+                allowed_tools=selected_nemo_tools,
+                content=f"User: {message}\nAssistant: {full_content[:1200]}",
+                role="assistant",
+                metadata={"chat_mode": chat_mode, "elapsed_ms": elapsed_ms},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        if len(full_content) > 80 and not stream_error:
+            try:
+                _exchange_content = f"Chat exchange: {full_content[:600]}"
+                _sal_result = _nemo_chat_tool_call(
+                    config, [], "salience_score",
+                    lifecycle_phase="end",
+                    nemo_mcp_url=nemo_mcp_url,
+                    allowed_tools=selected_nemo_tools,
+                    content=full_content[:400],
+                    context="Mission Control chat response",
+                )
+                _importance = int(round(float(
+                    _sal_result.get("importance_suggested") or _sal_result.get("score") or 5
+                )))
+                if _importance >= 4:
+                    _nemo_chat_tool_call(
+                        config, [], "cognitive_ingest",
+                        lifecycle_phase="end",
+                        nemo_mcp_url=nemo_mcp_url,
+                        allowed_tools=selected_nemo_tools,
+                        content=_exchange_content,
+                        memory_type="evidence",
+                        importance_level=max(4, min(10, _importance)),
+                        tags=("spacecode", "chat", "agent"),
+                        context="Mission Control chat streaming response",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+    threading.Thread(target=_post_nemo, daemon=True).start()
+
+    # ── 8. Done ───────────────────────────────────────────────────────────────
+    msg_id = f"msg-{uuid4().hex[:8]}"
+    yield {
+        "type": "done",
+        "message": {
+            "id": msg_id,
+            "role": "assistant",
+            "content": full_content,
+            "tool_calls": tool_calls,
+            "sources": [],
+            "agent_trace": [],
+            "actions": actions,
+        },
+        "model": active_model,
+        "endpoint": active_endpoint,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
 def api_agent_message(
     config: MissionControlServerConfig,
     payload: dict[str, object],
@@ -5655,6 +6191,13 @@ def api_agent_message(
     source_json = payload.get("source_json")
     chat_mode = _chat_mode(payload, message, source_json)
     mode_profile = _chat_mode_profile(chat_mode)
+    # Cache check — only for idempotent chat messages (no URLs, ordinary mode, no source_json)
+    _cache_key_val = _chat_cache_key(payload, message)
+    if chat_mode == "chat" and not _extract_http_urls(message) and not source_json:
+        _cached = _get_chat_cache(_cache_key_val)
+        if _cached is not None:
+            logger.debug("chat cache hit for message=%s", message[:60])
+            return _cached
     payload_budget = payload.get("token_budget")
     budget_override = int(payload_budget) if isinstance(payload_budget, (int, float)) else None
     portfolio_budget = max(256, budget_override or mode_profile["portfolio_budget"])
@@ -5742,20 +6285,70 @@ def api_agent_message(
 
     bootstrap_payload = _call_nemo("context_bootstrap", "start", task=message, topic="Mission Control conversation", token_budget=portfolio_budget, limit=8)
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    if str(nemo_mcp_url).strip().lower() == VSCODE_STDIO_NEMO_URL:
-        _skip_nemo("prime_context", "Covered by context_bootstrap prime_context payload; skipped duplicate expensive direct prime_context call.")
-    else:
-        _call_nemo("prime_context", "start", topic="Mission Control conversation", limit=8)
+    # context_bootstrap always calls prime_context internally — skip the duplicate call
+    # on both stdio and SSE transports to avoid the extra 200-500ms blocking on _LLM_SEM.
+    _skip_nemo("prime_context", "context_bootstrap includes prime_context on all transports; duplicate call eliminated.")
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     if run_deep_context:
-        _call_nemo("build_context_portfolio", "plan", task=message, topic="Mission Control conversation", token_budget=portfolio_budget, limit=40)
+        # Run build_context_portfolio + get_context_portfolio_stats + anticipate concurrently.
+        # Each call gets its own tool_calls list to avoid race conditions; merged afterward.
+        _port_calls: list[dict[str, object]] = []
+        _stats_calls: list[dict[str, object]] = []
+        _ant_calls: list[dict[str, object]] = []
+        _port_result: list[dict[str, Any]] = [{}]
+        _ant_result: list[dict[str, Any]] = [{}]
+
+        def _run_portfolio() -> None:
+            _port_result[0] = _nemo_chat_tool_call(
+                config, _port_calls, "build_context_portfolio",
+                lifecycle_phase="plan",
+                nemo_mcp_url=nemo_mcp_url,
+                allowed_tools=selected_nemo_tools,
+                task=message, topic="Mission Control conversation",
+                token_budget=portfolio_budget, limit=40,
+            )
+
+        def _run_stats() -> None:
+            _nemo_chat_tool_call(
+                config, _stats_calls, "get_context_portfolio_stats",
+                lifecycle_phase="review",
+                nemo_mcp_url=nemo_mcp_url,
+                allowed_tools=selected_nemo_tools,
+            )
+
+        def _run_anticipate() -> None:
+            _ant_result[0] = _nemo_chat_tool_call(
+                config, _ant_calls, "anticipate",
+                lifecycle_phase="plan",
+                nemo_mcp_url=nemo_mcp_url,
+                allowed_tools=selected_nemo_tools,
+                task=message, limit=mode_profile["anticipate_limit"],
+            )
+
+        with ThreadPoolExecutor(max_workers=3) as _deep_ex:
+            _fp = _deep_ex.submit(_run_portfolio)
+            _fs = _deep_ex.submit(_run_stats)
+            _fa = _deep_ex.submit(_run_anticipate)
+            _fp.result(); _fs.result(); _fa.result()
+
+        # Merge into shared state sequentially so trace_step stays consistent.
+        tool_calls.extend(_port_calls)
+        _trace_tool_call("nemo_memory.build_context_portfolio", "phase=plan [parallel]")
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-        _call_nemo("get_context_portfolio_stats", "review")
+        tool_calls.extend(_stats_calls)
+        _trace_tool_call("nemo_memory.get_context_portfolio_stats", "phase=review [parallel]")
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+        tool_calls.extend(_ant_calls)
+        _trace_tool_call("nemo_memory.anticipate", "phase=plan [parallel]")
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+        anticipate_payload = _ant_result[0]
     else:
         _skip_nemo("build_context_portfolio", "Covered by context_bootstrap portfolio packet for ordinary chat; skipped duplicate stdio call.")
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
         _skip_nemo("get_context_portfolio_stats", "Deferred portfolio stats for ordinary chat; context_bootstrap and store_conversation remain active.")
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+        anticipate_payload = {}
+        _skip_nemo("anticipate", "Deferred expensive anticipate for ordinary chat; context_bootstrap and portfolio already loaded proactive NEMO context.")
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     if run_memory_lookup:
         primary_search_payload = _call_nemo("search_memories", "review", query=primary_search_query, limit=min(5, mode_profile["search_limit"]), compact=True, database_filter="ai_memories")
@@ -5763,12 +6356,6 @@ def api_agent_message(
     else:
         _skip_nemo("search_memories", "Skipped expensive semantic search for ordinary chat; NEMO bootstrap/prime context already loaded.")
         tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
-    if run_deep_context:
-        anticipate_payload = _call_nemo("anticipate", "plan", task=message, limit=mode_profile["anticipate_limit"])
-    else:
-        anticipate_payload = {}
-        _skip_nemo("anticipate", "Deferred expensive anticipate for ordinary chat; context_bootstrap and portfolio already loaded proactive NEMO context.")
-    tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     memory_lookup_payloads: list[tuple[str, dict[str, Any]]] = [(message, primary_search_payload)]
     if _is_nemo_memory_lookup_request(message):
         lookup_query = _extract_nemo_lookup_query(message)
@@ -5969,6 +6556,18 @@ def api_agent_message(
         importance=8 if actions else 6,
     )
     tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
+    # Immediately persist user corrections — NEMO gives corrections a +0.35 retrieval boost
+    if _is_correction(message):
+        _wrong, _correct = _correction_context_from_message(message)
+        _call_nemo(
+            "create_correction",
+            "review",
+            wrong_assumption=_wrong[:300],
+            correct_answer=_correct[:300],
+            context=f"User correction in Space Code chat (full message: {message[:200]})",
+            tags=("spacecode", "correction", "agent-chat"),
+        )
+        tool_trace_index, trace_step = _append_agent_trace_from_tool_calls(agent_trace, tool_calls, start_index=tool_trace_index, step_counter=trace_step)
     # Proactively persist user data when they ask to save/remember something
     if _is_memory_store_request(message):
         declared_name = _extract_declared_user_name(message)
@@ -6282,7 +6881,7 @@ def api_agent_message(
     settings_for_chat_metrics["chat_metrics"] = history[-300:]
     _save_settings(config, settings_for_chat_metrics)
     _record_source_analytics(config, chat_mode=chat_mode, source_items=source_items)
-    return {
+    _result: dict[str, object] = {
         "ok": True,
         "message": {
             "id": f"msg-{uuid4().hex[:8]}",
@@ -6293,7 +6892,13 @@ def api_agent_message(
             "agent_trace": agent_trace,
             "actions": actions,
         },
+        "model": _chat_model(payload),
+        "endpoint": _chat_base_url(payload),
     }
+    # Store in cache for idempotent pure-text responses (no actions, no URLs in message)
+    if _is_cacheable_chat(message, actions, chat_mode):
+        _set_chat_cache(_cache_key_val, _result)
+    return _result
 
 
 def api_rollback(config: MissionControlServerConfig, payload: dict[str, object]) -> dict[str, object]:
@@ -6788,7 +7393,7 @@ def api_permission_deny(
     config: "MissionControlServerConfig", job_id: str, payload: dict[str, object], jobs: "HandoffJobManager"
 ) -> dict[str, object]:
     note = str(payload.get("note") or "")
-    job = jobs.deny_permission(job_id, note)
+    job = jobs.deny_permission(job_id, note, config=config)
     return {"denied": True, "job_id": job_id, "status": job.status}
 
 
@@ -6965,10 +7570,110 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             rel = qs.get("path", ["."])[0]
             self._handle(lambda _: api_files(self.server.config, rel), {})
             return
+        if route == "/api/decision-agent/status":
+            self._handle(lambda _: api_decision_agent_status(self.server.decision_agent_manager), {})
+            return
+        if route == "/api/decision-agent/stream":
+            self._handle_decision_agent_stream_sse()
+            return
         if route != "/api/state":
             _json_response(self, 404, {"error": "not_found"})
             return
         self._handle(lambda _: api_state(self.server.config, self.server.jobs), {})
+
+    def _handle_decision_agent_stream_sse(self) -> None:
+        """Stream decision agent events via SSE until terminal state or timeout."""
+        manager = self.server.decision_agent_manager
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+        sent_count = 0
+        idle_ticks = 0
+        max_idle_ticks = 120  # 60 s at 0.5 s intervals
+        _terminal = {
+            DecisionAgentStatus.COMPLETED,
+            DecisionAgentStatus.FAILED,
+            DecisionAgentStatus.AWAITING_REVIEW,
+        }
+        try:
+            while True:
+                job = manager.current_job()
+                if job is not None:
+                    idle_ticks = 0
+                    new_events = job.events[sent_count:]
+                    for event in new_events:
+                        try:
+                            self.wfile.write(
+                                f"data: {json.dumps(event)}\n\n".encode()
+                            )
+                            sent_count += 1
+                        except (BrokenPipeError, ConnectionResetError):
+                            return
+                    try:
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    if job.status in _terminal:
+                        break
+                else:
+                    idle_ticks += 1
+                    try:
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    if idle_ticks >= max_idle_ticks:
+                        break
+                time.sleep(0.5)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _handle_chat_sse(self, payload: dict[str, object]) -> None:
+        """Stream agent chat response as Server-Sent Events (tool badges + LLM tokens)."""
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
+
+        settings = _load_settings(self.server.config)
+        payload = dict(payload)
+        for key in ("model_base_url", "api_key", "default_model", "nemo_mcp_url"):
+            if not payload.get(key):
+                payload[key] = str(settings.get(key) or "")
+        if not payload.get("model_base_url"):
+            payload["model_base_url"] = "http://localhost:1234/v1"
+        if not payload.get("nemo_mcp_url"):
+            payload["nemo_mcp_url"] = str(default_nemo_mcp_url(self.server.config.repo_path))
+
+        def _send(data: dict[str, object]) -> bool:
+            try:
+                line = ("data: " + json.dumps(data, sort_keys=True) + "\n\n").encode("utf-8")
+                self.wfile.write(line)
+                self.wfile.flush()
+                return True
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return False
+
+        try:
+            for event in _iter_chat_sse(self.server.config, payload, self.server):
+                if not _send(event):
+                    break
+        except ApiRequestError as error:
+            _send({"type": "error", "error": str(error), "error_code": error.error_code})
+        except Exception as error:  # noqa: BLE001
+            _send({"type": "error", "error": str(error), "error_code": "internal_error"})
 
     def _handle_plan_sse(self, payload: dict[str, object]) -> None:
         """Stream plan loop iterations as Server-Sent Events."""
@@ -6992,6 +7697,8 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             payload["api_key"] = str(settings.get("api_key") or os.environ.get("LMSTUDIO_API_KEY") or "lm-studio")
         if not payload.get("default_model"):
             payload["default_model"] = str(settings.get("default_model") or "")
+        if not payload.get("nemo_mcp_url"):
+            payload["nemo_mcp_url"] = str(settings.get("nemo_mcp_url") or default_nemo_mcp_url(self.server.config.repo_path))
 
         def _send_event(data: dict[str, object]) -> bool:
             try:
@@ -7244,6 +7951,18 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._check_rate_limit():
             return
+        # SSE streaming for chat endpoint (when client sends Accept: text/event-stream)
+        if urlparse(self.path).path == "/api/agent/message" and "text/event-stream" in self.headers.get("Accept", ""):
+            try:
+                payload = _load_body(self)
+            except ApiRequestError as error:
+                _json_response(self, error.status_code, {"error": str(error), "error_code": error.error_code})
+                return
+            except (json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle_chat_sse(payload)
+            return
         # SSE streaming for plan endpoint (when client requests event-stream)
         if urlparse(self.path).path == "/api/agent/plan" and "text/event-stream" in self.headers.get("Accept", ""):
             try:
@@ -7274,6 +7993,32 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
                 _json_response(self, 400, {"error": "url and task are required", "error_code": "invalid_request"})
                 return
             self._handle_browser_task_sse(payload)
+            return
+        if urlparse(self.path).path == "/api/decision-agent/run":
+            try:
+                body = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle(
+                lambda payload: api_decision_agent_run(
+                    self.server.config, payload, self.server.decision_agent_manager
+                ),
+                body,
+            )
+            return
+        if urlparse(self.path).path == "/api/decision-agent/apply":
+            try:
+                body = _load_body(self)
+            except (ApiRequestError, json.JSONDecodeError, ValueError) as error:
+                _json_response(self, 400, {"error": str(error), "error_code": "invalid_request"})
+                return
+            self._handle(
+                lambda payload: api_decision_agent_apply(
+                    self.server.config, payload, self.server.decision_agent_manager
+                ),
+                body,
+            )
             return
         route = urlparse(self.path).path
         if route.startswith("/api/browser/") and route.endswith("/interact"):
@@ -7352,6 +8097,7 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             "/api/git/checkout": lambda payload: api_git_checkout(self.server.config, payload),
             "/api/git/sync": lambda payload: api_git_sync(self.server.config, payload),
             "/api/artifacts/cleanup": lambda payload: api_cleanup(self.server.config, payload),
+            "/api/open-folder": lambda payload: api_open_folder(self.server.config, payload),
             "/api/runs/cleanup": lambda payload: api_runs_cleanup(self.server, payload),
             "/api/runs/delete-one": lambda payload: api_runs_delete_one(self.server, payload),
             "/api/file": lambda payload: api_file(self.server.config, payload),
@@ -7438,12 +8184,64 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         return True
 
 
+def api_decision_agent_status(manager: "DecisionAgentManager") -> dict[str, object]:
+    job = manager.current_job()
+    if job is None:
+        return {"status": "idle", "job": None}
+    return {"status": job.status.value, "job": job.to_dict()}
+
+
+def api_decision_agent_run(
+    config: "MissionControlServerConfig",
+    payload: dict[str, object],
+    manager: "DecisionAgentManager",
+) -> dict[str, object]:
+    settings = _load_settings(config)
+    nemo_mcp_url = str(
+        payload.get("nemo_mcp_url")
+        or settings.get("nemo_mcp_url")
+        or "http://127.0.0.1:8765/mcp/sse"
+    )
+    lm_base_url = str(
+        payload.get("lm_base_url")
+        or settings.get("model_base_url")
+        or "http://localhost:1234/v1"
+    )
+    lm_model = str(payload.get("lm_model") or "")
+    if not lm_model:
+        lm_model = _resolve_lmstudio_model(lm_base_url) or ""
+    lang_filter = str(payload.get("lang_filter") or "python")
+    memory_db = str(config.memory_db) if config.memory_db else ".nemo-runtimes/nemo-memory.sqlite"
+    job_id = manager.start(
+        nemo_mcp_url=nemo_mcp_url,
+        lm_base_url=lm_base_url,
+        lm_model=lm_model,
+        repo_root=str(config.repo_path),
+        lang_filter=lang_filter,
+        memory_db=memory_db,
+    )
+    return {"job_id": job_id, "status": "analyzing"}
+
+
+def api_decision_agent_apply(
+    config: "MissionControlServerConfig",
+    payload: dict[str, object],
+    manager: "DecisionAgentManager",
+) -> dict[str, object]:
+    job_id = str(payload.get("job_id") or "")
+    if not job_id:
+        raise _bad_request("job_id is required", error_code="missing_job_id")
+    memory_db = str(config.memory_db) if config.memory_db else ".nemo-runtimes/nemo-memory.sqlite"
+    return manager.apply(job_id, memory_db=memory_db)
+
+
 class MissionControlHttpServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], config: MissionControlServerConfig) -> None:
         super().__init__(server_address, MissionControlRequestHandler)
         self.config = config
         self.jobs = HandoffJobManager(config.job_snapshots_path)
         self.rate_limiter = RateLimiter()
+        self.decision_agent_manager = DecisionAgentManager()
 
     def server_close(self) -> None:
         for job in list(self.jobs._jobs.values()):
