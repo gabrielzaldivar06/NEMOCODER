@@ -107,6 +107,7 @@ def build_default_engine_command(profile: ModelProfile, message_file: str | Path
         "--message-file",
         str(message_file),
         "--yes-always",
+        "--no-auto-file-mentions",  # prevents context explosion from anchor doc file refs
         "--no-git",
         "--no-auto-commits",
         "--no-dirty-commits",
@@ -117,7 +118,7 @@ def build_default_engine_command(profile: ModelProfile, message_file: str | Path
 
 
 def build_git_engine_command(profile: ModelProfile, message_file: str | Path) -> tuple[str, ...]:
-    """Like build_default_engine_command but with git enabled so Aider commits inside a worktree."""
+    """Like build_default_engine_command but with git enabled so the engine commits inside a worktree."""
     return (
         sys.executable,
         "-m",
@@ -131,11 +132,12 @@ def build_git_engine_command(profile: ModelProfile, message_file: str | Path) ->
         "--message-file",
         str(message_file),
         "--yes-always",
+        "--no-auto-file-mentions",  # prevents context explosion in repos with rich anchor docs
         "--no-show-model-warnings",
         "--no-analytics",
         "--map-tokens",
-        "0",  # Disable Aider's repo map — we inject our own via the message file
-        # --no-git / --no-auto-commits intentionally absent: Aider commits in the worktree branch
+        "0",  # Disable the engine repo map — we inject our own via the message file
+        # --no-git / --no-auto-commits intentionally absent: engine commits in the worktree branch
     )
 
 

@@ -763,6 +763,16 @@ def get_parser(default_config_files, git_root):
         default=None,
     )
     group.add_argument(
+        "--auto-file-mentions",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Auto-add files mentioned by name in user/LLM messages (default: on). "
+            "Disable with --no-auto-file-mentions to prevent context explosion when "
+            "anchor docs (CLAUDE.md, README.md) reference many files."
+        ),
+        default=True,
+    )
+    group.add_argument(
         "-v",
         "--verbose",
         action="store_true",

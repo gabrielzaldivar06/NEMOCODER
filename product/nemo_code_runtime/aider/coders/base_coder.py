@@ -116,6 +116,7 @@ class Coder:
     num_cache_warming_pings = 0
     suggest_shell_commands = True
     detect_urls = True
+    auto_file_mentions = True
     ignore_mentions = None
     chat_language = None
     commit_language = None
@@ -332,6 +333,7 @@ class Coder:
         chat_language=None,
         commit_language=None,
         detect_urls=True,
+        auto_file_mentions=True,
         ignore_mentions=None,
         total_tokens_sent=0,
         total_tokens_received=0,
@@ -363,6 +365,7 @@ class Coder:
 
         self.suggest_shell_commands = suggest_shell_commands
         self.detect_urls = detect_urls
+        self.auto_file_mentions = auto_file_mentions
 
         self.num_cache_warming_pings = num_cache_warming_pings
 
@@ -1759,6 +1762,10 @@ class Coder:
         return mentioned_rel_fnames
 
     def check_for_file_mentions(self, content):
+        if not self.auto_file_mentions:
+            # Disabled — used by headless harnesses where anchor docs reference
+            # many files and auto-add would blow up the context window.
+            return
         mentioned_rel_fnames = self.get_file_mentions(content)
 
         new_mentions = mentioned_rel_fnames - self.ignore_mentions
