@@ -173,6 +173,11 @@ class MissionControlServerConfig:
     def job_snapshots_path(self) -> Path:
         return _resolve_under_repo(self.repo_path, DEFAULT_JOB_SNAPSHOTS)
 
+    @property
+    def decision_agent_snapshots_path(self) -> Path:
+        # Persists the Decision Agent's current job state across server restarts.
+        return _resolve_under_repo(self.repo_path, ".nemo-runtimes/mission-control/decision-agent")
+
     @classmethod
     def from_paths(
         cls,
@@ -8462,7 +8467,46 @@ class MissionControlHttpServer(ThreadingHTTPServer):
         self.config = config
         self.jobs = HandoffJobManager(config.job_snapshots_path)
         self.rate_limiter = RateLimiter()
-        self.decision_agent_manager = DecisionAgentManager()
+        self.decision_agent_manager = DecisionAgentManager(config.decision_agent_snapshots_path)
+        # Auto-trigger the Decision Agent when a handoff job ends in failure.
+        # Subject to a per-process cooldown (see AUTO_TRIGGER_COOLDOWN_SECONDS).
+        # Users disable this by setting auto_decision_agent_on_failure=false in settings.
+        self.jobs.post_completion_hook = self._on_handoff_completed
+
+    def _on_handoff_completed(self, job: "HandoffJob") -> None:
+        if str(job.status) != "failed":
+            return
+        try:
+            settings = _load_settings(self.config)
+        except Exception:  # noqa: BLE001
+            return
+        if not bool(settings.get("auto_decision_agent_on_failure", True)):
+            return
+        nemo_url = str(settings.get("nemo_mcp_url") or job.payload.get("nemo_mcp_url") or "")
+        # Subprocess-only NEMO URLs work; stdio://vscode/nemo does not (it requires VS Code).
+        if nemo_url.lower() == VSCODE_STDIO_NEMO_URL:
+            nemo_url = LEGACY_NEMO_SSE_URL
+        if not nemo_url:
+            return
+        lm_base = str(settings.get("model_base_url") or "http://127.0.0.1:1234/v1")
+        lm_model = str(
+            settings.get("default_model")
+            or (settings.get("model_roles") or {}).get("planner")
+            or ""
+        ).strip() or _resolve_lmstudio_model(lm_base)
+        memory_db = str(self.config.memory_db) if self.config.memory_db else ".nemo-runtimes/nemo-memory.sqlite"
+        objective = str(job.payload.get("objective") or job.job_id)[:200]
+        try:
+            self.decision_agent_manager.maybe_trigger_on_failure(
+                nemo_mcp_url=nemo_url,
+                lm_base_url=lm_base,
+                lm_model=lm_model,
+                repo_root=str(self.config.repo_path),
+                memory_db=memory_db,
+                failure_context=f"job={job.job_id} returncode={job.returncode} objective={objective}",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("decision_agent: auto-trigger failed")
 
     def server_close(self) -> None:
         for job in list(self.jobs._jobs.values()):

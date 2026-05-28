@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 from uuid import uuid4
 
 from nemo_coding_platform.core.engine_interface import ENGINE_MESSAGE_FILE
@@ -177,6 +177,10 @@ class HandoffJobManager:
         self._jobs: dict[str, HandoffJob] = {}
         self._lock = threading.Lock()
         self._snapshot_root = snapshot_root
+        # Optional hook invoked exactly once after a job reaches a terminal status
+        # (completed/failed). The server wires this to fire the Decision Agent on
+        # failure. Default: None (no hook). Hook errors are swallowed and logged.
+        self.post_completion_hook: "Callable[[HandoffJob], None] | None" = None
         if self._snapshot_root is not None:
             self._snapshot_root.mkdir(parents=True, exist_ok=True)
             self._restore_snapshots()
@@ -1353,6 +1357,11 @@ class HandoffJobManager:
             self._set_status(job, "completed" if job.returncode == 0 else "failed")
             self._append_log(job, f"job finished returncode={job.returncode}")
             self._auto_merge_on_completion(config, job)
+            if self.post_completion_hook is not None:
+                try:
+                    self.post_completion_hook(job)
+                except Exception:  # noqa: BLE001
+                    logger.warning("post_completion_hook failed for %s", job.job_id, exc_info=True)
         except OSError as error:
             if job.heartbeat_stop is not None:
                 job.heartbeat_stop.set()
@@ -1360,6 +1369,11 @@ class HandoffJobManager:
             self._set_status(job, "failed")
             job.error = str(error)
             self._append_log(job, str(error))
+            if self.post_completion_hook is not None:
+                try:
+                    self.post_completion_hook(job)
+                except Exception:  # noqa: BLE001
+                    logger.warning("post_completion_hook failed for %s", job.job_id, exc_info=True)
         finally:
             _write_current_job_context(config, None)
             if config.memory_db is not None and _nemo_configured(config.memory_db, _nemo_url):
