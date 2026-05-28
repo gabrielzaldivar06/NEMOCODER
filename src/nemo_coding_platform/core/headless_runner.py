@@ -1,5 +1,7 @@
 from __future__ import annotations
 import json
+import logging
+import re
 import urllib.request as _urllib_request
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -51,6 +53,23 @@ from nemo_coding_platform.core.nemo_learning import (
     ingest_project_architecture,
     ingest_task_outcome,
 )
+
+
+_logger = logging.getLogger(__name__)
+_THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.S)
+
+_REPAIR_BUDGET_BY_AUTONOMY: dict[str, int] = {
+    "manual": 1,
+    "assisted": 2,
+    "autonomous_sandbox": 3,
+    "background_agent": 10,
+    "full_handoff": 50,   # time-based limit (repair_time_limit_seconds) is the real constraint
+    "team_ci": 100,
+}
+
+
+def _repair_budget_from_autonomy(level: "AutonomyLevel") -> int:
+    return _REPAIR_BUDGET_BY_AUTONOMY.get(str(level), 3)
 
 
 def _make_repair_critique_fn(profile: "ModelProfile") -> "Callable[[str, str, str], float] | None":
@@ -372,6 +391,80 @@ def _plan_target_files(
         return []
 
 
+@dataclass(frozen=True, slots=True)
+class _SubtaskSpec:
+    title: str
+    objective: str
+    target_files: tuple[str, ...]
+    acceptance_criteria: tuple[str, ...]
+
+
+def _decompose_prd(
+    profile: "ModelProfile",
+    prd: str,
+    repo_map: str,
+    hint_targets: tuple[str, ...] = (),
+    max_subtasks: int = 4,
+) -> list[_SubtaskSpec]:
+    """Split a PRD into sequential subtasks via an LLM call.
+
+    Returns [] when decomposition fails, PRD is too small, or LLM returns 1 item —
+    caller treats empty list as "run as single task" (existing behaviour).
+    """
+    import json as _json
+    import urllib.request as _urllib
+
+    if len(prd) < 400 or not profile or not profile.base_url:
+        return []
+
+    hint = f"Files likely affected: {', '.join(hint_targets[:6])}" if hint_targets else ""
+    repo_ctx = repo_map[:3000] if repo_map else ""
+
+    system = (
+        "You are a software architect. Break the given task into 2-4 sequential subtasks "
+        "that each create or edit 1-3 focused files and build on the previous subtask. "
+        "Reply ONLY with a JSON array — no markdown, no extra text. "
+        'Each item: {"title":"<short>","objective":"<what to implement>","target_files":["path"],"acceptance_criteria":["criterion"]}'
+    )
+    user = "\n\n".join(filter(None, [f"## Task\n{prd[:800]}", hint, f"## Repo Map\n{repo_ctx}"]))
+
+    payload = {
+        "model": profile.model or "local",
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "max_tokens": 600,
+        "temperature": 0.0,
+    }
+    url = profile.base_url.rstrip("/") + "/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if profile.api_key:
+        headers["Authorization"] = f"Bearer {profile.api_key}"
+    try:
+        req = _urllib.Request(url, _json.dumps(payload).encode(), headers)
+        with _urllib.urlopen(req, timeout=30) as resp:
+            text = str(_json.loads(resp.read())["choices"][0]["message"]["content"]).strip()
+        text = _THINK_RE.sub("", text).strip()  # drop <think>…</think> from thinking models
+        # Strip optional markdown fences
+        if text.startswith("```"):
+            lines = text.splitlines()[1:]
+            text = "\n".join(lines[:-1] if lines and lines[-1].strip() == "```" else lines)
+        items = _json.loads(text)
+        if not isinstance(items, list) or len(items) <= 1:
+            return []
+        subtasks: list[_SubtaskSpec] = []
+        for item in items[:max_subtasks]:
+            if not isinstance(item, dict):
+                continue
+            subtasks.append(_SubtaskSpec(
+                title=str(item.get("title") or f"Subtask {len(subtasks) + 1}")[:80],
+                objective=str(item.get("objective") or "")[:1000],
+                target_files=tuple(str(f) for f in item.get("target_files", []) if isinstance(f, str))[:6],
+                acceptance_criteria=tuple(str(c) for c in item.get("acceptance_criteria", []) if isinstance(c, str))[:5],
+            ))
+        return subtasks if len(subtasks) >= 2 else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def execute_headless_handoff(
     request: HandoffRequest,
     fail_validation: tuple[str, ...] = (),
@@ -402,7 +495,8 @@ def execute_headless_handoff(
     resume_validation_state: tuple[str, ...] = (),
     resume_mode: str = "phase_boundary",
     resume_snapshot_runtime_path: str | None = None,
-    use_git_worktree: bool = False,
+    use_git_worktree: bool = True,
+    autonomy_level: AutonomyLevel = AutonomyLevel.FULL_HANDOFF,
 ) -> HeadlessRunResult:
     validate_handoff_request(request)
     plan = build_handoff_plan(request)
@@ -413,7 +507,7 @@ def execute_headless_handoff(
         request.repo_path,
         "Headless Handoff",
         request.objective_summary or request.prd,
-        AutonomyLevel.FULL_HANDOFF,
+        autonomy_level,
         linked_prd=request.linked_prd,
         linked_specs=("generated-spec.md",),
     )
@@ -489,6 +583,8 @@ def execute_headless_handoff(
         write_runtime_file(runtime, "source-prd.md", request.linked_prd)
     write_runtime_file(runtime, "generated-spec.md", spec_content)
     write_runtime_file(runtime, "generated-test.txt", "\n".join(request.acceptance_criteria))
+    if nemo_adapter is None:
+        _logger.warning("nemo_adapter not provided — falling back to ephemeral InMemoryNemoAdapter; cross-session learning disabled")
     adapter = nemo_adapter or InMemoryNemoAdapter()
     nemo_results: list[NemoCallResult] = []
     adapter, result = adapter.call(NemoLifecyclePhase.START, "prime_context", topic=task.title)
@@ -553,7 +649,7 @@ def execute_headless_handoff(
     # --- Permission System (inspired by opencode) ---
     repo_root = Path(request.repo_path).resolve()
     perm_path = Path(permissions_file) if permissions_file else repo_root / ".spacecode-permissions.json"
-    ruleset = load_ruleset_from_file(perm_path) if perm_path.exists() else default_ruleset(AutonomyLevel.FULL_HANDOFF)
+    ruleset = load_ruleset_from_file(perm_path) if perm_path.exists() else default_ruleset(autonomy_level)
 
     # --- Repo map + anchor docs (README/CLAUDE.md) ---
     _repo_map = build_repo_map(
@@ -653,10 +749,28 @@ def execute_headless_handoff(
 
     # Prepend anchor docs (README/CLAUDE.md) to NEMO context so the agent
     # understands the repo purpose and conventions before any memories.
-    if _anchor_docs:
+    # Skip in git-worktree mode: CLAUDE.md mentions file paths like
+    # .aider.chat.history.md which check_for_file_mentions auto-adds
+    # (--yes-always), causing 800K+ token context explosion.
+    if _anchor_docs and not use_git_worktree:
         nemo_context = (f"# Project Context\n{_anchor_docs}\n\n{nemo_context}").strip()
 
     _generated_test_artifact: Artifact | None = None
+
+    # --- Task Decomposition ---
+    # For complex PRDs in git-worktree mode, split into sequential subtasks so each
+    # coding session has a focused objective and fresh context, building incrementally.
+    # Falls back to single-task flow when decomposition returns fewer than 2 subtasks.
+    _subtasks: list[_SubtaskSpec] = []
+    if use_git_worktree and provider_mode == "subprocess" and not resume_checkpoint_id:
+        _subtasks = _decompose_prd(profile, request.prd, _repo_map, effective_targets)
+        if len(_subtasks) > 1:
+            emit_event(
+                "plan_created",
+                f"Decomposed into {len(_subtasks)} subtasks: {', '.join(s.title for s in _subtasks)}",
+                "plan",
+                {"subtasks": [s.title for s in _subtasks], "count": len(_subtasks)},
+            )
 
     mutation_request = MutationRequest(
         request.prd,
@@ -674,8 +788,76 @@ def execute_headless_handoff(
         image_path=image_path,
         repo_map=_repo_map,
     )
-    mutation_result = apply_mutation_request(engine, provider, mutation_request)
-    emit_event("mutation_created", f"Mutation applied: {len(mutation_result.changed_files or mutation_result.applied_files)} files", "execute", {"files": list(mutation_result.changed_files or mutation_result.applied_files)})
+
+    if len(_subtasks) > 1:
+        # Sequential subtask execution — each builds on the previous in the same worktree.
+        # Each subtask gets a focused objective, specific target files, and a mini repair budget.
+        # The last subtask's result becomes mutation_result for the downstream repair pipeline.
+        _prior_diff = ""
+        _all_changed: list[str] = []
+        _st_budget = max(2, _repair_budget_from_autonomy(autonomy_level) // len(_subtasks))
+        _st_result = None
+        for _st_idx, _subtask in enumerate(_subtasks):
+            emit_event(
+                "subtask_start",
+                f"[{_st_idx + 1}/{len(_subtasks)}] {_subtask.title}",
+                "execute",
+                {"index": _st_idx + 1, "total": len(_subtasks), "title": _subtask.title},
+            )
+            _st_ctx = nemo_context
+            if _prior_diff:
+                _st_ctx = f"{nemo_context}\n\n# Previous Subtask Diff\n```diff\n{_prior_diff[:1500]}\n```"
+            _st_req = MutationRequest(
+                _subtask.objective or request.prd,
+                "generated-spec.md",
+                _subtask.acceptance_criteria or request.acceptance_criteria,
+                _st_ctx,
+                provider_mode,
+                request.repo_path,
+                str(runtime.worktree_path),
+                _subtask.target_files or effective_targets,
+                profile,
+                "",
+                timeout_seconds,
+                repo_map=_repo_map,
+            )
+            _st_result = apply_mutation_request(engine, provider, _st_req)
+            _changed_now = list(_st_result.changed_files or _st_result.applied_files)
+            _all_changed.extend(_changed_now)
+            emit_event(
+                "mutation_created",
+                f"[{_st_idx + 1}/{len(_subtasks)}] {_subtask.title}: {len(_changed_now)} files",
+                "execute",
+                {"files": _changed_now, "subtask": _subtask.title},
+            )
+            # Mini repair per subtask (real validation only; simulated validation skipped)
+            if real_validation and _changed_now:
+                _mini_cwd = runtime.worktree_path if validation_cwd == "runtime" else request.repo_path
+                _mini_val = run_validation_suite(
+                    request.validation_commands, cwd=_mini_cwd, timeout_seconds=timeout_seconds,
+                )
+                if not _mini_val.passed and _st_budget > 0:
+                    _mini_repair = run_repair_loop(
+                        _mini_val, request.validation_commands, fail_validation,
+                        RepairBudget(_st_budget), engine, provider, _st_req,
+                        nemo_adapter=adapter,
+                        task_id=task.id,
+                        autonomy_level=autonomy_level,
+                    )
+                    if _mini_repair.mutation_results:
+                        _st_result = _mini_repair.mutation_results[-1]
+            _prior_diff = _st_result.diff_artifact
+        mutation_result = _st_result  # type: ignore[assignment]
+        emit_event(
+            "mutation_created",
+            f"All {len(_subtasks)} subtasks complete: {len(list(dict.fromkeys(_all_changed)))} total files",
+            "execute",
+            {"files": list(dict.fromkeys(_all_changed))},
+        )
+    else:
+        # Single-task flow (original path)
+        mutation_result = apply_mutation_request(engine, provider, mutation_request)
+        emit_event("mutation_created", f"Mutation applied: {len(mutation_result.changed_files or mutation_result.applied_files)} files", "execute", {"files": list(mutation_result.changed_files or mutation_result.applied_files)})
 
     # --- NEMO: persist changed files for future workspace awareness ---
     _changed = list(mutation_result.changed_files or mutation_result.applied_files)
@@ -695,7 +877,7 @@ def execute_headless_handoff(
         except Exception:  # noqa: BLE001
             pass  # Non-critical — workspace memory is additive
 
-    if _should_retry_chunked(request, mutation_result):
+    if not _subtasks and _should_retry_chunked(request, mutation_result):
         retry_request = MutationRequest(
             _chunked_retry_objective(request),
             mutation_request.spec_path,
@@ -774,7 +956,8 @@ def execute_headless_handoff(
         RepairAttempt(index + 1, "resume_seed", f"restored from atomic checkpoint {resume_checkpoint_id or 'unknown'}")
         for index in range(seeded_repair_cursor)
     )
-    repair_plan = RepairPlan(RepairBudget(request.repair_budget), attempts=seeded_attempts)
+    _effective_repair_budget = request.repair_budget if request.repair_budget != 3 else _repair_budget_from_autonomy(autonomy_level)
+    repair_plan = RepairPlan(RepairBudget(_effective_repair_budget), attempts=seeded_attempts)
     todo_reminder_injected = False
     resume_restore_content = ""
     if resume_checkpoint_id:
@@ -842,7 +1025,7 @@ def execute_headless_handoff(
             handle = str(payload.get("handle", "")).strip() or None
             return claim, handle
 
-        remaining_repair_attempts = max(0, request.repair_budget - seeded_repair_cursor)
+        remaining_repair_attempts = max(0, _effective_repair_budget - seeded_repair_cursor)
         if remaining_repair_attempts <= 0:
             repair_result = RepairRunResult(
                 plan=RepairPlan(RepairBudget(0)),
@@ -884,12 +1067,13 @@ def execute_headless_handoff(
                 task_id=task.id,
                 critique_fn=_make_repair_critique_fn(profile) if provider_mode != "fake" else None,
                 quality_threshold=request.quality_threshold,
+                autonomy_level=autonomy_level,
             )
         merged_attempts = seeded_attempts + tuple(
             RepairAttempt(seeded_repair_cursor + index + 1, item.reason, item.action)
             for index, item in enumerate(repair_result.plan.attempts)
         )
-        repair_plan = RepairPlan(RepairBudget(request.repair_budget), attempts=merged_attempts)
+        repair_plan = RepairPlan(RepairBudget(_effective_repair_budget), attempts=merged_attempts)
         validation = repair_result.validation
         if repair_result.best_score > 0:
             emit_event(
@@ -978,7 +1162,11 @@ def execute_headless_handoff(
                     "nemo_guided_repair_start",
                     f"Budget exhausted — NEMO found {len(_strategy_lines)} recovery pattern(s); attempting 1 guided repair",
                     "execute",
-                    {"strategy_preview": _strategy_text[:120], "memories_found": len(_strategy_lines)},
+                    {
+                        "strategy_preview": _strategy_text[:500],
+                        "strategy_lines": _strategy_lines[:5],
+                        "memories_found": len(_strategy_lines),
+                    },
                 )
                 _guided_request = replace(mutation_request, context=f"{_strategy_text}\n\n{mutation_request.context}")
                 _guided_result = run_repair_loop(
@@ -1023,7 +1211,7 @@ def execute_headless_handoff(
             if repair_mutation.changed_files or repair_mutation.applied_files:
                 effective_mutation_result = repair_mutation
                 break
-    adapter, result = adapter.call(NemoLifecyclePhase.BUILD, "record_context_feedback", was_useful=True)
+    adapter, result = adapter.call(NemoLifecyclePhase.BUILD, "record_context_feedback", was_useful=validation.passed)
     nemo_results.append(result)
 
     # --- NEMO Learning: store final task outcome with correct success flag ---
