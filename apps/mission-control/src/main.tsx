@@ -4,6 +4,7 @@ import { AlertTriangle, Archive, ArrowUp, Bell, Bot, CheckCircle2, ChevronDown, 
 import "./styles.css";
 import { ArtifactWorkbench } from "./components/ArtifactWorkbench";
 import { CommandDock } from "./components/CommandDock";
+import { DecisionAgentPanel, type AgentEvent, type DecisionAgentJobState } from "./components/DecisionAgentPanel";
 import { MissionTimeline } from "./components/MissionTimeline";
 import { NemoMemoryOrbitCopy, type NemoMemoryOrbitEdge, type NemoMemoryOrbitNode } from "./components/NemoMemoryOrbitCopy";
 import { ObjectiveDefinition } from "./components/ObjectiveDefinition";
@@ -18,6 +19,8 @@ import { ReadinessScorePanel } from "./components/ReadinessScorePanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { PermissionRequestPanel } from "./components/PermissionRequestPanel";
 import { TimelinePanel } from "./components/TimelinePanel";
+import { OnboardingOverlay } from "./components/OnboardingOverlay";
+import { ToastProvider, useToast } from "./components/ToastProvider";
 import { JobLiveLog } from "./components/JobLiveLog";
 import { FileExplorer } from "./components/FileExplorer";
 import { useGeneratedArtifacts } from "./hooks/useGeneratedArtifacts";
@@ -208,7 +211,7 @@ type RenderedToolCall = AgentToolCall & {
 };
 type AgentAction = {
   id: string;
-  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel" | "workspace_open" | "generate_image" | "terminal_run";
+  kind: "continue" | "revise" | "apply" | "self_modify" | "review" | "evaluate" | "run" | "handoff" | "pc_control" | "layout" | "plan_generate" | "plan_cancel" | "plan_steer" | "browser_task" | "browser_cancel" | "workspace_open" | "generate_image" | "terminal_run" | "open_artifact_folder";
   label: string;
   summary: string;
   payload: Record<string, unknown>;
@@ -695,7 +698,7 @@ const DEFAULT_SESSION_NEMO_TOOLS = [
   "store_conversation",
   "cognitive_ingest",
 ];
-const DEFAULT_HANDOFF_VALIDATION_COMMAND = "npm --prefix apps/mission-control run build";
+const DEFAULT_HANDOFF_VALIDATION_COMMAND = "";
 const WORKTREE_ISOLATION_ENABLED = true;
 
 type ChatSessionSnapshot = {
@@ -924,6 +927,22 @@ const AUTO_DISPATCH_KINDS = new Set<AgentAction["kind"]>([
   "browser_task",
 ]);
 
+// Maps NEMO tool names → short user-friendly labels shown in streaming badges.
+const NEMO_TOOL_SHORT: Record<string, string> = {
+  "nemo_memory.context_bootstrap": "context",
+  "nemo_memory.prime_context": "prime",
+  "nemo_memory.build_context_portfolio": "portfolio",
+  "nemo_memory.anticipate": "anticipate",
+  "nemo_memory.search_memories": "search",
+  "nemo_memory.get_context_portfolio_stats": "stats",
+  "nemo_memory.cognitive_ingest": "storing",
+  "nemo_memory.store_conversation": "saving",
+  "nemo_memory.record_context_feedback": "feedback",
+  "nemo_memory.synaptic_tagging": "tagging",
+};
+const _nemoLabel = (name: string) =>
+  NEMO_TOOL_SHORT[name] ?? name.split(".").pop() ?? name;
+
 function deriveEscalationActions(
   message: AgentMessage,
   lastUserContent: string,
@@ -942,17 +961,20 @@ function deriveEscalationActions(
   const objective = lastUserContent || content.slice(0, 200);
   if (hasCodeFence || hasArtifactFence) {
     return [
-      { id: `esc-plan-${ts}`, kind: "plan_generate", label: "Iterar con NEMO", summary: "Refinar con el plan loop iterativo (scoring + memoria NEMO)", payload: { objective, max_iterations: 3, quality_threshold: 7.5, model_base_url: safeModel, nemo_mcp_url: safeNemo }, escalation: true },
+      { id: `esc-plan-${ts}`, kind: "plan_generate", label: "Iterar con NEMO", summary: "Refinar con el plan loop iterativo (scoring + memoria NEMO)", payload: { objective, max_iterations: 5, quality_threshold: 9.5, model_base_url: safeModel, nemo_mcp_url: safeNemo }, escalation: true },
       { id: `esc-hoff-${ts}`, kind: "handoff", label: "Handoff", summary: "Sesión de codificación autónoma completa (edita archivos, hace commits)", payload: { objective, acceptance_criteria: "El código implementa lo solicitado y pasa los tests" }, escalation: true },
     ];
   }
   return [
     { id: `esc-img-${ts}`, kind: "generate_image", label: "→ Imagen", summary: "Generar una imagen basada en este texto con Pollinations AI", payload: { prompt: content.slice(0, 400) }, escalation: true },
-    { id: `esc-plan-${ts}`, kind: "plan_generate", label: "→ Script Python", summary: "Convertir en script Python ejecutable con el plan loop", payload: { objective, max_iterations: 3, quality_threshold: 7.5, model_base_url: safeModel, nemo_mcp_url: safeNemo }, escalation: true },
+    { id: `esc-plan-${ts}`, kind: "plan_generate", label: "→ Script Python", summary: "Convertir en script Python ejecutable con el plan loop", payload: { objective, max_iterations: 5, quality_threshold: 9.5, model_base_url: safeModel, nemo_mcp_url: safeNemo }, escalation: true },
   ];
 }
 
 export function App() {
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(
+    () => !localStorage.getItem("sc_onboarded")
+  );
   const [state, setState] = useState<MissionState>(initialState);
   const [selectedRunSource, setSelectedRunSource] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<string>("");
@@ -981,7 +1003,7 @@ export function App() {
     {
       id: "welcome-agent-message",
       role: "assistant",
-      content: "Pide una continuación, revisión o decisión sobre el run seleccionado.",
+      content: "Hola. Soy tu agente de código local.\n\nPuedo ayudarte a **explorar y entender** tu repositorio, **generar scripts** con Plan Loop o **implementar cambios** en tu repo con un Handoff autónomo.\n\nEscribe tu pregunta o describe lo que necesitas — o usa el botón **Handoff** para lanzar una tarea directamente.",
       actions: [],
       tool_calls: [],
     },
@@ -991,6 +1013,8 @@ export function App() {
   const [homeChatParams, setHomeChatParams] = useState<{ temperature: number; enableThinking: boolean; baseUrl: string; model: string }>({ temperature: 0.6, enableThinking: false, baseUrl: "", model: "" });
   const [browserArtifacts, setBrowserArtifacts] = useState<PersistedGeneratedArtifact[]>([]);
   const [planLiveArtifact, setPlanLiveArtifact] = useState<GeneratedArtifact | null>(null);
+  const [planArtifactFile, setPlanArtifactFile] = useState<string>("");
+  const [stcModeEnabled, setStcModeEnabled] = useState<boolean>(false);
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [queuedAgentPrompts, setQueuedAgentPrompts] = useState<string[]>([]);
   const [runTreeCollapsed, setRunTreeCollapsed] = useState<boolean>(false);
@@ -1096,12 +1120,26 @@ export function App() {
   };
 
   const selectedRun = useMemo(() => state.runs.find((run) => run.source_json === selectedRunSource) ?? state.runs[0], [state.runs, selectedRunSource]);
-  const selectedJob = useMemo(() => state.jobs.find((j) => j.task_id === selectedRun?.task_id && j.run_id === selectedRun?.run_id), [state.jobs, selectedRun]);
+  const selectedJob = useMemo(() => {
+    // Primary: job matching the selected run
+    const fromRun = state.jobs.find((j) => j.task_id === selectedRun?.task_id && j.run_id === selectedRun?.run_id);
+    if (fromRun) return fromRun;
+    // Fallback: most recent active job (so RUNS section isn't empty when jobs are in-flight)
+    return state.jobs.find((j) => j.status === "running" || j.status === "starting" || j.status === "awaiting_permission")
+      ?? state.jobs[state.jobs.length - 1]
+      ?? undefined;
+  }, [state.jobs, selectedRun]);
   const jobAwaitingPermission = useMemo(() => state.jobs.find((j) => j.status === "awaiting_permission") ?? null, [state.jobs]);
   const jobRunning = useMemo(() => state.jobs.find((j) => j.status === "running") ?? null, [state.jobs]);
   useEffect(() => {
     setReviewSubTab(selectedJob?.status === "running" ? "timeline" : "diff");
   }, [selectedJob?.job_id]);
+  // When navigating to RUNS with active jobs but no completed runs, show the timeline directly
+  useEffect(() => {
+    if (activeSection === "runs" && !selectedRun && selectedJob) {
+      setRunsWorkbenchTab("review");
+    }
+  }, [activeSection, selectedRun, selectedJob]);
 
   // Auto-dispatch: execute tool-type actions without requiring user button click.
   useEffect(() => {
@@ -1110,6 +1148,18 @@ export function App() {
     const toDispatch = (last.actions ?? []).filter(
       (a) => a.id && AUTO_DISPATCH_KINDS.has(a.kind as AgentAction["kind"]) && !autoDispatchedRef.current.has(a.id),
     );
+    // Imperative auto-dispatch: trigger plan_generate when the preceding user message
+    // starts with a clear action verb (e.g. "genera", "create", "build").
+    const IMPERATIVE_RE = /^(genera|crea|escribe|haz|make|create|generate|build|run|write|calcula|analiza|dibuja|produce|desarrolla|implementa|construye)\b/i;
+    const prevUser = [...agentMessages].reverse().find((m) => m.role === "user");
+    if (prevUser && IMPERATIVE_RE.test((prevUser.content ?? "").trimStart())) {
+      const planAction = (last.actions ?? []).find(
+        (a) => a.kind === "plan_generate" && a.id && !autoDispatchedRef.current.has(a.id),
+      );
+      if (planAction && !toDispatch.some((d) => d.id === planAction.id)) {
+        toDispatch.push(planAction);
+      }
+    }
     if (toDispatch.length === 0) return;
     for (const action of toDispatch) {
       autoDispatchedRef.current.add(action.id);
@@ -1614,8 +1664,10 @@ export function App() {
     setStatus("Agent is inspecting context");
     const controller = new AbortController();
     agentRequestControllerRef.current = controller;
+    let streamMsgId: string | null = null;
+    let _statusTimer: ReturnType<typeof window.setInterval> | undefined;
 
-    const sendRequest = async () => {
+    const sendRequest = async (): Promise<AgentMessageResult> => {
       let enrichedMessage = content;
       if (planState.currentPlan && planState.activeStep) {
         const [portfolioContext, continuity] = await Promise.all([
@@ -1640,7 +1692,7 @@ export function App() {
         .filter((m) => m.role === "user" || m.role === "assistant")
         .map((m) => ({ role: m.role, content: m.content }));
 
-      return postJson<AgentMessageResult>("/api/agent/message", {
+      const requestBody = {
         message: enrichedMessage,
         history: recentHistory,
         source_json: shouldAttachRunContextToMessage(content) ? selectedRun?.source_json : undefined,
@@ -1659,7 +1711,112 @@ export function App() {
         token_budget: settingsDraft.token_budget,
         context_window_tokens: settingsDraft.context_window_tokens,
         chat_max_tokens: settingsDraft.chat_max_tokens,
-      }, { signal: controller.signal });
+      };
+
+      const resp = await fetch("/api/agent/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => resp.statusText);
+        throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+      }
+
+      // Cache hit or old server → plain JSON response
+      const ct = resp.headers.get("content-type") ?? "";
+      if (!ct.includes("text/event-stream")) {
+        return resp.json() as Promise<AgentMessageResult>;
+      }
+
+      // SSE streaming path: insert a live placeholder and update it progressively
+      const _streamId = `assistant-stream-${Date.now()}`;
+      streamMsgId = _streamId;
+      setAgentMessages((prev) => [
+        ...prev,
+        { id: _streamId, role: "assistant" as const, content: "", tool_calls: [], actions: [] },
+      ]);
+
+      if (!resp.body) throw new Error("No SSE body from server");
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      let textContent = "";
+      const activeBadges = new Map<string, string>(); // callId → tool name
+      const doneBadgeLines: string[] = [];
+
+      const renderBadgeBlock = () =>
+        [...doneBadgeLines, ...[...activeBadges.values()].map((l) => `⟳ \`${l}\``)].join("\n");
+
+      const updateMsg = (extra: string) => {
+        const badges = renderBadgeBlock();
+        setAgentMessages((prev) =>
+          prev.map((m) =>
+            m.id === _streamId
+              ? { ...m, content: badges ? `${badges}\n\n${extra}` : extra }
+              : m
+          )
+        );
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let evt: Record<string, unknown>;
+          try { evt = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
+
+          if (evt.type === "tool_start") {
+            const rawName = String(evt.name ?? evt.tool ?? "");
+            const label = _nemoLabel(rawName);
+            activeBadges.set(rawName, label);
+            setStatus(`NEMO · ${label}`);
+            updateMsg(textContent);
+          } else if (evt.type === "tool_done") {
+            const rawName = String(evt.name ?? evt.tool ?? "");
+            const label = activeBadges.get(rawName) ?? _nemoLabel(rawName);
+            const ms = Number(evt.ms ?? evt.elapsed_ms ?? 0);
+            activeBadges.delete(rawName);
+            doneBadgeLines.push(`✓ \`${label}\`${ms > 0 ? ` ${ms}ms` : ""}`);
+            updateMsg(textContent);
+          } else if (evt.type === "llm_start") {
+            const modelLabel = String(evt.model ?? "");
+            const estimatedSec = Number(evt.estimated_seconds ?? 0);
+            const llmStartedAt = Date.now();
+            const modelShort = modelLabel.split("/").pop()?.slice(0, 30) ?? "";
+            // Live elapsed timer — updates every second until done/error
+            if (_statusTimer) clearInterval(_statusTimer);
+            _statusTimer = window.setInterval(() => {
+              const elapsed = Math.round((Date.now() - llmStartedAt) / 1000);
+              const remaining = estimatedSec > 0 ? Math.max(0, estimatedSec - elapsed) : null;
+              const remainStr = remaining !== null && remaining > 0 ? ` · ~${remaining}s left` : "";
+              setStatus(`Streaming${modelShort ? ` · ${modelShort}` : ""} · ${elapsed}s${remainStr}`);
+            }, 1000);
+            setStatus(`Streaming${modelShort ? ` · ${modelShort}` : ""}${estimatedSec > 0 ? ` · ~${estimatedSec}s` : ""}…`);
+            textContent = "";
+            updateMsg(textContent);
+          } else if (evt.type === "token") {
+            textContent += String(evt.delta ?? "");
+            updateMsg(textContent);
+          } else if (evt.type === "done") {
+            if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = undefined; }
+            return { message: evt.message } as AgentMessageResult;
+          }
+        }
+      }
+
+      // Stream ended without an explicit done event — synthesize from accumulated text
+      if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = undefined; }
+      return {
+        message: { id: _streamId, role: "assistant", content: textContent || "(empty response)", tool_calls: [], actions: [] },
+      } as AgentMessageResult;
     };
 
     sendRequest()
@@ -1673,7 +1830,14 @@ export function App() {
         const enhancedMessage: AgentMessage = escalation.length > 0
           ? { ...payload.message, actions: [...(payload.message.actions ?? []), ...escalation] }
           : payload.message;
-        setAgentMessages((current) => [...current, enhancedMessage]);
+        // Replace the streaming placeholder if one was inserted, otherwise append
+        if (streamMsgId) {
+          setAgentMessages((current) =>
+            current.map((m) => (m.id === streamMsgId ? enhancedMessage : m))
+          );
+        } else {
+          setAgentMessages((current) => [...current, enhancedMessage]);
+        }
         loadMissionStats();
         if (planState.objective && !planState.currentPlan) {
           const parsed = parsePlanStepsFromMessage(payload.message.content || "");
@@ -1687,6 +1851,7 @@ export function App() {
         setStatus("Agent proposed next actions");
       })
       .catch((error: Error) => {
+        if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = undefined; }
         if (error.name === "AbortError") {
           setStatus("Agent response stopped");
           return;
@@ -1897,7 +2062,7 @@ export function App() {
       return;
     }
     if (action.kind === "plan_generate" || action.kind === "run") {
-      const planPayload = action.payload as Record<string, unknown>;
+      const planPayload: Record<string, unknown> = { ...(action.payload as Record<string, unknown>), ...(stcModeEnabled ? { stc_mode: true } : {}) };
       const objective = String(planPayload.objective || action.label || "Generate code");
       setStatus(`Generating: ${objective.slice(0, 60)}`);
 
@@ -2045,9 +2210,21 @@ export function App() {
                     iterations.join("\n\n"),
                   ].join("\n\n");
 
+                  const doneActions: AgentAction[] = [];
+
                   if (artifactFile && score > 0) {
                     const imgData = JSON.stringify({ src: `/api/artifacts/image/${artifactFile}`, alt: objective });
                     finalContent += `\n\`\`\`image\n${imgData}\n\`\`\``;
+                    finalContent += `\n📁 \`${artifactFile}\``;
+                    const artifactFolderPath = `${state.runtimes_path}/mission-control/artifacts/images/plans`;
+                    doneActions.push({
+                      id: `open-folder-${Date.now()}`,
+                      kind: "open_artifact_folder",
+                      label: "Abrir en Explorer",
+                      summary: artifactFile,
+                      payload: { path: `${artifactFolderPath}/${artifactFile}` },
+                    });
+                    setPlanArtifactFile(artifactFile);
                   }
                   const artifactHtmlContent = String((evt as Record<string, unknown>).artifact_html_content || "");
                   if (artifactHtmlContent) {
@@ -2056,7 +2233,7 @@ export function App() {
 
                   setAgentMessages((prev) =>
                     prev.map((m) =>
-                      m.id === planMsgId ? { ...m, content: finalContent, actions: [] } : m
+                      m.id === planMsgId ? { ...m, content: finalContent, actions: doneActions } : m
                     )
                   );
                   setStatus(`Plan done: ${score}/10`);
@@ -2117,6 +2294,15 @@ export function App() {
           }
         })
         .catch((err: Error) => setStatus(`Error abriendo workspace: ${err.message}`));
+      return;
+    }
+    if (action.kind === "open_artifact_folder") {
+      const folderPath = String(action.payload.path || "");
+      fetch("/api/open-folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: folderPath }),
+      }).catch(() => {});
       return;
     }
     if (action.kind === "terminal_run") {
@@ -3289,6 +3475,7 @@ export function App() {
           <button className="cockpit-steer" onClick={() => setActiveSection("memory")}><Database size={13} /> Memory {shellMemoryLabel}</button>
         </header>
         {composerOpen && <HandoffComposer draft={handoffDraft} onChange={setHandoffDraft} onSubmit={startHandoff} onClose={() => setComposerOpen(false)} running={handoffRunning} />}
+        {showOnboarding && <OnboardingOverlay onDone={() => setShowOnboarding(false)} />}
 
         {activeSection === "home" && <MissionHome
           state={state}
@@ -3328,6 +3515,9 @@ export function App() {
           onClearChat={clearAgentChat}
           onSelectRun={(run) => { selectRun(run); setActiveSection("runs"); }}
           onRunAction={runAgentAction}
+          stcModeEnabled={stcModeEnabled}
+          onToggleStcMode={() => setStcModeEnabled((v) => !v)}
+          planArtifactFile={planArtifactFile}
         />}
 
         {activeSection === "runs" && <>
@@ -3636,12 +3826,25 @@ function latestHomeLayoutCommand(messages: AgentMessage[]): { command: HomeLayou
   return null;
 }
 
-function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onRemoveBrowserArtifact, planLiveArtifact, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onRemoveBrowserArtifact: (id: string) => void; planLiveArtifact?: GeneratedArtifact | null; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onParamsChange?: (params: import("./components/CommandDock").ChatParams) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void }) {
+function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats, onRefreshCognitiveStats, missionStats, onRefreshMissionStats, status, draft, provider, endpointLabel, currentModel, messages, browserArtifacts, onRemoveBrowserArtifact, planLiveArtifact, onDraftChange, onSubmit, onStop, onProviderChange, onModelChange, onParamsChange, onOpenComposer, onOpenMemory, running, queuedPrompt, queuedPrompts, onStartNewChat, onArchiveChat, onClearChat, onSelectRun, onRunAction, stcModeEnabled, onToggleStcMode, planArtifactFile }: { state: MissionState; readyRuns: number; blockedRuns: number; nemoState: NemoState | null; cognitiveStats: CognitiveStatsState | null; onRefreshCognitiveStats: () => void; missionStats: MissionStatsState | null; onRefreshMissionStats: () => void; status: string; draft: string; provider: string; endpointLabel: string; currentModel: string; messages: AgentMessage[]; browserArtifacts: PersistedGeneratedArtifact[]; onRemoveBrowserArtifact: (id: string) => void; planLiveArtifact?: GeneratedArtifact | null; onDraftChange: (objective: string) => void; onSubmit: (mode?: "send" | "queue" | "steer" | "plan") => void; onStop: () => void; onProviderChange: (provider: string) => void; onModelChange: (model: string) => void; onParamsChange?: (params: import("./components/CommandDock").ChatParams) => void; onOpenComposer: () => void; onOpenMemory: () => void; running: boolean; queuedPrompt: string | null; queuedPrompts: string[]; onStartNewChat: () => void; onArchiveChat: () => void; onClearChat: () => void; onSelectRun: (run: MissionRun) => void; onRunAction?: (action: AgentAction) => void; stcModeEnabled?: boolean; onToggleStcMode?: () => void; planArtifactFile?: string }) {
   const [layoutMode, setLayoutMode] = useState<HomeLayoutMode>("full-cockpit");
   const [detailJobId, setDetailJobId] = useState<string | null>(null);
   const [collapsedPanels, setCollapsedPanels] = useState<HomePanelState>({ timeline: false, artifact: true, telemetry: true });
+  const [artifactBadge, setArtifactBadge] = useState<boolean>(false);
   const [layoutSource, setLayoutSource] = useState<string>("manual");
   const appliedLayoutCommandRef = useRef<string>("");
+  const [decisionAgentJob, setDecisionAgentJob] = useState<DecisionAgentJobState | null>(null);
+  const daEsRef = useRef<EventSource | null>(null);
+
+  // Auto-expand artifact panel and show badge when plan loop completes with an artifact
+  const prevArtifactFileRef = useRef("");
+  useEffect(() => {
+    if (planArtifactFile && planArtifactFile !== prevArtifactFileRef.current) {
+      prevArtifactFileRef.current = planArtifactFile;
+      setCollapsedPanels((prev) => ({ ...prev, artifact: false }));
+      setArtifactBadge(true);
+    }
+  }, [planArtifactFile]);
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
   const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite, clearArtifacts } = useGeneratedArtifacts({ messages, draft, onDraftChange, repoPath: state.repo_path });
   const [diskArtifacts, setDiskArtifacts] = useState<GeneratedArtifact[]>([]);
@@ -3768,6 +3971,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
   };
 
   const togglePanel = (panel: HomePanelKey) => {
+    if (panel === "artifact") setArtifactBadge(false);
     setCollapsedPanels((current) => ({ ...current, [panel]: !current[panel] }));
     setLayoutMode("full-cockpit");
     setLayoutSource("manual");
@@ -3779,6 +3983,84 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
     appliedLayoutCommandRef.current = nextCommand.signature;
     applyLayoutCommand(nextCommand.command, "llm");
   }, [messages]);
+
+  function runDecisionAgent() {
+    fetch("/api/decision-agent/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    })
+      .then((r) => r.json())
+      .then((data: { job_id?: string }) => {
+        if (!data.job_id) return;
+        setDecisionAgentJob({
+          job_id: data.job_id,
+          status: "analyzing",
+          events: [],
+          synthesis_report: null,
+          run_json: null,
+          error: null,
+          updated_at: new Date().toISOString(),
+        });
+        if (daEsRef.current) daEsRef.current.close();
+        const es = new EventSource("/api/decision-agent/stream");
+        daEsRef.current = es;
+        es.onmessage = (e) => {
+          try {
+            const ev = JSON.parse(e.data as string) as AgentEvent;
+            setDecisionAgentJob((prev) => {
+              if (!prev) return prev;
+              const newEvents = [...prev.events, ev];
+              let newStatus = prev.status;
+              if (ev.type === "phase" && ev.phase) newStatus = ev.phase;
+              if (ev.type === "error") newStatus = "failed";
+              let newReport = prev.synthesis_report;
+              if (ev.type === "synthesis_complete") {
+                newReport = {
+                  dominant_pattern: ev.dominant_pattern ?? "",
+                  task_type: ev.task_type ?? "",
+                  target_files: ev.target_files ?? [],
+                  proposed_description: ev.proposed_description ?? "",
+                  confidence: ev.confidence ?? 0,
+                  rationale: "",
+                };
+              }
+              return {
+                ...prev,
+                status: newStatus,
+                events: newEvents,
+                synthesis_report: newReport,
+                run_json: ev.run_json ? String(ev.run_json) : prev.run_json,
+                error: ev.type === "error" ? (ev.detail ?? null) : prev.error,
+                updated_at: ev.ts ?? prev.updated_at,
+              };
+            });
+            if (["awaiting_review", "completed", "failed"].includes(ev.phase ?? "")) {
+              es.close();
+            }
+          } catch {
+            // ignore malformed SSE events
+          }
+        };
+        es.onerror = () => es.close();
+      })
+      .catch(() => {});
+  }
+
+  function applyDecisionAgent(jobId: string) {
+    fetch("/api/decision-agent/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: jobId }),
+    })
+      .then((r) => {
+        if (r.ok) setDecisionAgentJob((p) => (p ? { ...p, status: "completed" } : p));
+      })
+      .then(onRefreshMissionStats)
+      .catch(() => {});
+  }
+
+  useEffect(() => () => { daEsRef.current?.close(); }, []);
 
   const commandDockElement = <CommandDock
     draft={draft}
@@ -3811,6 +4093,15 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
           <span><b>NEMO</b>{contextLabel}</span>
           <span><b>Artifacts</b>{artifacts.length}</span>
           <span><b>Queue</b>{queueCount}</span>
+          {onToggleStcMode && (
+            <button
+              className={`mission-stc-toggle ${stcModeEnabled ? "active" : ""}`}
+              onClick={onToggleStcMode}
+              title="STC mode: score plan iterations with pytest tests instead of LLM critique"
+            >
+              STC
+            </button>
+          )}
         </div>
         <div className="mission-layout-controls" aria-label="Mission layout controls" data-source={layoutSource}>
           <button className={layoutMode === "full-cockpit" ? "active" : ""} onClick={() => applyLayoutCommand({ mode: "full-cockpit" }, "manual")} title="Full cockpit"><PanelBottom size={12} /><span>All</span></button>
@@ -3843,7 +4134,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
         </div>
 
         <div className={`mission-panel-slot artifact ${collapsedPanels.artifact ? "collapsed" : "expanded"}`} data-panel="artifact">
-          {collapsedPanels.artifact ? <button className="mission-panel-restore" onClick={() => togglePanel("artifact")} title="Expand artifact studio"><Puzzle size={16} /><span>{panelLabels.artifact}</span></button> : <>
+          {collapsedPanels.artifact ? <button className="mission-panel-restore" onClick={() => togglePanel("artifact")} title="Expand artifact studio"><Puzzle size={16} /><span>{panelLabels.artifact}</span>{artifactBadge && <span className="panel-badge" />}</button> : <>
             <button className="mission-panel-collapse" onClick={() => togglePanel("artifact")} title="Collapse artifact studio" aria-label="Collapse artifact studio"><Puzzle size={13} /></button>
             <ArtifactWorkbench
               artifacts={artifacts}
@@ -3897,6 +4188,11 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
                     )
                     .then(onRefreshMissionStats);
                 }}
+              />
+              <DecisionAgentPanel
+                job={decisionAgentJob}
+                onRun={runDecisionAgent}
+                onApply={applyDecisionAgent}
               />
             </div>
           </>}
@@ -4337,6 +4633,13 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
             onDenied={() => onDenyPermission(permissionJob.job_id, "")}
           />
         )}
+        {permissionJob && !permissionJob.permission_request && onGrantPermission && onDenyPermission && (
+          <div className="permission-fallback-banner">
+            <span>Job {permissionJob.job_id.slice(-8)} aguarda permiso</span>
+            <button className="permission-fallback-btn grant" onClick={() => onGrantPermission(permissionJob.job_id, "")}>Aprobar</button>
+            <button className="permission-fallback-btn deny" onClick={() => onDenyPermission(permissionJob.job_id, "")}>Rechazar</button>
+          </div>
+        )}
         {runningJob && !permissionJob && (
           <Tooltip text="Job en ejecución — click para ver el timeline en la tab Run">
             <div className="agent-live-badge" onClick={() => setTab("run")} role="button" tabIndex={0}>
@@ -4412,7 +4715,7 @@ function AgentPane({ run, state, readyRuns, blockedRuns, autonomyMode, onAutonom
 
                 return (
                   <React.Fragment key={message.id}>
-                    <AgentChatMessage message={message} onRunAction={onRunAction} />
+                    <AgentChatMessage message={message} onRunAction={onRunAction} isStreaming={busy && message.id.startsWith("assistant-stream-")} />
                     {cardKind && matchedJob && (
                       <JobResultCard
                         kind={cardKind}
@@ -5694,7 +5997,7 @@ function findJobForMessage(
   return null;
 }
 
-function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onRunAction: (action: AgentAction) => void }) {
+function AgentChatMessage({ message, onRunAction, isStreaming = false }: { message: AgentMessage; onRunAction: (action: AgentAction) => void; isStreaming?: boolean }) {
   const parsed = parseAgentMessageDecorations(message.content);
   const payloadTools = message.tool_calls ?? [];
   const sources = message.sources ?? [];
@@ -5715,7 +6018,7 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
   return (
     <article className={`chat-message ${message.role}`}>
       <div className="message-role">{message.role}</div>
-      <MessageRichText content={parsed.cleanedContent} animate={message.role === "assistant"} />
+      <MessageRichText content={parsed.cleanedContent} animate={message.role === "assistant"} streaming={isStreaming} />
       <div className="message-meta-row">
         <span className="message-meta-pill">~{estimateTokens(message.content)} tok</span>
         {mergedTools.length > 0 && <span className="message-meta-pill">tools {mergedTools.length}</span>}
@@ -5775,7 +6078,7 @@ function AgentChatMessage({ message, onRunAction }: { message: AgentMessage; onR
   );
 }
 
-function MessageRichText({ content, animate, compact = false }: { content: string; animate: boolean; compact?: boolean }) {
+function MessageRichText({ content, animate, compact = false, streaming = false }: { content: string; animate: boolean; compact?: boolean; streaming?: boolean }) {
   const lines = content.split("\n");
   const blocks: React.ReactNode[] = [];
   let listItems: string[] = [];
@@ -5864,7 +6167,7 @@ function MessageRichText({ content, animate, compact = false }: { content: strin
   if (inCode) flushCode();
 
   return (
-    <div className={`chat-rich ${animate ? "animate" : ""} ${compact ? "compact" : ""}`}>
+    <div className={`chat-rich ${animate ? "animate" : ""} ${compact ? "compact" : ""} ${streaming ? "stream-cursor" : ""}`}>
       {blocks.map((block, index) => <div className="rich-block" style={{ animationDelay: `${index * 35}ms` }} key={`b-${index}`}>{block}</div>)}
     </div>
   );
@@ -6158,5 +6461,5 @@ if (rootElement) {
   const missionControlWindow = window as MissionControlWindow;
   const missionControlRoot = missionControlWindow.__missionControlRoot ?? createRoot(rootElement);
   missionControlWindow.__missionControlRoot = missionControlRoot;
-  missionControlRoot.render(<ErrorBoundary><App /></ErrorBoundary>);
+  missionControlRoot.render(<ErrorBoundary><ToastProvider><App /></ToastProvider></ErrorBoundary>);
 }
