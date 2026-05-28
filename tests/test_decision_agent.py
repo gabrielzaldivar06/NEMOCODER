@@ -97,3 +97,67 @@ def test_build_selfmod_request_unknown_task_type_defaults_to_bug_fix():
     )
     req = build_selfmod_request_from_report(report, repo_root=".")
     assert req.task_type == SelfModTaskType.BUG_FIX
+
+
+import threading
+import time
+from unittest.mock import MagicMock, patch
+from nemo_coding_platform.decision_agent_manager import DecisionAgentManager, DecisionAgentJob
+from nemo_coding_platform.core.decision_agent import _FALLBACK_REPORT
+
+
+def test_manager_initial_state():
+    m = DecisionAgentManager()
+    assert m.current_job() is None
+
+
+def test_manager_start_returns_job_id():
+    m = DecisionAgentManager()
+    with patch("nemo_coding_platform.decision_agent_manager.analyze_nemo_signal",
+               return_value=_FALLBACK_REPORT), \
+         patch("nemo_coding_platform.decision_agent_manager.execute_self_modification",
+               side_effect=RuntimeError("blocked in test")):
+        job_id = m.start(nemo_mcp_url="", lm_base_url="", lm_model="", repo_root=".")
+    assert job_id.startswith("da-")
+    time.sleep(0.15)
+    job = m.current_job()
+    assert job is not None
+    assert job.job_id == job_id
+
+
+def test_manager_emits_phase_events():
+    m = DecisionAgentManager()
+
+    def fake_analyze(*args, on_event=None, **kwargs):
+        if on_event:
+            on_event({"type": "signal_read", "detail": "reading failures"})
+            on_event({"type": "synthesizing", "detail": "running LLM"})
+        return _FALLBACK_REPORT
+
+    with patch("nemo_coding_platform.decision_agent_manager.analyze_nemo_signal",
+               side_effect=fake_analyze), \
+         patch("nemo_coding_platform.decision_agent_manager.execute_self_modification",
+               side_effect=RuntimeError("blocked in test")):
+        job_id = m.start(nemo_mcp_url="", lm_base_url="", lm_model="", repo_root=".")
+    time.sleep(0.3)
+    job = m.current_job()
+    assert job is not None
+    types = [e.get("type") for e in job.events]
+    assert "signal_read" in types or "nemo_event" in types
+
+
+def test_manager_blocks_double_start():
+    m = DecisionAgentManager()
+    started = threading.Event()
+
+    def slow_analyze(*args, on_event=None, **kwargs):
+        started.set()
+        time.sleep(30)
+        return _FALLBACK_REPORT
+
+    with patch("nemo_coding_platform.decision_agent_manager.analyze_nemo_signal",
+               side_effect=slow_analyze):
+        m.start(nemo_mcp_url="", lm_base_url="", lm_model="", repo_root=".")
+        started.wait(timeout=1.0)
+        with pytest.raises(RuntimeError, match="already running"):
+            m.start(nemo_mcp_url="", lm_base_url="", lm_model="", repo_root=".")
