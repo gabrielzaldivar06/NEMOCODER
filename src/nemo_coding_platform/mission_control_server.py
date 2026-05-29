@@ -5991,7 +5991,11 @@ def _iter_chat_sse(
 
     # ── 5. LLM streaming ──────────────────────────────────────────────────────
     active_endpoint = _chat_base_url(payload)
-    active_model = _resolve_lmstudio_model(active_endpoint) or _chat_model(payload)
+    # Use _chat_model directly: it respects payload.model > payload.default_model >
+    # _resolve_lmstudio_model in that order. The previous code called the resolver
+    # first which ignored default_model and picked the alphabetically-first NIM
+    # model (e.g. 01-ai/yi-large) instead of the user-configured moonshotai/kimi-k2.6.
+    active_model = _chat_model(payload)
     _max_out = _chat_max_tokens(payload)
     # Conservative tokens/sec estimate for Arc iGPU: ~8 tok/s for large models, faster for small.
     # context_length < 8000 ≈ 4B model (~20 tok/s), otherwise assume 8 tok/s for safety.
@@ -6078,11 +6082,15 @@ def _iter_chat_sse(
             _extra["enable_thinking"] = True
 
         client = _get_lm_client(payload)
+        # Timeout scales with the estimated generation time so slow models (e.g.
+        # remote NIM models that need 200-300s for 2K tokens) don't fail under the
+        # legacy 180s cap. We add a generous 60s overhead and floor at 60s.
+        _chat_timeout = max(60.0, float(_estimated_seconds) + 60.0)
         for delta in client.chat_stream(
             _sys_msgs,
             temperature=float(payload.get("chat_temperature", payload.get("temperature", 0.2))),
             max_tokens=_chat_max_tokens(payload),
-            timeout=min(max(_timeout_seconds(payload), 1.0), 180.0),
+            timeout=_chat_timeout,
             acquire_timeout=30.0,
             extra_body=_extra,
         ):
