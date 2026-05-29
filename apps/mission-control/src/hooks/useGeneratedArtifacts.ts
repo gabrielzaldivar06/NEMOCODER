@@ -14,6 +14,14 @@ type UseGeneratedArtifactsOptions = {
   draft: string;
   onDraftChange: (objective: string) => void;
   repoPath?: string;
+  /**
+   * True only while the chat agent is actively streaming a response. When false,
+   * any artifact that still has an open fence is treated as finalized (streaming
+   * = false). This prevents stale chat history (interrupted streams whose
+   * closing ``` never arrived) from poisoning the registry with a phantom
+   * streaming entry that the studio would then auto-focus and render blank.
+   */
+  chatStreaming?: boolean;
 };
 
 const MAX_ATTACHED_ARTIFACT_CHARS = 24000;
@@ -60,8 +68,15 @@ export function buildArtifactPromptAttachment(artifact: GeneratedArtifact | Pers
   ].join("\n");
 }
 
-export function useGeneratedArtifacts({ messages, draft, onDraftChange, repoPath }: UseGeneratedArtifactsOptions) {
-  const generatedArtifacts = useMemo(() => collectGeneratedArtifacts(messages), [messages]);
+export function useGeneratedArtifacts({ messages, draft, onDraftChange, repoPath, chatStreaming = false }: UseGeneratedArtifactsOptions) {
+  const generatedArtifacts = useMemo(() => {
+    const collected = collectGeneratedArtifacts(messages);
+    if (chatStreaming) return collected;
+    // Idle: any open-fence artifact in history is a leftover from an interrupted
+    // stream. Demote streaming=false so the registry doesn't keep a phantom
+    // streaming twin alive across renders.
+    return collected.map((artifact) => artifact.streaming ? { ...artifact, streaming: false } : artifact);
+  }, [messages, chatStreaming]);
   const [artifacts, setArtifacts] = useState<PersistedGeneratedArtifact[]>(() => loadArtifactRegistry(repoPath));
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
 

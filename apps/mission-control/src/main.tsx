@@ -3908,7 +3908,7 @@ function MissionHome({ state, readyRuns, blockedRuns, nemoState, cognitiveStats,
     }
   }, [planArtifactFile]);
   const blockedReviewRuns = state.runs.filter((run) => run.review_status === "blocked");
-  const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite, clearArtifacts } = useGeneratedArtifacts({ messages, draft, onDraftChange, repoPath: state.repo_path });
+  const { artifacts: generatedArtifacts, activeArtifactId, setActiveArtifactId, attachArtifactToDraft, removeArtifact, toggleFavorite, clearArtifacts } = useGeneratedArtifacts({ messages, draft, onDraftChange, repoPath: state.repo_path, chatStreaming: running });
   const [diskArtifacts, setDiskArtifacts] = useState<GeneratedArtifact[]>([]);
 
   // Auto-select live artifact when it first appears during a plan loop
