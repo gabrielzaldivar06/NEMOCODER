@@ -48,15 +48,24 @@ export function loadArtifactRegistry(repoPath?: string): PersistedGeneratedArtif
     if (!raw) return [];
     const parsed = JSON.parse(raw) as PersistedGeneratedArtifact[];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is PersistedGeneratedArtifact => Boolean(
-      item &&
-      typeof item === "object" &&
-      typeof item.registryId === "string" &&
-      typeof item.contentHash === "string" &&
-      typeof item.versionGroup === "string" &&
-      typeof item.content === "string" &&
-      typeof item.title === "string"
-    )).slice(0, MAX_STORED_ARTIFACTS);
+    return parsed
+      .filter((item): item is PersistedGeneratedArtifact => Boolean(
+        item &&
+        typeof item === "object" &&
+        typeof item.registryId === "string" &&
+        typeof item.contentHash === "string" &&
+        typeof item.versionGroup === "string" &&
+        typeof item.content === "string" &&
+        typeof item.title === "string"
+      ))
+      // Drop stale streaming twins from previous sessions. Their content is
+      // partial (no closing fence ever arrived) and the runtime auto-focus
+      // would otherwise select one and show a blank iframe because the HTML
+      // never got past <head>/<style>. The completed sibling (content-hash id)
+      // is the one users actually want to see across reloads.
+      .filter((item) => !item.registryId.startsWith("streaming-"))
+      .map((item) => ({ ...item, streaming: false }))
+      .slice(0, MAX_STORED_ARTIFACTS);
   } catch {
     return [];
   }
@@ -65,7 +74,11 @@ export function loadArtifactRegistry(repoPath?: string): PersistedGeneratedArtif
 export function saveArtifactRegistry(artifacts: PersistedGeneratedArtifact[], repoPath?: string) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(registryKey(repoPath), JSON.stringify(artifacts.slice(0, MAX_STORED_ARTIFACTS)));
+    // Never persist the streaming twin to localStorage — it's a runtime-only
+    // bridge and its content is partial. The content-hash sibling carries the
+    // final state and survives reloads.
+    const persistable = artifacts.filter((a) => !a.registryId.startsWith("streaming-"));
+    window.localStorage.setItem(registryKey(repoPath), JSON.stringify(persistable.slice(0, MAX_STORED_ARTIFACTS)));
   } catch {
     // Keep the current session usable if storage quota is unavailable.
   }
