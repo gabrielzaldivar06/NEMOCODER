@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { collectGeneratedArtifacts, type GeneratedArtifact } from "../services/artifactUtils";
 import { loadArtifactRegistry, mergeArtifactsIntoRegistry, removeArtifactFromRegistry, toggleArtifactFavorite, type PersistedGeneratedArtifact } from "../services/artifactRegistry";
 import { isArtifactTombstoned, addArtifactTombstone } from "../services/persistenceStore";
@@ -13,6 +13,7 @@ type UseGeneratedArtifactsOptions = {
   messages: ArtifactMessage[];
   draft: string;
   onDraftChange: (objective: string) => void;
+  repoPath?: string;
 };
 
 const MAX_ATTACHED_ARTIFACT_CHARS = 24000;
@@ -59,20 +60,42 @@ export function buildArtifactPromptAttachment(artifact: GeneratedArtifact | Pers
   ].join("\n");
 }
 
-export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGeneratedArtifactsOptions) {
+export function useGeneratedArtifacts({ messages, draft, onDraftChange, repoPath }: UseGeneratedArtifactsOptions) {
   const generatedArtifacts = useMemo(() => collectGeneratedArtifacts(messages), [messages]);
-  const [artifacts, setArtifacts] = useState<PersistedGeneratedArtifact[]>(() => loadArtifactRegistry());
+  const [artifacts, setArtifacts] = useState<PersistedGeneratedArtifact[]>(() => loadArtifactRegistry(repoPath));
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null);
 
+  // Keep a ref to the latest repoPath so the merge effect always writes to the correct workspace
+  // without needing repoPath in its deps (which would cause a race where old artifacts get merged
+  // under the new workspace key before messages have updated).
+  const repoPathRef = useRef(repoPath ?? "");
+  useEffect(() => { repoPathRef.current = repoPath ?? ""; });
+
+  // Reset registry when workspace changes.
   useEffect(() => {
-    setArtifacts(mergeArtifactsIntoRegistry(generatedArtifacts, undefined, {
+    setArtifacts(loadArtifactRegistry(repoPath));
+    setActiveArtifactId(null);
+  }, [repoPath]);
+
+  // Only runs when generatedArtifacts (i.e. messages) change — NOT when repoPath changes.
+  // repoPath is read from the ref, which is always current by the time this effect fires.
+  useEffect(() => {
+    setArtifacts((current) => mergeArtifactsIntoRegistry(generatedArtifacts, current, {
       isTombstoned: isArtifactTombstoned,
-    }));
+    }, repoPathRef.current));
   }, [generatedArtifacts]);
 
   useEffect(() => {
     if (artifacts.length === 0) {
       setActiveArtifactId(null);
+      return;
+    }
+    // While a new artifact is still streaming, focus on it so the user sees the
+    // Claude-Code-style live preview render. Otherwise keep the user's current
+    // selection if still present; fall back to the most recent entry.
+    const streamingArtifact = artifacts.find((artifact) => artifact.id.startsWith("streaming-"));
+    if (streamingArtifact) {
+      setActiveArtifactId(streamingArtifact.id);
       return;
     }
     setActiveArtifactId((current) => current && artifacts.some((artifact) => artifact.id === current) ? current : artifacts[0].id);
@@ -85,11 +108,11 @@ export function useGeneratedArtifacts({ messages, draft, onDraftChange }: UseGen
 
   const removeArtifact = (artifactId: string) => {
     addArtifactTombstone(artifactId);
-    setArtifacts((current) => removeArtifactFromRegistry(artifactId, current));
+    setArtifacts((current) => removeArtifactFromRegistry(artifactId, current, repoPath));
   };
 
   const toggleFavorite = (artifactId: string) => {
-    setArtifacts((current) => toggleArtifactFavorite(artifactId, current));
+    setArtifacts((current) => toggleArtifactFavorite(artifactId, current, repoPath));
   };
 
   const clearArtifacts = () => {
