@@ -5969,42 +5969,61 @@ function AgentLiveStatus({
   messages: AgentMessage[];
   compact?: boolean;
 }) {
-  const [tick, setTick] = useState<number>(0);
-  const recentTools = useMemo(() => _collectRecentToolNames(messages), [messages]);
-
-  useEffect(() => {
-    if (!busy) {
-      setTick(0);
-      return;
-    }
-    const timer = window.setInterval(() => setTick((value) => value + 1), 1200);
-    return () => window.clearInterval(timer);
-  }, [busy]);
-
   if (!busy && !queuedPrompt) return null;
 
-  const toolName = recentTools.length > 0 ? _normalizeToolDisplayName(recentTools[tick % recentTools.length]) : null;
-  const phases: Array<{ label: string; detail: string }> = [
-    { label: "pensando", detail: "Analizando tu instruccion y el estado actual." },
-    { label: "cargando contexto", detail: "Recopilando memoria y continuidad de la tarea." },
-    { label: "investigando", detail: "Contrastando riesgos, decisiones y siguientes pasos." },
-    { label: toolName ? `usando tool: ${toolName}` : "usando tools", detail: toolName ? `Ejecutando ${toolName} para obtener evidencia.` : "Ejecutando herramientas de Mission Control y NEMO." },
-    { label: "escribiendo", detail: "Preparando una respuesta operativa y accionable." },
-  ];
-  const current = phases[tick % phases.length];
+  // Derive real-time state from the actual streaming message so the status line
+  // reflects what's actually happening (tokens arriving, artifact growing, tool
+  // running) instead of rotating through generic placeholders on a timer.
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  const content = lastAssistant?.content || "";
+
+  // Count active vs completed tool badges in the current stream block.
+  // ⟳ marks an in-progress tool, ✓ marks a completed tool — both are rendered
+  // by sendAgentMessage as a header block before the LLM content begins.
+  const activeToolMatch = content.match(/⟳\s*`([^`]+)`/);
+  const doneToolCount = (content.match(/✓\s*`/g) || []).length;
+  const activeTool = activeToolMatch ? _normalizeToolDisplayName(activeToolMatch[1]) : null;
+
+  // Count content chars after the badge block — that's the actual LLM output.
+  // Badge block ends at the last "ms\n\n" (badge entries look like "✓ `tool` Nms").
+  const badgeEndMatch = [...content.matchAll(/ms\n\n/g)].pop();
+  const llmContent = badgeEndMatch ? content.slice(badgeEndMatch.index! + badgeEndMatch[0].length) : "";
+  const llmChars = llmContent.length;
+
+  // If the LLM started an artifact fence, measure its body length so the user can
+  // see the live preview growing alongside the Artifact Studio render.
+  const artifactOpenMatch = llmContent.match(/```(html_artifact|react_artifact|svg_artifact|mermaid|html|svg|tsx|jsx)\b/);
+  const artifactBodyChars = artifactOpenMatch ? llmChars - artifactOpenMatch.index! - artifactOpenMatch[0].length : 0;
+
+  let label: string;
+  let detail: string;
+  if (!busy && queuedPrompt) {
+    label = "Mensaje en cola";
+    detail = `Siguiente: ${queuedPrompt.slice(0, 80)}`;
+  } else if (activeTool) {
+    label = `Ejecutando ${activeTool}`;
+    detail = `${doneToolCount} herramientas completadas · esperando ${activeTool}`;
+  } else if (artifactOpenMatch && artifactBodyChars > 0) {
+    label = `Streaming artifact · ${artifactBodyChars.toLocaleString()} chars`;
+    detail = `Render en vivo en el Artifact Studio · ${artifactOpenMatch[1]}`;
+  } else if (llmChars > 0) {
+    label = `Streaming respuesta · ${llmChars.toLocaleString()} chars`;
+    detail = `Tokens recibidos del LLM`;
+  } else if (doneToolCount > 0) {
+    label = "Esperando primer token del LLM";
+    detail = `${doneToolCount} tools completadas · NIM está procesando el prompt`;
+  } else {
+    label = "Iniciando";
+    detail = "Preparando contexto y memorias NEMO";
+  }
 
   return (
     <div className={`agent-live-status ${busy ? "live" : "queued"} ${compact ? "compact" : ""}`} aria-live="polite">
       <span className="agent-live-dot" aria-hidden="true" />
       <div className="agent-live-copy">
-        <strong>{busy ? `Agente ${current.label}` : "Mensaje en cola"}</strong>
-        <small>{busy ? current.detail : `Siguiente: ${queuedPrompt}`}</small>
+        <strong>{label}</strong>
+        <small>{detail}</small>
       </div>
-      {busy && <div className="agent-live-steps" aria-hidden="true">
-        {phases.map((phase, index) => (
-          <span key={`${phase.label}-${index}`} className={index === (tick % phases.length) ? "active" : ""} />
-        ))}
-      </div>}
     </div>
   );
 }
