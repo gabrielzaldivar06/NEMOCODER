@@ -31,11 +31,32 @@ function injectPolyfill(html: string): string {
   return injections + html;
 }
 
+// Closes mid-stream HTML so the iframe renders something instead of waiting for the
+// final tag. The browser is forgiving — even a partial <body> with no </body> will
+// render — but explicitly closing the structure prevents some content from being
+// hidden behind a missing root tag.
+function completePartialHtml(content: string): string {
+  let html = content;
+  // Detect if we're in the middle of a tag (e.g. "<div clas") and close it cleanly
+  // so the parser doesn't keep buffering. Only do this when we have an unclosed tag.
+  const lastLt = html.lastIndexOf("<");
+  const lastGt = html.lastIndexOf(">");
+  if (lastLt > lastGt) {
+    html = html.slice(0, lastLt);
+  }
+  if (!/<\/body>/i.test(html) && /<body/i.test(html)) html += "</body>";
+  if (!/<\/html>/i.test(html) && /<html/i.test(html)) html += "</html>";
+  return html;
+}
+
 function artifactSrcDoc(artifact: GeneratedArtifact): string {
   if (artifact.kind === "svg") {
     return `<!doctype html><html><head><meta charset="utf-8">${_CONSOLE_INTERCEPTOR_SCRIPT}<style>html,body{margin:0;min-height:100%;display:grid;place-items:center;background:#07101f;color:#e5edf8}svg{max-width:100%;max-height:100%;}</style></head><body>${artifact.content}</body></html>`;
   }
-  if (artifact.kind === "html") return injectPolyfill(artifact.content);
+  if (artifact.kind === "html") {
+    const body = artifact.streaming ? completePartialHtml(artifact.content) : artifact.content;
+    return injectPolyfill(body);
+  }
   if (artifact.kind === "react") {
     return `<!doctype html><html><head><meta charset="utf-8">${_CONSOLE_INTERCEPTOR_SCRIPT}<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script><script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script><script src="https://unpkg.com/@babel/standalone/babel.min.js"></script><style>html,body,#root{margin:0;min-height:100%;background:#07101f;color:#e5edf8;font-family:Inter,system-ui,sans-serif}</style></head><body><div id="root"></div><script type="text/babel">${artifact.content}\nReactDOM.render(React.createElement(App), document.getElementById("root"));</script></body></html>`;
   }
@@ -674,6 +695,35 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
   }, [artifacts, kindFilter, libraryQuery]);
   const activeArtifact = artifacts.find((artifact) => artifact.id === activeId) ?? artifacts[0];
   const renderable = isRenderableArtifact(activeArtifact);
+  // Debounce the srcDoc used by the live iframe so a streaming artifact does not
+  // tear down and re-mount the iframe on every single token chunk. Without this
+  // the iframe shows a blank flash for the whole stream and the user only sees
+  // the final HTML at the end. We update the debounced value every 200ms which
+  // is fast enough to feel live but slow enough for the renderer to flush.
+  const [debouncedSrcDoc, setDebouncedSrcDoc] = useState<string>(() => activeArtifact ? artifactSrcDoc(activeArtifact) : "");
+  const _lastSrcKeyRef = useRef<string>("");
+  useEffect(() => {
+    if (!activeArtifact) {
+      setDebouncedSrcDoc("");
+      _lastSrcKeyRef.current = "";
+      return;
+    }
+    // Streaming updates every token; flush at ~200ms. Finalized artifacts update
+    // immediately so the user gets the polished render the moment it's done.
+    const isStreaming = Boolean(activeArtifact.streaming);
+    const key = `${activeArtifact.id}-${activeArtifact.content.length}-${isStreaming ? "s" : "f"}`;
+    if (key === _lastSrcKeyRef.current) return;
+    if (!isStreaming) {
+      _lastSrcKeyRef.current = key;
+      setDebouncedSrcDoc(artifactSrcDoc(activeArtifact));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      _lastSrcKeyRef.current = key;
+      setDebouncedSrcDoc(artifactSrcDoc(activeArtifact));
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [activeArtifact?.id, activeArtifact?.content, activeArtifact?.streaming]);
   const versionSiblings = activeArtifact?.versionGroup ? artifacts
     .filter((artifact) => artifact.versionGroup === activeArtifact.versionGroup)
     .sort((left, right) => (left.version ?? 0) - (right.version ?? 0)) : [];
@@ -742,39 +792,39 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
   ];
 
   return (
-    <aside className="artifact-studio" aria-label="Artifacts generados">
-      <div className="artifact-studio-header">
-        <div className="artifact-title-block">
-          <span className="artifact-kicker"><Zap size={11} /> Live render</span>
-          <strong>Artifact Studio</strong>
-          <small>{artifacts.length ? `${artifacts.length} artifact(s) indexados` : "listo para multimodal"}</small>
-        </div>
-        <div className="artifact-live-hud" aria-label="Artifact kind">
-          <span>{activeArtifact?.kind ?? "standby"}</span>
-          {activeArtifact && <span>{artifactLineCount(activeArtifact)} lines</span>}
+    <aside className={`artifact-studio${activeArtifact?.kind === "image" && viewMode === "preview" ? " image-focus" : ""}`} aria-label="Artifacts generados">
+      {/* Compact single-row header. Title + kind + line count + actions. Eliminates
+          the previous 3-row chrome (kicker / wordmark / subtitle / kind HUD / toolbar)
+          that ate ~120 px of vertical space before the actual artifact rendered. */}
+      <div className="artifact-studio-header artifact-studio-header-compact">
+        <div className="artifact-studio-summary">
+          {activeArtifact && <span className="artifact-studio-icon" aria-hidden="true">{artifactKindIcon(activeArtifact.kind)}</span>}
+          <strong title={activeArtifact?.title}>{activeArtifact?.title ?? "Artifact Studio"}</strong>
+          {activeArtifact && <span className="artifact-studio-kind-pill">{activeArtifact.kind}</span>}
+          {activeArtifact && <small>{artifactLineCount(activeArtifact)} L · {activeArtifact.tokenEstimate}t{activeArtifact.streaming ? " · streaming" : ""}</small>}
         </div>
         <div className="artifact-toolbar-actions">
-          <button onClick={copyArtifact} disabled={!activeArtifact} title="Copiar artifact"><Copy size={13} /><span>{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy?" : "Copy"}</span></button>
-          <button onClick={downloadArtifact} disabled={!activeArtifact} title="Descargar artifact"><Download size={13} /><span>Save</span></button>
-          <button onClick={() => activeArtifact && onAttachToPrompt(activeArtifact)} disabled={!activeArtifact} title="Adjuntar al siguiente prompt"><Paperclip size={13} /><span>Attach</span></button>
+          <button onClick={copyArtifact} disabled={!activeArtifact} title="Copiar artifact"><Copy size={13} /></button>
+          <button onClick={downloadArtifact} disabled={!activeArtifact} title="Descargar artifact"><Download size={13} /></button>
+          <button onClick={() => activeArtifact && onAttachToPrompt(activeArtifact)} disabled={!activeArtifact} title="Adjuntar al siguiente prompt"><Paperclip size={13} /></button>
           {activeArtifact && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react" || activeArtifact.kind === "code") && (
-            <button onClick={() => setShowConsole((s) => !s)} className={showConsole ? "active" : ""} title="Toggle console output from artifact">
-              <Code2 size={13} /><span>Console{consoleEntries.length > 0 ? ` (${consoleEntries.length})` : ""}</span>
+            <button onClick={() => setShowConsole((s) => !s)} className={showConsole ? "active" : ""} title={`Console${consoleEntries.length > 0 ? ` (${consoleEntries.length})` : ""}`}>
+              <Code2 size={13} />{consoleEntries.length > 0 && <span className="console-count">{consoleEntries.length}</span>}
             </button>
           )}
           {isRunnable && (
             <button onClick={() => { setIsEditMode((m) => { if (!m) setEditableCode(activeArtifact?.content ?? ""); return !m; }); }} className={isEditMode ? "active" : ""} title={isEditMode ? "Switch to preview" : "Edit code"}>
-              <RefreshCw size={13} /><span>{isEditMode ? "Preview" : "Edit"}</span>
+              <RefreshCw size={13} />
             </button>
           )}
           {isRunnable && (
             <button onClick={() => void handleRun()} disabled={runRunning} className="artifact-run-btn" title={`Run ${activeArtifact?.language ?? "code"}`}>
-              <Zap size={13} /><span>{runRunning ? "Running…" : "▶ Run"}</span>
+              <Zap size={13} />{runRunning ? "…" : ""}
             </button>
           )}
           {onClearAll && artifacts.length > 0 && (
             <button className="danger" onClick={() => { if (window.confirm("¿Limpiar todos los artifacts guardados?")) onClearAll(); }} title="Limpiar todos los artifacts">
-              <Trash2 size={13} /><span>Clear all</span>
+              <Trash2 size={13} />
             </button>
           )}
         </div>
@@ -809,39 +859,34 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
           </div>}
         </div>
         {activeArtifact && <div className="artifact-canvas">
-          <div className="artifact-active-summary">
-            <div className="artifact-active-icon" aria-hidden="true">{artifactKindIcon(activeArtifact.kind)}</div>
-            <div className="artifact-active-copy">
-              <span>{activeArtifact.kind}</span>
-              <strong>{activeArtifact.title}</strong>
-            </div>
-            <div className="artifact-active-pills" aria-label="Metadata del artifact activo">
-              <span>{activeArtifact.version ? `v${activeArtifact.version}` : "draft"}</span>
-              <span>{activeArtifact.persisted ? "indexed" : "session"}</span>
-              <span>#{shortArtifactHash(activeArtifact)}</span>
-              <span>{formatArtifactTime(activeArtifact.updatedAt ?? activeArtifact.createdAt)}</span>
-            </div>
-            <FullscreenButton stageRef={stageRef} />
-          </div>
-          <div className="artifact-canvas-bar">
-            <div className="artifact-canvas-meta">
-              <span>{activeArtifact.language}</span>
-              <span>{activeArtifact.tokenEstimate} tok</span>
-              <span>{artifactLineCount(activeArtifact)} lines</span>
-            </div>
-            <div className="artifact-library-actions" aria-label="Acciones de biblioteca">
-              <button onClick={() => onToggleFavorite(activeArtifact.id)} title={activeArtifact.favorite ? "Quitar pin" : "Fijar artifact"}><Pin size={12} /><span>{activeArtifact.favorite ? "Pinned" : "Pin"}</span></button>
-              <button className="danger" onClick={() => onRemoveArtifact(activeArtifact.id)} title="Eliminar artifact del registry"><Trash2 size={12} /><span>Delete</span></button>
-            </div>
+          {/* Compact canvas bar — only the view switch + small meta pills + fullscreen.
+              Title/kind/icon were moved up to the header; version/hash/time now live
+              inline as small pills so the bar fits in one row instead of two. */}
+          <div className="artifact-canvas-bar artifact-canvas-bar-compact">
             <div className="artifact-view-switch" aria-label="Modo de artifact">
               {viewOptions.map((option) => <button key={option.mode} className={viewMode === option.mode ? "active" : ""} onClick={() => setViewMode(option.mode)} disabled={option.disabled} title={option.label}>{option.icon}<span>{option.label}</span></button>)}
+            </div>
+            <div className="artifact-canvas-meta">
+              <span title="Versión">{activeArtifact.version ? `v${activeArtifact.version}` : "draft"}</span>
+              <span title="Hash" className="canvas-meta-hash">#{shortArtifactHash(activeArtifact)}</span>
+              <span title="Actualizado">{formatArtifactTime(activeArtifact.updatedAt ?? activeArtifact.createdAt)}</span>
+            </div>
+            <div className="artifact-library-actions" aria-label="Acciones de biblioteca">
+              <button onClick={() => onToggleFavorite(activeArtifact.id)} title={activeArtifact.favorite ? "Quitar pin" : "Fijar artifact"}><Pin size={12} /></button>
+              <button className="danger" onClick={() => onRemoveArtifact(activeArtifact.id)} title="Eliminar artifact del registry"><Trash2 size={12} /></button>
+              <FullscreenButton stageRef={stageRef} />
             </div>
           </div>
           <div ref={stageRef} className={`artifact-stage ${viewMode}`}>
             {viewMode === "preview" && activeArtifact.kind === "browser" ? (
               <BrowserLiveView content={activeArtifact.content} />
             ) : viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
-              <iframe title={activeArtifact.title} sandbox="allow-scripts" srcDoc={artifactSrcDoc(activeArtifact)} />
+              <iframe
+                key={`artifact-iframe-${activeArtifact.id}`}
+                title={activeArtifact.title}
+                sandbox="allow-scripts"
+                srcDoc={activeArtifact.kind === "html" ? debouncedSrcDoc : artifactSrcDoc(activeArtifact)}
+              />
             ) : viewMode === "preview" && activeArtifact.kind === "code" && isEditMode ? (
               <textarea
                 className="artifact-code-editor"
