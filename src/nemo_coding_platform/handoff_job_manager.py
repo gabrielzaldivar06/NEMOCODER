@@ -186,6 +186,10 @@ class HandoffJobManager:
             self._restore_snapshots()
 
     def configure_snapshot_root(self, snapshot_root: Path) -> None:
+        # Clear in-memory jobs first so switching workspaces does not leak the
+        # previous workspace's jobs. Restore from the new snapshot root.
+        with self._lock:
+            self._jobs.clear()
         self._snapshot_root = snapshot_root
         self._snapshot_root.mkdir(parents=True, exist_ok=True)
         self._restore_snapshots()

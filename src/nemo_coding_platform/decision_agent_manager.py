@@ -124,7 +124,13 @@ class DecisionAgentManager:
             self.configure_snapshot_root(snapshot_root)
 
     def configure_snapshot_root(self, snapshot_root: Path) -> None:
-        """Set the persistence directory and load the most recent job if any."""
+        """Set the persistence directory and load the most recent job if any.
+
+        Drops any in-memory job from the previous workspace before restoring so
+        that switching workspaces does not leak DA state across roots.
+        """
+        with self._lock:
+            self._job = None
         self._snapshot_root = Path(snapshot_root)
         try:
             self._snapshot_root.mkdir(parents=True, exist_ok=True)

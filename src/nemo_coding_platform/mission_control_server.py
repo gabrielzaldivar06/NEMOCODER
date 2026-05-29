@@ -196,17 +196,27 @@ class MissionControlServerConfig:
 
     def with_runtime_settings(self, settings: dict[str, object]) -> "MissionControlServerConfig":
         repo = Path(str(settings.get("repo_path") or self.repo_path)).resolve()
-        runtimes = Path(str(settings.get("runtime_path") or self.runtimes_path))
-        if not runtimes.is_absolute():
-            runtimes = repo / runtimes
+        runtimes_setting = settings.get("runtime_path")
+        # When switching workspaces, runtime_path from settings is interpreted relative
+        # to the NEW repo so every workspace gets isolated runtime artifacts under its
+        # own root (logs, runs, snapshots, worktrees). The old behavior preserved
+        # run_results_path from the previous config, leaking jobs across workspaces.
+        if isinstance(runtimes_setting, str) and runtimes_setting:
+            runtimes = Path(runtimes_setting)
+            if not runtimes.is_absolute():
+                runtimes = repo / runtimes
+        else:
+            # No runtime_path in settings — anchor to the new repo using the same
+            # leaf name the current config uses so existing snapshots remain findable
+            # within that workspace.
+            leaf = self.runtimes_path.name if self.runtimes_path.name else ".nemo-runtimes"
+            runtimes = repo / leaf
         memory_value = settings.get("memory_db")
         memory_db = _resolve_under_repo(repo, memory_value) if isinstance(memory_value, str) and memory_value else None
-        # Preserve run_results_path: run JSONs don't move when runtime_path changes in settings.
-        # Re-anchor only if the existing path was relative to the old repo root.
-        old_run_results = self.run_results_path
-        if not old_run_results.is_absolute():
-            old_run_results = repo / old_run_results
-        return MissionControlServerConfig(repo, runtimes, runtimes / "mission-control" / "apply-results", old_run_results, memory_db)
+        # run_results_path always lives under the new workspace's runtimes_path so
+        # switching repos cleanly isolates one workspace's runs from another.
+        run_results = runtimes / "mission-control" / "runs"
+        return MissionControlServerConfig(repo, runtimes, runtimes / "mission-control" / "apply-results", run_results, memory_db)
 
 
 def _resolve_under_repo(repo: Path, path: str | Path | None) -> Path:
@@ -2697,6 +2707,17 @@ def api_repo_open(server: "MissionControlHttpServer", payload: dict[str, object]
     next_config = server.config.with_runtime_settings({**settings, "repo_path": str(repo)})
     _save_settings(next_config, {**settings, "repo_path": str(repo), "runtime_path": str(next_config.runtimes_path), "memory_db": str(next_config.memory_db) if next_config.memory_db else ""})
     server.config = next_config
+    # Re-anchor stateful subsystems to the new workspace so jobs, snapshots, and
+    # the Decision Agent each load from this workspace's own runtime root. Without
+    # these calls the in-memory state still points at the previous repo's snapshots.
+    try:
+        server.jobs.configure_snapshot_root(next_config.job_snapshots_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("api_repo_open: failed to switch HandoffJobManager snapshot root: %s", exc)
+    try:
+        server.decision_agent_manager.configure_snapshot_root(next_config.decision_agent_snapshots_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("api_repo_open: failed to switch DecisionAgentManager snapshot root: %s", exc)
     return {"ok": True, "repo": {"path": str(repo), "is_git_repo": is_git}, "state": api_state(server.config, server.jobs)}
 
 
