@@ -108,6 +108,7 @@ def build_default_engine_command(profile: ModelProfile, message_file: str | Path
         str(message_file),
         "--yes-always",
         "--no-auto-file-mentions",  # prevents context explosion from anchor doc file refs
+        "--no-detect-urls",  # prevents Aider from scraping URLs the LLM mentions (vitejs.dev, etc.)
         "--no-git",
         "--no-auto-commits",
         "--no-dirty-commits",
@@ -133,6 +134,7 @@ def build_git_engine_command(profile: ModelProfile, message_file: str | Path) ->
         str(message_file),
         "--yes-always",
         "--no-auto-file-mentions",  # prevents context explosion in repos with rich anchor docs
+        "--no-detect-urls",  # prevents Aider from scraping URLs the LLM mentions
         "--no-show-model-warnings",
         "--no-analytics",
         "--map-tokens",
