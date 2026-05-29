@@ -1744,18 +1744,34 @@ export function App() {
       const dec = new TextDecoder();
       let buf = "";
       let textContent = "";
+      let reasoningContent = "";  // kimi-k2.6 / DeepSeek-R1 chain-of-thought tokens
       const activeBadges = new Map<string, string>(); // callId → tool name
       const doneBadgeLines: string[] = [];
 
       const renderBadgeBlock = () =>
         [...doneBadgeLines, ...[...activeBadges.values()].map((l) => `⟳ \`${l}\``)].join("\n");
 
+      const renderReasoningBlock = (text: string) => {
+        if (!text) return "";
+        // Wrap the live thinking stream in a collapsible <details> so the chat
+        // shows real progress without flooding the timeline once collapsed.
+        const escaped = text.replace(/</g, "&lt;").replace(/```/g, "ʼʼʼ");
+        return [
+          "<details class=\"agent-reasoning\" open>",
+          `<summary>🧠 Pensando · ${text.length.toLocaleString()} chars</summary>`,
+          `<pre class=\"reasoning-stream\">${escaped}</pre>`,
+          "</details>",
+        ].join("\n");
+      };
+
       const updateMsg = (extra: string) => {
         const badges = renderBadgeBlock();
+        const thinking = renderReasoningBlock(reasoningContent);
+        const parts = [badges, thinking, extra].filter((p) => p && p.length > 0);
         setAgentMessages((prev) =>
           prev.map((m) =>
             m.id === _streamId
-              ? { ...m, content: badges ? `${badges}\n\n${extra}` : extra }
+              ? { ...m, content: parts.join("\n\n") }
               : m
           )
         );
@@ -1804,6 +1820,9 @@ export function App() {
             updateMsg(textContent);
           } else if (evt.type === "token") {
             textContent += String(evt.delta ?? "");
+            updateMsg(textContent);
+          } else if (evt.type === "reasoning_token") {
+            reasoningContent += String(evt.delta ?? "");
             updateMsg(textContent);
           } else if (evt.type === "done") {
             if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = undefined; }

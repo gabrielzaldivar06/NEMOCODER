@@ -144,7 +144,41 @@ class LmClient:
         acquire_timeout: float = 30.0,
         extra_body: dict[str, Any] | None = None,
     ) -> "Generator[str, None, None]":
-        """Yield assistant content deltas as they arrive (OpenAI streaming format)."""
+        """Yield assistant content deltas as they arrive (OpenAI streaming format).
+
+        For backwards compatibility this returns plain strings (content only). To
+        also stream reasoning_content from thinking models, use chat_stream_events.
+        """
+        for evt in self.chat_stream_events(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            acquire_timeout=acquire_timeout,
+            extra_body=extra_body,
+        ):
+            if evt.get("kind") == "content":
+                delta = evt.get("delta") or ""
+                if delta:
+                    yield delta
+
+    def chat_stream_events(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+        timeout: float = 180.0,
+        acquire_timeout: float = 30.0,
+        extra_body: dict[str, Any] | None = None,
+    ) -> "Generator[dict[str, str], None, None]":
+        """Yield typed dicts {kind, delta} where kind is 'content' or 'reasoning'.
+
+        Reasoning chunks are kimi-k2.6 / DeepSeek-R1 / o1-style chain-of-thought
+        tokens emitted under delta.reasoning_content. They are NOT visible to the
+        end of the LLM's output but they are useful for live UI feedback so the
+        chat doesn't look frozen during a 30-90s first-token latency window.
+        """
         body: dict[str, Any] = {
             "messages": messages,
             "temperature": temperature,
@@ -181,12 +215,16 @@ class LmClient:
                         try:
                             obj = json.loads(payload_str)
                             choice = (obj.get("choices") or [{}])[0]
-                            delta = (choice.get("delta") or {}).get("content")
+                            delta_obj = choice.get("delta") or {}
+                            content_delta = delta_obj.get("content")
+                            reasoning_delta = delta_obj.get("reasoning_content")
                             fr = choice.get("finish_reason")
                             if fr:
                                 self.last_finish_reason = str(fr)
-                            if delta:
-                                yield delta
+                            if reasoning_delta:
+                                yield {"kind": "reasoning", "delta": str(reasoning_delta)}
+                            if content_delta:
+                                yield {"kind": "content", "delta": str(content_delta)}
                         except (json.JSONDecodeError, IndexError, KeyError):
                             pass
         except urllib.error.HTTPError as exc:

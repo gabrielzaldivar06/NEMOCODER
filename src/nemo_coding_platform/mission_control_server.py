@@ -6121,11 +6121,40 @@ def _iter_chat_sse(
         ]
         # Detect artifact-intent in the user message. When the user explicitly asks
         # for an HTML artifact, mockup, preview, or visual dashboard, force the LLM
-        # to produce inline content (tool_choice="none") instead of choosing a
-        # function call. Without this, models that aggressively prefer tool routing
-        # (e.g. kimi-k2.6 with tool_choice="auto") emit only delta.tool_calls which
-        # the LM client drops, leaving content empty.
+        # to produce inline content (tool_choice="none") and bump max_tokens so the
+        # generation has room to be ambitious instead of getting truncated at the
+        # legacy 2048 settings default.
         _artifact_intent = _looks_like_artifact_request(message)
+        if _artifact_intent:
+            # When a vague artifact request lands (e.g. "muéstrame un preview del orbit"),
+            # the LLM tends to produce a thin, generic mockup. Inject a quality contract
+            # so even minimal prompts get a substantial, opinionated artifact with realistic
+            # mock data, multiple sections, hover states, etc. Inserted right before the
+            # user message so it has the most weight on output style.
+            _sys_msgs.insert(
+                -1,
+                {
+                    "role": "system",
+                    "content": (
+                        "ARTIFACT QUALITY CONTRACT — apply even when the user prompt is brief:\n"
+                        "1. Be ambitious in scope. Include at least: a clear hero section, "
+                        "multiple sub-components or panels, realistic mock data with concrete "
+                        "names/values (not lorem ipsum or 'item 1'), hover/focus/active states, "
+                        "a legend or footer with derived stats, and a coherent dark-mode palette.\n"
+                        "2. Be specific to the domain mentioned. If the user references a real "
+                        "component (e.g. NEMO orbit copy), use realistic data from that domain — "
+                        "memory types (correction, decision, intent_anchor, episode, pattern), "
+                        "specific NEMO MCP tool names, importance levels, freshness indicators.\n"
+                        "3. Prefer SVG diagrams + CSS over plain HTML when possible — the "
+                        "Artifact Studio renders inline SVG cleanly and they are visually "
+                        "richer than plain divs.\n"
+                        "4. NEVER ask clarifying questions. Make opinionated choices and "
+                        "produce a complete, self-contained artifact in one shot.\n"
+                        "5. NEVER include lorem ipsum, placeholder TODOs, or 'Add more here'. "
+                        "Every element must look like production-ready content."
+                    ),
+                },
+            )
         _extra: dict[str, Any] = {
             "model": _chat_model(payload),
             "tools": _AGENT_TOOL_SCHEMAS,
@@ -6141,7 +6170,14 @@ def _iter_chat_sse(
         _chat_timeout = max(60.0, float(_estimated_seconds) + 60.0)
         _chat_temperature = float(payload.get("chat_temperature", payload.get("temperature", 0.2)))
         _chat_max_tok = _chat_max_tokens(payload)
-        for delta in client.chat_stream(
+        # Artifact-intent floor: even with a vague prompt, the user expects a
+        # complete preview. Many users have stale chat_max_tokens=2048 in their
+        # settings, which truncates HTML artifacts mid-generation. Bump to at
+        # least 32K when the request is for a visual artifact — the continuation
+        # loop further extends if more is needed without burning extra latency.
+        if _artifact_intent:
+            _chat_max_tok = max(_chat_max_tok, 32768)
+        for evt in client.chat_stream_events(
             _sys_msgs,
             temperature=_chat_temperature,
             max_tokens=_chat_max_tok,
@@ -6149,6 +6185,10 @@ def _iter_chat_sse(
             acquire_timeout=30.0,
             extra_body=_extra,
         ):
+            if evt.get("kind") == "reasoning":
+                yield {"type": "reasoning_token", "delta": evt.get("delta", "")}
+                continue
+            delta = evt.get("delta", "")
             full_content += delta
             yield {"type": "token", "delta": delta}
 
@@ -6182,7 +6222,7 @@ def _iter_chat_sse(
                 },
             ]
             try:
-                for delta in client.chat_stream(
+                for evt in client.chat_stream_events(
                     _continuation_messages,
                     temperature=_chat_temperature,
                     max_tokens=_chat_max_tok,
@@ -6190,6 +6230,10 @@ def _iter_chat_sse(
                     acquire_timeout=30.0,
                     extra_body={**_extra, "tool_choice": "none"},
                 ):
+                    if evt.get("kind") == "reasoning":
+                        yield {"type": "reasoning_token", "delta": evt.get("delta", "")}
+                        continue
+                    delta = evt.get("delta", "")
                     full_content += delta
                     yield {"type": "token", "delta": delta}
             except Exception as _ce:  # noqa: BLE001

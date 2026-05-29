@@ -6400,3 +6400,45 @@ textarea:focus-visible,
   flex-shrink: 0;
 }
 .qs-st-title { flex: 1; }
+
+/* ── Agent reasoning (chain-of-thought) live stream ──────────────────────────── */
+.agent-reasoning {
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: rgba(99, 102, 241, 0.06);
+  border-left: 3px solid #6366f1;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #c7d2fe;
+}
+.agent-reasoning summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #a5b4fc;
+  user-select: none;
+  list-style: none;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.agent-reasoning summary::-webkit-details-marker { display: none; }
+.agent-reasoning summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s;
+}
+.agent-reasoning[open] summary::before { transform: rotate(90deg); }
+.agent-reasoning .reasoning-stream {
+  margin: 8px 0 0;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: #94a3b8;
+  max-height: 320px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
