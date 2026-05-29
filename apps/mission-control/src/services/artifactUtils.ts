@@ -8,6 +8,11 @@ export type GeneratedArtifact = {
   language: string;
   content: string;
   tokenEstimate: number;
+  // True while the originating fence is still open (no closing ``` yet).
+  // The registry uses this to keep a stable in-place ID during streaming so
+  // the Artifact Studio updates content live instead of spawning a new entry
+  // for every token chunk.
+  streaming?: boolean;
   registryId?: string;
   contentHash?: string;
   version?: number;
@@ -85,11 +90,17 @@ function isCollectibleArtifact(kind: GeneratedArtifactKind, content: string): bo
   return false;
 }
 
+// Match `\`\`\`lang\n...content...\`\`\`` OR an unclosed `\`\`\`lang\n...` running to end-of-string.
+// The (?:\n```|$) tail allows live rendering of artifacts that are still streaming —
+// without it the regex needed the closing fence and the Artifact Studio stayed empty
+// until the final chunk arrived, hiding the entire live preview Claude-Code-style.
+const ARTIFACT_BLOCK_REGEX = /```([^\n`]*)\n([\s\S]*?)(?:\n```|$)/g;
+
 export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): GeneratedArtifact[] {
   const artifacts: GeneratedArtifact[] = [];
   for (const message of messages) {
     if (message.role !== "assistant") continue;
-    const blocks = message.content.matchAll(/```([^\n`]*)\n([\s\S]*?)```/g);
+    const blocks = message.content.matchAll(ARTIFACT_BLOCK_REGEX);
     let localIndex = 0;
     for (const match of blocks) {
       const language = match[1].trim().split(/\s+/)[0]?.toLowerCase() || "text";
@@ -97,6 +108,10 @@ export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): Ge
       if (!content) continue;
       const kind = artifactKindFromBlock(language, content);
       if (!isCollectibleArtifact(kind, content)) continue;
+      // match[0] always includes the opening fence + body; if it also ends with
+      // the closing ``` the artifact is complete. Otherwise the stream is still
+      // in-progress and registry merging must keep using the streaming-stable id.
+      const streaming = !match[0].trimEnd().endsWith("```");
       artifacts.unshift({
         id: `${message.id}-artifact-${localIndex}`,
         messageId: message.id,
@@ -105,6 +120,7 @@ export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): Ge
         language,
         content,
         tokenEstimate: estimateArtifactTokens(content),
+        streaming,
       });
       localIndex += 1;
     }
@@ -113,7 +129,10 @@ export function collectGeneratedArtifacts(messages: ArtifactMessageSource[]): Ge
 }
 
 export function stripGeneratedArtifactBlocks(content: string): string {
-  const stripped = content.replace(/```([^\n`]*)\n([\s\S]*?)```/g, (block, language, body) => {
+  // Mirror collectGeneratedArtifacts: strip the fence even when it's still unclosed
+  // (streaming in-progress) so chat doesn't show the raw HTML/SVG/etc. while the
+  // Artifact Studio renders it live.
+  const stripped = content.replace(ARTIFACT_BLOCK_REGEX, (block, language, body) => {
     const kind = artifactKindFromBlock(String(language).trim().split(/\s+/)[0] || "text", String(body));
     return ["html", "svg", "markdown", "json", "mermaid", "react", "image", "video", "audio", "image_request", "code"].includes(kind) ? "" : block;
   }).trim();
