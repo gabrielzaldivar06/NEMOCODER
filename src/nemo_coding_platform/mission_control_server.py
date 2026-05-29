@@ -1388,7 +1388,7 @@ def _probe_arguments_for_tool(tool_name: str) -> dict[str, Any]:
         "get_context_portfolio_stats": {},
         "compare_context_strategies": {"task": "tool scan", "topic": "tool-scan", "token_budget": 128},
         "refresh_context_portfolio": {"task": "tool scan", "topic": "tool-scan", "token_budget": 128},
-        "anticipate": {"task": "tool scan", "limit": 1},
+        "anticipate": {"context": "tool scan", "limit": 1},
         "detect_redundancy": {"limit": 5},
         "memory_chronicle": {"limit": 5},
         "salience_score": {"content": "tool scan", "task": "tool scan"},
@@ -5963,13 +5963,19 @@ def _iter_chat_sse(
             )
             yield {"type": "tool_done", "name": "nemo_memory.search_memories", "ms": int((time.perf_counter() - _ts) * 1000)}
 
-    # ── 3. Research mode: anticipate runs to surface relevant memories the
-    # bootstrap portfolio might not have ranked highest. build_context_portfolio
-    # is NOT called here — bootstrap already returned a full portfolio (atoms +
-    # evidence_handles) with the configured limit, so a second call would just
-    # recompute and burn another ~30s on NEMO with no new information.
+    # ── 3. Research mode: anticipate ONLY when bootstrap didn't bring enough
+    # context. anticipate runs a semantic similarity + reranker + LLM-based
+    # prediction internally and takes ~35s on NEMO — most chats already get a
+    # rich enough portfolio from bootstrap (up to 40 atoms), so we skip the
+    # extra wait unless bootstrap was sparse.
     anticipate_payload: dict[str, Any] = {}
-    if run_deep_context:
+    _bootstrap_portfolio = bootstrap_payload.get("context_portfolio") if isinstance(bootstrap_payload, dict) else None
+    _bootstrap_atoms_count = (
+        len(_bootstrap_portfolio.get("atoms") or [])
+        if isinstance(_bootstrap_portfolio, dict)
+        else 0
+    )
+    if run_deep_context and _bootstrap_atoms_count < 5:
         _deep_t0 = time.perf_counter()
         yield {"type": "tool_start", "name": "nemo_memory.anticipate"}
         anticipate_payload = _nemo_chat_tool_call(
@@ -5977,7 +5983,7 @@ def _iter_chat_sse(
             lifecycle_phase="plan",
             nemo_mcp_url=nemo_mcp_url,
             allowed_tools=selected_nemo_tools,
-            task=message, limit=mode_profile["anticipate_limit"],
+            context=message, limit=mode_profile["anticipate_limit"],
         )
         yield {"type": "tool_done", "name": "nemo_memory.anticipate", "ms": int((time.perf_counter() - _deep_t0) * 1000)}
         # Feed back which portfolio was used so future bootstrap retrievals improve.
@@ -6476,7 +6482,7 @@ def api_agent_message(
                 lifecycle_phase="plan",
                 nemo_mcp_url=nemo_mcp_url,
                 allowed_tools=selected_nemo_tools,
-                task=message, limit=mode_profile["anticipate_limit"],
+                context=message, limit=mode_profile["anticipate_limit"],
             )
 
         with ThreadPoolExecutor(max_workers=3) as _deep_ex:
