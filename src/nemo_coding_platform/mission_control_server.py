@@ -7891,11 +7891,22 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
             pass
 
     def _handle_chat_sse(self, payload: dict[str, object]) -> None:
-        """Stream agent chat response as Server-Sent Events (tool badges + LLM tokens)."""
+        """Stream agent chat response as Server-Sent Events (tool badges + LLM tokens).
+
+        Headers chosen to disable proxy buffering. The Vite dev server proxy and any
+        intermediate node-http-proxy will hold small SSE chunks (token deltas are
+        ~30-60 bytes) until the socket buffer fills (~64 KB), which in practice meant
+        the browser saw zero tokens for the first 1000+ tokens of a long generation.
+        X-Accel-Buffering and Content-Encoding: identity tell every proxy to flush
+        chunks as they arrive instead of compressing/coalescing them.
+        """
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Content-Encoding", "identity")
+            self.send_header("Connection", "keep-alive")
             self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -7936,7 +7947,10 @@ class MissionControlRequestHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Content-Encoding", "identity")
+            self.send_header("Connection", "keep-alive")
             self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:5173")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
