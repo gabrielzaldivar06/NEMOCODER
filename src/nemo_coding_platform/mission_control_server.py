@@ -5859,6 +5859,52 @@ def _is_cacheable_chat(message: str, actions: list[dict[str, object]], chat_mode
 
 # ── Streaming chat SSE ─────────────────────────────────────────────────────────
 
+_ARTIFACT_INTENT_TERMS = (
+    "html_artifact", "react_artifact", "svg_artifact", "mermaid",
+    "artifact", "mockup", "wireframe", "preview", "diseño visual",
+    "html con", "html que", "página html", "pagina html", "dashboard",
+    "infografía", "infografia", "interactivo", "visualización", "visualizacion",
+)
+
+
+def _looks_like_artifact_request(message: str) -> bool:
+    """Return True when the user message asks for a visual/interactive artifact.
+
+    Used by _iter_chat_sse to force tool_choice="none" so the LLM produces inline
+    content with an artifact fence instead of choosing a function call (which would
+    drop the visible response — see chat_stream tool_calls handling).
+    """
+    if not isinstance(message, str) or not message.strip():
+        return False
+    lowered = message.lower()
+    if "```html_artifact" in lowered or "```react_artifact" in lowered:
+        return True
+    hits = sum(1 for term in _ARTIFACT_INTENT_TERMS if term in lowered)
+    return hits >= 2
+
+
+_OPEN_ARTIFACT_FENCE_RE = re.compile(
+    r"```(?:html_artifact|react_artifact|svg_artifact|mermaid|jsx|tsx|html)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_unclosed_artifact_fence(content: str) -> bool:
+    """Return True when content has an opened artifact fence with no closing ```.
+
+    Counts opens vs total fences to detect truncation reliably even when the LLM
+    emits multiple fenced blocks.
+    """
+    if not content:
+        return False
+    open_matches = list(_OPEN_ARTIFACT_FENCE_RE.finditer(content))
+    if not open_matches:
+        return False
+    last_open_end = open_matches[-1].end()
+    # If a closing ``` exists after the last open fence, the artifact is complete.
+    return "```" not in content[last_open_end:]
+
+
 def _iter_chat_sse(
     config: MissionControlServerConfig,
     payload: dict[str, object],
@@ -6073,10 +6119,17 @@ def _iter_chat_sse(
             *[{"role": turn["role"], "content": turn["content"]} for turn in history[-10:]],
             {"role": "user", "content": message},
         ]
+        # Detect artifact-intent in the user message. When the user explicitly asks
+        # for an HTML artifact, mockup, preview, or visual dashboard, force the LLM
+        # to produce inline content (tool_choice="none") instead of choosing a
+        # function call. Without this, models that aggressively prefer tool routing
+        # (e.g. kimi-k2.6 with tool_choice="auto") emit only delta.tool_calls which
+        # the LM client drops, leaving content empty.
+        _artifact_intent = _looks_like_artifact_request(message)
         _extra: dict[str, Any] = {
             "model": _chat_model(payload),
             "tools": _AGENT_TOOL_SCHEMAS,
-            "tool_choice": "auto",
+            "tool_choice": "none" if _artifact_intent else "auto",
         }
         if payload.get("enable_thinking"):
             _extra["enable_thinking"] = True
@@ -6086,16 +6139,62 @@ def _iter_chat_sse(
         # remote NIM models that need 200-300s for 2K tokens) don't fail under the
         # legacy 180s cap. We add a generous 60s overhead and floor at 60s.
         _chat_timeout = max(60.0, float(_estimated_seconds) + 60.0)
+        _chat_temperature = float(payload.get("chat_temperature", payload.get("temperature", 0.2)))
+        _chat_max_tok = _chat_max_tokens(payload)
         for delta in client.chat_stream(
             _sys_msgs,
-            temperature=float(payload.get("chat_temperature", payload.get("temperature", 0.2))),
-            max_tokens=_chat_max_tokens(payload),
+            temperature=_chat_temperature,
+            max_tokens=_chat_max_tok,
             timeout=_chat_timeout,
             acquire_timeout=30.0,
             extra_body=_extra,
         ):
             full_content += delta
             yield {"type": "token", "delta": delta}
+
+        # ── 5b. Artifact continuation loop ─────────────────────────────────────
+        # When the LLM stops because it hit max_tokens AND the content still has an
+        # unclosed ```kind ... ``` artifact fence, run a continuation pass instead of
+        # silently truncating. NEMO MCP doesn't have to be involved here — the
+        # partial content is fed back as an assistant turn and the LLM finishes the
+        # block. Capped at MAX_CONTINUATION rounds to avoid runaway costs.
+        MAX_CONTINUATION = 4
+        for _cont_round in range(MAX_CONTINUATION):
+            if client.last_finish_reason != "length":
+                break
+            if not _has_unclosed_artifact_fence(full_content):
+                break
+            yield {
+                "type": "artifact_continuation",
+                "round": _cont_round + 1,
+                "chars_so_far": len(full_content),
+            }
+            _continuation_messages = _sys_msgs + [
+                {"role": "assistant", "content": full_content},
+                {
+                    "role": "user",
+                    "content": (
+                        "El artifact se cortó por límite de tokens. Continúa EXACTAMENTE "
+                        "donde quedaste, sin repetir nada, sin re-explicar. No abras una "
+                        "nueva markdown fence — el fence ya está abierto en el bloque "
+                        "anterior. Cierra el artifact con ``` al terminar el HTML."
+                    ),
+                },
+            ]
+            try:
+                for delta in client.chat_stream(
+                    _continuation_messages,
+                    temperature=_chat_temperature,
+                    max_tokens=_chat_max_tok,
+                    timeout=_chat_timeout,
+                    acquire_timeout=30.0,
+                    extra_body={**_extra, "tool_choice": "none"},
+                ):
+                    full_content += delta
+                    yield {"type": "token", "delta": delta}
+            except Exception as _ce:  # noqa: BLE001
+                logger.warning("artifact continuation failed: %s", _ce)
+                break
     except Exception as _e:  # noqa: BLE001
         stream_error = str(_e)
         logger.warning("SSE chat stream error: %s", _e)
