@@ -86,6 +86,40 @@ function isRenderableArtifact(artifact: GeneratedArtifact | undefined): boolean 
   return Boolean(artifact && ["html", "svg", "markdown", "mermaid", "react", "code", "json", "image", "video", "audio", "image_request", "browser"].includes(artifact.kind));
 }
 
+// Live overlay shown over the iframe while an artifact is streaming. Without it
+// the canvas looks black/empty because the partial HTML has no <body> yet — the
+// user has no idea whether the model is generating, stalled, or done. This gives
+// concrete signals (token counter, current section being written, last lines).
+function ArtifactStreamingOverlay({ artifact }: { artifact: GeneratedArtifact }) {
+  const content = artifact.content;
+  const chars = content.length;
+  const tokens = artifact.tokenEstimate;
+  const lines = content.split("\n").length;
+  const tail = content.slice(-280);
+  // Best-effort detection of which section the model is currently writing.
+  const phase = (() => {
+    if (/<\/html>\s*$/i.test(content)) return "completing";
+    if (/<\/body>/i.test(content)) return "closing";
+    if (/<body[^>]*>/i.test(content)) return "writing body";
+    if (/<\/head>/i.test(content)) return "writing body";
+    if (/<head[^>]*>/i.test(content)) return "writing styles";
+    if (/<!doctype/i.test(content)) return "scaffolding";
+    return "thinking";
+  })();
+  return (
+    <div className="artifact-streaming-overlay" aria-live="polite">
+      <div className="streaming-status-bar">
+        <span className="streaming-pulse" aria-hidden="true" />
+        <strong>Streaming · {phase}</strong>
+        <small>{chars.toLocaleString()} chars · {tokens.toLocaleString()} tok · {lines} L</small>
+      </div>
+      <pre className="streaming-tail" aria-label="Últimas líneas generadas">
+        <code>{tail}<span className="streaming-cursor">▍</span></code>
+      </pre>
+    </div>
+  );
+}
+
 function artifactFileExtension(artifact: GeneratedArtifact): string {
   if (artifact.kind === "html") return "html";
   if (artifact.kind === "svg") return "svg";
@@ -881,12 +915,17 @@ export function ArtifactWorkbench({ artifacts, activeId, onSelect, onAttachToPro
             {viewMode === "preview" && activeArtifact.kind === "browser" ? (
               <BrowserLiveView content={activeArtifact.content} />
             ) : viewMode === "preview" && (activeArtifact.kind === "html" || activeArtifact.kind === "svg" || activeArtifact.kind === "react") ? (
-              <iframe
-                key={`artifact-iframe-${activeArtifact.id}`}
-                title={activeArtifact.title}
-                sandbox="allow-scripts"
-                srcDoc={activeArtifact.kind === "html" ? debouncedSrcDoc : artifactSrcDoc(activeArtifact)}
-              />
+              <>
+                <iframe
+                  key={`artifact-iframe-${activeArtifact.id}`}
+                  title={activeArtifact.title}
+                  sandbox="allow-scripts"
+                  srcDoc={activeArtifact.kind === "html" ? debouncedSrcDoc : artifactSrcDoc(activeArtifact)}
+                />
+                {activeArtifact.streaming && (
+                  <ArtifactStreamingOverlay artifact={activeArtifact} />
+                )}
+              </>
             ) : viewMode === "preview" && activeArtifact.kind === "code" && isEditMode ? (
               <textarea
                 className="artifact-code-editor"
