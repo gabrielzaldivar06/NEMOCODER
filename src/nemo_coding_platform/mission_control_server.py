@@ -5926,7 +5926,14 @@ def _iter_chat_sse(
     run_deep_context = chat_mode in {"research", "execution"}
     tool_calls: list[dict[str, object]] = []
 
-    # ── 1. context_bootstrap — loads prime_context + mini portfolio in one call ─
+    # ── 1. context_bootstrap — ONE call that already includes prime_context AND
+    # a dry-run context_portfolio. Verified directly against NEMO MCP — the
+    # response has prime_context.memories AND context_portfolio.atoms in a single
+    # round-trip. Previously we also called build_context_portfolio separately,
+    # which made NEMO recompute the same portfolio with a slightly larger limit
+    # (~30s extra wall-clock). When the user is in deep_context mode we just ask
+    # bootstrap for a bigger portfolio instead.
+    _bootstrap_limit = 40 if run_deep_context else 8
     yield {"type": "tool_start", "name": "nemo_memory.context_bootstrap"}
     _ts = time.perf_counter()
     bootstrap_payload = _nemo_chat_tool_call(
@@ -5935,11 +5942,9 @@ def _iter_chat_sse(
         nemo_mcp_url=nemo_mcp_url,
         allowed_tools=selected_nemo_tools,
         task=message, topic="Mission Control conversation",
-        token_budget=portfolio_budget, limit=8,
+        token_budget=portfolio_budget, limit=_bootstrap_limit,
     )
     yield {"type": "tool_done", "name": "nemo_memory.context_bootstrap", "ms": int((time.perf_counter() - _ts) * 1000)}
-    # NOTE: prime_context is intentionally skipped here — context_bootstrap already
-    # calls it internally, so running it again would double-load the same memories.
 
     # ── 2. Explicit memory search for direct lookup requests ──────────────────
     run_memory_lookup = _is_nemo_memory_lookup_request(message)
@@ -5958,55 +5963,26 @@ def _iter_chat_sse(
             )
             yield {"type": "tool_done", "name": "nemo_memory.search_memories", "ms": int((time.perf_counter() - _ts) * 1000)}
 
-    # ── 3. Research mode: build_context_portfolio + anticipate (parallel) ─────
+    # ── 3. Research mode: anticipate runs to surface relevant memories the
+    # bootstrap portfolio might not have ranked highest. build_context_portfolio
+    # is NOT called here — bootstrap already returned a full portfolio (atoms +
+    # evidence_handles) with the configured limit, so a second call would just
+    # recompute and burn another ~30s on NEMO with no new information.
     anticipate_payload: dict[str, Any] = {}
     if run_deep_context:
         _deep_t0 = time.perf_counter()
-        yield {"type": "tool_start", "name": "nemo_memory.build_context_portfolio"}
         yield {"type": "tool_start", "name": "nemo_memory.anticipate"}
-
-        _portfolio_result: dict[str, Any] = {}
-        _anticipate_result: dict[str, Any] = {}
-        _port_calls: list[dict[str, object]] = []
-        _ant_calls: list[dict[str, object]] = []
-
-        def _run_portfolio() -> None:
-            _portfolio_result.update(
-                _nemo_chat_tool_call(
-                    config, _port_calls, "build_context_portfolio",
-                    lifecycle_phase="plan",
-                    nemo_mcp_url=nemo_mcp_url,
-                    allowed_tools=selected_nemo_tools,
-                    task=message, topic="Mission Control conversation",
-                    token_budget=portfolio_budget, limit=40,
-                )
-            )
-
-        def _run_anticipate() -> None:
-            _anticipate_result.update(
-                _nemo_chat_tool_call(
-                    config, _ant_calls, "anticipate",
-                    lifecycle_phase="plan",
-                    nemo_mcp_url=nemo_mcp_url,
-                    allowed_tools=selected_nemo_tools,
-                    task=message, limit=mode_profile["anticipate_limit"],
-                )
-            )
-
-        with ThreadPoolExecutor(max_workers=2) as _ex:
-            _fp = _ex.submit(_run_portfolio)
-            _fa = _ex.submit(_run_anticipate)
-            _fp.result()
-            _fa.result()
-
-        tool_calls.extend(_port_calls)
-        tool_calls.extend(_ant_calls)
-        anticipate_payload = _anticipate_result
-        _deep_ms = int((time.perf_counter() - _deep_t0) * 1000)
-        yield {"type": "tool_done", "name": "nemo_memory.build_context_portfolio", "ms": _deep_ms}
-        yield {"type": "tool_done", "name": "nemo_memory.anticipate", "ms": _deep_ms}
-        # Teach NEMO which portfolio was used so future retrievals improve.
-        _portfolio_id = _portfolio_result.get("portfolio_id") or _portfolio_result.get("id")
+        anticipate_payload = _nemo_chat_tool_call(
+            config, tool_calls, "anticipate",
+            lifecycle_phase="plan",
+            nemo_mcp_url=nemo_mcp_url,
+            allowed_tools=selected_nemo_tools,
+            task=message, limit=mode_profile["anticipate_limit"],
+        )
+        yield {"type": "tool_done", "name": "nemo_memory.anticipate", "ms": int((time.perf_counter() - _deep_t0) * 1000)}
+        # Feed back which portfolio was used so future bootstrap retrievals improve.
+        _portfolio_meta = bootstrap_payload.get("context_portfolio") if isinstance(bootstrap_payload, dict) else None
+        _portfolio_id = _portfolio_meta.get("portfolio_id") if isinstance(_portfolio_meta, dict) else None
         if _portfolio_id:
             try:
                 _nemo_chat_tool_call(

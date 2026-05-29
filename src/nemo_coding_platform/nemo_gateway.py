@@ -90,13 +90,30 @@ class NemoGateway:
         )
         ok = bool(result.get("ok"))
         payload = self._normalize(result)
+        if ok:
+            summary = self._summarize(tool_name, payload)
+        else:
+            # Surface the actual error so the chat UI shows '1 fallida → reason'
+            # instead of a misleading 'ok' summary. Look in payload.error first
+            # (NEMO's structured error path), then result.error (transport error),
+            # then fall back to a generic message.
+            err = ""
+            if isinstance(payload, dict):
+                err = str(payload.get("error") or "")
+            if not err:
+                err = str(result.get("error") or "")
+            if not err:
+                # mcp_call_nemo_tool may return ok=False because the inner content
+                # had isError=true. The text usually starts with "Error: ...".
+                err = "unknown error from NEMO MCP"
+            summary = f"{tool_name} failed: {err[:200]}"
         tool_calls.append({
             "id": f"tool-{uuid4().hex[:8]}",
             "name": canonical,
             "tool_name": tool_name,
             "alias_name": alias,
             "status": "completed" if ok else "failed",
-            "summary": self._summarize(tool_name, payload if ok else result),
+            "summary": summary,
         })
         return payload if ok else {}
 
@@ -122,7 +139,15 @@ class NemoGateway:
             return f"context_bootstrap: {memories} memories loaded"
         if tool_name == "search_memories":
             results = payload.get("results", payload.get("memories", []))
-            return f"search_memories: {len(results)} results"
+            user_name = ""
+            if isinstance(results, list) and results:
+                first = results[0]
+                if isinstance(first, dict):
+                    raw_name = first.get("user_name")
+                    if isinstance(raw_name, str) and raw_name.strip():
+                        user_name = raw_name.strip()
+            suffix = f" user_name={user_name}." if user_name else "."
+            return f"Searched memory; matches={len(results)}{suffix}"
         if tool_name in ("cognitive_ingest", "create_memory"):
             return f"{tool_name}: stored"
         return f"{tool_name}: ok" if payload else f"{tool_name}: no payload"
