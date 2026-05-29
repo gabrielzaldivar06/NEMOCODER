@@ -68,10 +68,23 @@ class McpNemoAdapter:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=30) as f:
+            with urllib.request.urlopen(req, timeout=90) as f:
                 response = json.loads(f.read().decode("utf-8"))
 
-            data = _mcp_tool_result_payload(response.get("result", response))
+            inner_result = response.get("result", response)
+            # NEMO returns isError=true with a text-only "Error: ..." payload when
+            # arguments don't match the tool schema. Surface this as ok=False so the
+            # caller can fall back instead of treating an error string as context.
+            if isinstance(inner_result, dict) and inner_result.get("isError"):
+                content = inner_result.get("content") or []
+                err_text = ""
+                if isinstance(content, list) and content:
+                    first = content[0]
+                    if isinstance(first, dict):
+                        err_text = str(first.get("text") or "")
+                return self, NemoCallResult(call, False, {"error": err_text or "NEMO tool returned isError=true"})
+
+            data = _mcp_tool_result_payload(inner_result)
             return self, NemoCallResult(call, True, data)
 
         except Exception as exc:

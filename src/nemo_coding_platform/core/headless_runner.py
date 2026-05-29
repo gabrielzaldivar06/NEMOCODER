@@ -204,6 +204,107 @@ def _bounded_nemo_context(text: str, max_chars: int = _MAX_NEMO_CONTEXT_CHARS) -
     return f"{clipped}\n\n[truncated_nemo_context chars={len(normalized)} limit={max_chars}]"
 
 
+def _render_nemo_payload_as_context(payload: dict[str, Any] | None) -> str:
+    """Render an arbitrary NEMO MCP response payload as a context string.
+
+    The NEMO MCP tools (build_context_portfolio, prime_context, search_memories,
+    context_bootstrap) return data under different keys depending on the tool and
+    server version. This helper tries each known shape and produces a single
+    text block the LLM can consume. Returns "" only when no recognizable content
+    is present.
+
+    Recognized shapes (checked in order):
+      - {"context": "..."} — legacy direct text
+      - {"context_portfolio": {"atoms": [...]}} — context_bootstrap envelope
+      - {"atoms": [{"content": "...", "importance_level": N, "tags": [...]}, ...]}
+      - {"prime_context": {"memories": ["...", ...]}}
+      - {"memories": ["...", ...]}
+      - {"results": "..." | [...]} — search_memories
+      - {"hint": "..."} — instructional response
+    """
+    if not isinstance(payload, dict) or not payload:
+        return ""
+
+    direct_context = payload.get("context")
+    if isinstance(direct_context, str) and direct_context.strip():
+        return direct_context.strip()
+
+    portfolio = payload.get("context_portfolio")
+    if isinstance(portfolio, dict):
+        rendered = _render_atoms(portfolio.get("atoms"))
+        if rendered:
+            return rendered
+
+    atoms_top = payload.get("atoms")
+    if atoms_top:
+        rendered = _render_atoms(atoms_top)
+        if rendered:
+            return rendered
+
+    prime = payload.get("prime_context")
+    if isinstance(prime, dict):
+        memories = prime.get("memories")
+        joined = _join_memory_strings(memories)
+        if joined:
+            return joined
+
+    memories_top = payload.get("memories")
+    joined = _join_memory_strings(memories_top)
+    if joined:
+        return joined
+
+    results = payload.get("results")
+    if isinstance(results, str) and results.strip():
+        return results.strip()
+    if isinstance(results, list):
+        joined = _join_memory_strings(results)
+        if joined:
+            return joined
+
+    hint = payload.get("hint")
+    if isinstance(hint, str) and hint.strip():
+        return hint.strip()
+
+    return ""
+
+
+def _render_atoms(atoms: object) -> str:
+    if not isinstance(atoms, list) or not atoms:
+        return ""
+    lines: list[str] = []
+    for atom in atoms:
+        if not isinstance(atom, dict):
+            continue
+        content = str(atom.get("content") or "").strip()
+        if not content:
+            continue
+        importance = atom.get("importance_level")
+        tags = atom.get("tags") or []
+        tag_str = ",".join(str(t) for t in tags[:5]) if isinstance(tags, list) else ""
+        prefix_parts: list[str] = []
+        if importance is not None:
+            prefix_parts.append(f"imp={importance}")
+        if tag_str:
+            prefix_parts.append(f"tags={tag_str}")
+        prefix = f"[{' '.join(prefix_parts)}] " if prefix_parts else ""
+        lines.append(f"- {prefix}{content}")
+    return "\n".join(lines)
+
+
+def _join_memory_strings(memories: object) -> str:
+    if not isinstance(memories, list) or not memories:
+        return ""
+    items: list[str] = []
+    for entry in memories:
+        if isinstance(entry, str) and entry.strip():
+            items.append(f"- {entry.strip()}")
+        elif isinstance(entry, dict):
+            content = str(entry.get("content") or entry.get("text") or "").strip()
+            if content:
+                items.append(f"- {content}")
+    return "\n".join(items)
+
+
 @dataclass(frozen=True, slots=True)
 class HeadlessRunResult:
     task: Task
@@ -596,16 +697,18 @@ def execute_headless_handoff(
     # Budget heuristic: use query length in chars as a proxy for task complexity.
     # Simple tasks (≤50 chars) get 300 tokens; longer objectives get up to 800.
     _portfolio_budget = min(800, max(300, len(_portfolio_query) + 200))
+    # NOTE: NEMO MCP's build_context_portfolio only accepts {task, topic, tags_include,
+    # token_budget, mode, risk_tolerance, include_evidence_handles, limit} — the schema
+    # is closed (additionalProperties: false). Do NOT pass portfolio_phase/compact here.
     adapter, portfolio_result = adapter.call(
         NemoLifecyclePhase.BUILD,
         "build_context_portfolio",
         task=_portfolio_query,
         topic=task.title,
-        portfolio_phase=ExecutionPhase.EXECUTE.value,
         token_budget=_portfolio_budget,
     )
     nemo_results.append(portfolio_result)
-    nemo_context = _bounded_nemo_context(str(portfolio_result.payload.get("context", "")))
+    nemo_context = _bounded_nemo_context(_render_nemo_payload_as_context(portfolio_result.payload))
     emit_event("context_bootstrapped", f"NEMO context loaded ({len(nemo_context)} chars)", "plan")
     if not nemo_context:
         search_query = f"{task.title}: {request.prd[:120]}"
@@ -617,7 +720,7 @@ def execute_headless_handoff(
             limit=5,
         )
         nemo_results.append(search_result)
-        nemo_context = _bounded_nemo_context(str(search_result.payload.get("results", "")))
+        nemo_context = _bounded_nemo_context(_render_nemo_payload_as_context(search_result.payload))
     platform = get_platform_info("space-code")
     profile = model_profile or default_model_profile()
     if model_role_profile:
